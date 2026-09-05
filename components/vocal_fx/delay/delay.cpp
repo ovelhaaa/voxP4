@@ -5,7 +5,10 @@
 #include <memory>
 #include <new>
 bool StereoDelay::init(float sr, float maxs) {
-  if (!std::isfinite(sr) || !std::isfinite(maxs) || sr <= 0.0f || maxs <= 0.0f)
+  // set_feedback_lowpass() clamps to [20 Hz, 0.49 * sample_rate], so reject
+  // rates for which that interval would be reversed.
+  if (!std::isfinite(sr) || !std::isfinite(maxs) || sr * .49f < 20.0f ||
+      maxs <= 0.0f)
     return false;
   const double requested_samples = (double)sr * maxs;
   if (requested_samples < 1.0 || requested_samples > (double)(SIZE_MAX - 2U))

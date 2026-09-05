@@ -93,6 +93,8 @@ int main() {
     CHECK(std::isfinite(c.process(i & 1 ? .8f : -.8f)));
   StereoDelay d;
   CHECK(!d.init(0, .01f));
+  CHECK(!d.init(40.0f, 1.0f));
+  CHECK(d.init(41.0f, 1.0f));
   CHECK(!d.init(48000, 0));
   CHECK(d.init(48000, .01f));
   d.set_times(1, 1);
