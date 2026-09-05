@@ -11,9 +11,14 @@ int main() {
   for (int i = 0; i < 64; ++i)
     input[i] = 0.1f * std::sin(0.1f * i);
   constexpr int blocks = 100000;
+  bool finite = true;
   const auto start = std::chrono::steady_clock::now();
-  for (int i = 0; i < blocks; ++i)
+  for (int i = 0; i < blocks; ++i) {
     vocal_fx_process(input, left, right, 64);
+    for (int sample = 0; sample < 64; ++sample)
+      finite =
+          finite && std::isfinite(left[sample]) && std::isfinite(right[sample]);
+  }
   const auto elapsed = std::chrono::duration<double, std::micro>(
                            std::chrono::steady_clock::now() - start)
                            .count();
@@ -21,5 +26,5 @@ int main() {
       "host avg %.3f us/block (%.2f%% of 1.333 ms), DSP buffers %zu bytes\n",
       elapsed / blocks, elapsed / blocks / 13.33333,
       vocal_fx_dsp_memory_bytes());
-  return (!std::isfinite(left[63]) || !std::isfinite(right[63])) ? 2 : 0;
+  return finite ? 0 : 2;
 }

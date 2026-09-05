@@ -34,10 +34,15 @@ extern "C" void app_main(void) {
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   if (audio.init(io, cfg.block_size)) {
-    xTaskCreatePinnedToCore(audio_task, "vocal_audio", 8192, nullptr,
-                            configMAX_PRIORITIES - 2, nullptr, 0);
-    xTaskCreatePinnedToCore(telemetry_task, "vocal_telemetry", 3072, nullptr, 2,
-                            nullptr, 1);
+    if (xTaskCreatePinnedToCore(audio_task, "vocal_audio", 8192, nullptr,
+                                configMAX_PRIORITIES - 2, nullptr,
+                                0) != pdPASS) {
+      ESP_LOGE("vocal_fx", "failed to create audio task");
+      return;
+    }
+    if (xTaskCreatePinnedToCore(telemetry_task, "vocal_telemetry", 3072,
+                                nullptr, 2, nullptr, 1) != pdPASS)
+      ESP_LOGW("vocal_fx", "audio started without telemetry task");
   } else {
     ESP_LOGE("vocal_fx", "configure board I2S pins before starting audio");
   }

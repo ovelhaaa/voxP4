@@ -7,6 +7,7 @@
 #include "parameter_queue.h"
 #include "profiling.h"
 #include "smoothing.h"
+#include "vocal_fx.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -91,6 +92,8 @@ int main() {
   for (int i = 0; i < 10000; i++)
     CHECK(std::isfinite(c.process(i & 1 ? .8f : -.8f)));
   StereoDelay d;
+  CHECK(!d.init(0, .01f));
+  CHECK(!d.init(48000, 0));
   CHECK(d.init(48000, .01f));
   d.set_times(1, 1);
   d.set_mix(0, 1);
@@ -110,6 +113,7 @@ int main() {
     energy += v * v;
   CHECK(std::fabs(energy - 1) < 1e-5f);
   FdnReverb fdn;
+  CHECK(!fdn.init(0));
   CHECK(fdn.init(48000));
   float peak = 0;
   for (int i = 0; i < 480000; i++) {
@@ -141,6 +145,26 @@ int main() {
   }
   writer.join();
   CHECK(profiler.stats(ProfileSection::Pipeline).calls == 10000);
+  std::atomic<bool> pitch_writers_done{false};
+  auto publish_pitch = [](uint64_t base) {
+    for (uint64_t i = 1; i <= 10000; ++i) {
+      const float value = (float)(base + i);
+      vocal_fx_publish_pitch({value, value, true, base + i});
+    }
+  };
+  std::thread pitch_writer_a(publish_pitch, 0);
+  std::thread pitch_writer_b(publish_pitch, 20000);
+  std::thread pitch_completion([&] {
+    pitch_writer_a.join();
+    pitch_writer_b.join();
+    pitch_writers_done.store(true, std::memory_order_release);
+  });
+  while (!pitch_writers_done.load(std::memory_order_acquire)) {
+    const auto result = vocal_fx_latest_pitch();
+    CHECK(result.frequency_hz == result.confidence);
+    CHECK((uint64_t)result.frequency_hz == result.timestamp_samples);
+  }
+  pitch_completion.join();
   std::puts("all DSP tests passed");
   return 0;
 }

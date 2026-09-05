@@ -1,10 +1,16 @@
 #include "delay.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 bool StereoDelay::init(float sr, float maxs) {
+  if (!std::isfinite(sr) || !std::isfinite(maxs) || sr <= 0.0f || maxs <= 0.0f)
+    return false;
+  const double requested_samples = (double)sr * maxs;
+  if (requested_samples < 1.0 || requested_samples > (double)(SIZE_MAX - 2U))
+    return false;
   sr_ = sr;
   try {
-    l_.assign((size_t)(sr * maxs) + 2, 0);
+    l_.assign((size_t)requested_samples + 2U, 0);
     r_.assign(l_.size(), 0);
   } catch (...) {
     return false;

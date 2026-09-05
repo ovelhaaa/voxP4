@@ -28,7 +28,7 @@ int16_t AudioI2s::float_to_pcm16(float v) {
   return (int16_t)(v * 32768.0f);
 }
 bool AudioI2s::init(const AudioI2sConfig &c, size_t bs) {
-  if (bs == 0 || bs > 256)
+  if (bs == 0 || bs > VOCAL_FX_MAX_BLOCK_SIZE)
     return false;
   block_size_ = bs;
   width_ = c.width;
@@ -75,9 +75,12 @@ bool AudioI2s::init(const AudioI2sConfig &c, size_t bs) {
 }
 void AudioI2s::run() {
 #ifdef ESP_PLATFORM
-  static int16_t in16[256 * 2], out16[256 * 2];
-  static int32_t in32[256 * 2], out32[256 * 2];
-  static float mono[256], l[256], r[256];
+  static int16_t in16[VOCAL_FX_MAX_BLOCK_SIZE * 2],
+      out16[VOCAL_FX_MAX_BLOCK_SIZE * 2];
+  static int32_t in32[VOCAL_FX_MAX_BLOCK_SIZE * 2],
+      out32[VOCAL_FX_MAX_BLOCK_SIZE * 2];
+  static float mono[VOCAL_FX_MAX_BLOCK_SIZE], l[VOCAL_FX_MAX_BLOCK_SIZE],
+      r[VOCAL_FX_MAX_BLOCK_SIZE];
   auto rx = (i2s_chan_handle_t)rx_, tx = (i2s_chan_handle_t)tx_;
   for (;;) {
     size_t got = 0;

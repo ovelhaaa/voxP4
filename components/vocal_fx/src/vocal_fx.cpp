@@ -32,6 +32,7 @@ struct Engine {
 Engine e;
 ParameterQueue<64> parameter_queue;
 struct PitchMailbox {
+  std::atomic_flag publisher_lock = ATOMIC_FLAG_INIT;
   std::atomic<uint32_t> seq{0};
   std::atomic<float> hz{0}, confidence{0};
   std::atomic<bool> voiced{false};
@@ -52,6 +53,7 @@ void apply_pending_parameters() {
 }
 } // namespace
 bool vocal_fx_init(const VocalFxConfig &c) {
+  e.ready = false;
   if (c.sample_rate < 8000 || c.sample_rate > VOCAL_FX_MAX_SAMPLE_RATE ||
       (c.block_size != 64 && c.block_size != 128 && c.block_size != 256))
     return false;
@@ -227,12 +229,15 @@ void vocal_fx_set_parameter(VocalFxParameter p, float v) {
   (void)parameter_queue.push({p, v});
 }
 void vocal_fx_publish_pitch(const PitchResult &r) {
+  while (pitch.publisher_lock.test_and_set(std::memory_order_acquire)) {
+  }
   pitch.seq.fetch_add(1, std::memory_order_acq_rel);
   pitch.hz.store(r.frequency_hz, std::memory_order_relaxed);
   pitch.confidence.store(r.confidence, std::memory_order_relaxed);
   pitch.voiced.store(r.voiced, std::memory_order_relaxed);
   pitch.timestamp.store(r.timestamp_samples, std::memory_order_relaxed);
   pitch.seq.fetch_add(1, std::memory_order_release);
+  pitch.publisher_lock.clear(std::memory_order_release);
 }
 PitchResult vocal_fx_latest_pitch() {
   PitchResult r;

@@ -1,35 +1,43 @@
 #include "fdn_reverb.h"
 #include <cstdint>
 #include <cstdio>
-static void u32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
-static void u16(FILE *f, uint16_t v) { fwrite(&v, 2, 1, f); }
+
+static bool write_bytes(FILE *file, const void *data, size_t size) {
+  return fwrite(data, 1, size, file) == size;
+}
+static bool u32(FILE *file, uint32_t value) {
+  return write_bytes(file, &value, sizeof(value));
+}
+static bool u16(FILE *file, uint16_t value) {
+  return write_bytes(file, &value, sizeof(value));
+}
+
 int main() {
-  constexpr uint32_t sr = 48000, n = sr * 5;
-  FdnReverb r;
-  if (!r.init(sr))
+  constexpr uint32_t sample_rate = 48000;
+  constexpr uint32_t frames = sample_rate * 5;
+  constexpr uint32_t data_bytes = frames * 2 * sizeof(float);
+  FdnReverb reverb;
+  if (!reverb.init(sample_rate))
     return 1;
-  r.set_wet(1);
-  FILE *f = fopen("fdn_impulse.wav", "wb");
-  if (!f)
+  reverb.set_wet(1);
+  FILE *file = fopen("fdn_impulse.wav", "wb");
+  if (!file)
     return 2;
-  fwrite("RIFF", 1, 4, f);
-  u32(f, 36 + n * 8);
-  fwrite("WAVEfmt ", 1, 8, f);
-  u32(f, 16);
-  u16(f, 3);
-  u16(f, 2);
-  u32(f, sr);
-  u32(f, sr * 8);
-  u16(f, 8);
-  u16(f, 32);
-  fwrite("data", 1, 4, f);
-  u32(f, n * 8);
-  for (uint32_t i = 0; i < n; i++) {
-    float l, rr;
-    r.process(i ? 0 : 1, l, rr);
-    fwrite(&l, 4, 1, f);
-    fwrite(&rr, 4, 1, f);
+
+  bool ok = write_bytes(file, "RIFF", 4) && u32(file, 48 + data_bytes) &&
+            write_bytes(file, "WAVEfmt ", 8) && u32(file, 16) && u16(file, 3) &&
+            u16(file, 2) && u32(file, sample_rate) &&
+            u32(file, sample_rate * 2 * sizeof(float)) &&
+            u16(file, 2 * sizeof(float)) && u16(file, 32) &&
+            write_bytes(file, "fact", 4) && u32(file, 4) && u32(file, frames) &&
+            write_bytes(file, "data", 4) && u32(file, data_bytes);
+  for (uint32_t i = 0; ok && i < frames; ++i) {
+    float left, right;
+    reverb.process(i == 0 ? 1.0f : 0.0f, left, right);
+    ok = write_bytes(file, &left, sizeof(left)) &&
+         write_bytes(file, &right, sizeof(right));
   }
-  fclose(f);
-  return 0;
+  if (fclose(file) != 0)
+    ok = false;
+  return ok ? 0 : 3;
 }

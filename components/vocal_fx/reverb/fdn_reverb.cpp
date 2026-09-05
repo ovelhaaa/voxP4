@@ -14,12 +14,18 @@ void FdnReverb::hadamard8(float *x) {
     x[i] *= n;
 }
 bool FdnReverb::init(float sr) {
+  if (!std::isfinite(sr) || sr <= 0.0f)
+    return false;
   sr_ = sr; /* Pairwise-incommensurate millisecond values spread modes and avoid
                a common audible period. */
   const float ms[8] = {29.7f, 32.9f, 36.1f, 39.7f, 43.3f, 47.9f, 52.1f, 58.3f};
   try {
-    for (int i = 0; i < 8; i++)
-      lines_[i].b.assign((size_t)(sr * ms[i] * .001f), 0);
+    for (int i = 0; i < 8; i++) {
+      const size_t delay_samples = (size_t)(sr * ms[i] * .001f);
+      if (delay_samples == 0)
+        return false;
+      lines_[i].b.assign(delay_samples, 0);
+    }
   } catch (...) {
     return false;
   }
