@@ -1,0 +1,9 @@
+/build-host/
+/build-tsan/
+/sdkconfig
+/sdkconfig.old
+/build/
+
+/build-asan/
+
+/build-noexcept/

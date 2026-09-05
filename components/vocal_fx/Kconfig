@@ -1,0 +1,8 @@
+menu "Vocal FX"
+config VOCAL_FX_ENABLE_PROFILING
+    bool "Enable audio-path profiling"
+    default y
+    help
+        Record section timings without logging in the audio path. Disable for
+        production after performance validation.
+endmenu
