@@ -1,6 +1,7 @@
 #include "fdn_reverb.h"
 #include <algorithm>
 #include <cmath>
+#include <new>
 void FdnReverb::hadamard8(float *x) {
   for (int step = 1; step < 8; step *= 2)
     for (int i = 0; i < 8; i += 2 * step)
@@ -19,15 +20,18 @@ bool FdnReverb::init(float sr) {
   sr_ = sr; /* Pairwise-incommensurate millisecond values spread modes and avoid
                a common audible period. */
   const float ms[8] = {29.7f, 32.9f, 36.1f, 39.7f, 43.3f, 47.9f, 52.1f, 58.3f};
-  try {
-    for (int i = 0; i < 8; i++) {
-      const size_t delay_samples = (size_t)(sr * ms[i] * .001f);
-      if (delay_samples == 0)
-        return false;
-      lines_[i].b.assign(delay_samples, 0);
-    }
-  } catch (...) {
-    return false;
+  for (int i = 0; i < 8; i++) {
+    const size_t delay_samples = (size_t)(sr * ms[i] * .001f);
+    if (delay_samples == 0)
+      return false;
+    auto buffer =
+        std::unique_ptr<float[]>(new (std::nothrow) float[delay_samples]());
+    if (!buffer)
+      return false;
+    lines_[i].b = std::move(buffer);
+    lines_[i].size = delay_samples;
+    lines_[i].pos = 0;
+    lines_[i].damping_state = 0.0f;
   }
   if (!diffuser_.init(sr))
     return false;
@@ -38,7 +42,7 @@ bool FdnReverb::init(float sr) {
 }
 void FdnReverb::reset() {
   for (auto &x : lines_) {
-    std::fill(x.b.begin(), x.b.end(), 0);
+    std::fill_n(x.b.get(), x.size, 0.0f);
     x.pos = 0;
     x.damping_state = 0;
   }
@@ -47,7 +51,7 @@ void FdnReverb::reset() {
 void FdnReverb::set_rt60(float s) {
   s = std::clamp(s, .15f, 20.0f);
   for (auto &x : lines_)
-    x.feedback_gain = std::pow(10.0f, -3.0f * ((float)x.b.size() / sr_) / s);
+    x.feedback_gain = std::pow(10.0f, -3.0f * ((float)x.size / sr_) / s);
 }
 void FdnReverb::set_damping(float n) {
   n = std::clamp(n, 0.0f, 1.0f);
@@ -72,7 +76,7 @@ void FdnReverb::process(float in, float &l, float &r) {
   for (int i = 0; i < 8; i++) {
     auto &q = lines_[i];
     q.b[q.pos] = feed + x[i] * q.feedback_gain;
-    q.pos = (q.pos + 1) % q.b.size();
+    q.pos = (q.pos + 1) % q.size;
   }
   constexpr float scale = .25f;
   l = (taps[0] + taps[1] - taps[2] + taps[3] - taps[4] - taps[5] + taps[6] -
@@ -88,6 +92,6 @@ void FdnReverb::process(float in, float &l, float &r) {
 size_t FdnReverb::memory_bytes() const {
   size_t n = diffuser_.memory_bytes();
   for (auto &q : lines_)
-    n += q.b.capacity() * sizeof(float);
+    n += q.size * sizeof(float);
   return n;
 }

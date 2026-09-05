@@ -1,24 +1,26 @@
 #include "diffuser.h"
 #include <algorithm>
+#include <new>
 bool AllPass::init(size_t n, float g) {
-  try {
-    buffer_.assign(std::max<size_t>(n, 1), 0);
-  } catch (...) {
+  const size_t size = std::max<size_t>(n, 1);
+  auto buffer = std::unique_ptr<float[]>(new (std::nothrow) float[size]());
+  if (!buffer)
     return false;
-  }
+  buffer_ = std::move(buffer);
+  size_ = size;
   gain_ = g;
   pos_ = 0;
   return true;
 }
 void AllPass::reset() {
-  std::fill(buffer_.begin(), buffer_.end(), 0);
+  std::fill_n(buffer_.get(), size_, 0.0f);
   pos_ = 0;
 }
 float AllPass::process(float x) {
   float d = buffer_[pos_];
   float y = d - gain_ * x;
   buffer_[pos_] = x + gain_ * y;
-  pos_ = (pos_ + 1) % buffer_.size();
+  pos_ = (pos_ + 1) % size_;
   return y;
 }
 bool Diffuser::init(float sr) {

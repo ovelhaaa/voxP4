@@ -3,7 +3,7 @@
 #include "smoothing.h"
 #include <array>
 #include <cstddef>
-#include <vector>
+#include <memory>
 class FdnReverb {
 public:
   bool init(float sr);
@@ -17,7 +17,8 @@ public:
 
 private:
   struct Line {
-    std::vector<float> b;
+    std::unique_ptr<float[]> b;
+    size_t size = 0;
     size_t pos = 0;
     float damping_state = 0, feedback_gain = .8f;
     float modulation_phase = 0, modulation_depth = 0;

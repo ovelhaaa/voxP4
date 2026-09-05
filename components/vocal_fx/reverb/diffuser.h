@@ -1,15 +1,16 @@
 #pragma once
 #include <cstddef>
-#include <vector>
+#include <memory>
 class AllPass {
 public:
   bool init(size_t samples, float gain);
   void reset();
   float process(float x);
-  size_t memory_bytes() const { return buffer_.capacity() * sizeof(float); }
+  size_t memory_bytes() const { return size_ * sizeof(float); }
 
 private:
-  std::vector<float> buffer_;
+  std::unique_ptr<float[]> buffer_;
+  size_t size_ = 0;
   size_t pos_ = 0;
   float gain_ = .6f;
 };
