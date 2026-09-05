@@ -1,8 +1,9 @@
 # voxP4 vocal effects firmware
 
 ESP-IDF firmware foundation for a low-latency ESP32-P4 vocal processor. The
-current milestone deliberately implements the measurable audio core—not pitch
-detection or harmonization. [`specs.md`](specs.md) is the architectural source of
+current milestone implements the measurable audio core and the asynchronous
+Milestone 2 vocal-analysis subsystem—not pitch shifting or harmonization.
+[`specs.md`](specs.md) is the architectural source of
 truth whenever this overview is incomplete.
 
 ## Current architecture
@@ -12,7 +13,9 @@ compressor → interpolated stereo delay → three-allpass diffuser and normaliz
 8-line Hadamard FDN → safety limiter → stereo I2S/DMA output. Effects have cheap
 bypasses and all buffers are allocated during initialization. The audio task does
 not allocate, log, access files, or lock. An atomic seqlock mailbox exposes the
-latest `PitchResult` without implementing a detector.
+latest `PitchResult`. A 31-tap anti-alias FIR decimates the input tap to 12 kHz;
+a Core-1 task runs rolling-window YIN, voiced hysteresis, cents-domain tracking,
+octave suppression, onset detection, and correlation-refined pitch marks.
 
 The codec-neutral I2S adapter uses stereo slots matching the configured PCM width
 and performs block PCM ↔ float conversion outside interrupts. Board pin/codec control remains a board
@@ -55,12 +58,16 @@ ctest --test-dir build-host --output-on-failure
 
 Tests cover all biquad modes, DC rejection, bypass, finite/stable output, gate,
 compressor curve, smoothing monotonicity, circular delay wrap, normalized
-Hadamard energy, FDN silence and a ten-second bounded impulse response. See
+Hadamard energy, FDN silence and a ten-second bounded impulse response. Pitch
+tests cover clean tones from 65–1000 Hz, harmonics/missing fundamental, noise,
+vibrato, glissando, note transitions, state hysteresis, pitch marks, numerical
+edge cases, and stop-band alias rejection. `pitch_analyze` exports a PCM16 or
+float32 WAV to CSV. See [`docs/pitch_analysis.md`](docs/pitch_analysis.md) and
 [`docs/benchmarking.md`](docs/benchmarking.md) for target profiling, memory,
 latency, deadline, and impulse-response procedures.
 
 ## Next milestone
 
-Add an analysis tap with ×4 downsampling, asynchronous YIN/MPM, voiced/unvoiced
-classification, refined pitch marks, and TD-PSOLA. WSOLA, harmony voices, MIDI,
+Add TD-PSOLA synthesis using the historical, input-domain pitch marks and the
+explicit analysis latency. WSOLA/unvoiced synthesis, harmony voices, MIDI,
 formants, correction, and vocoder remain intentionally unimplemented.

@@ -8,6 +8,12 @@
 namespace {
 vocal_fx_platform::AudioI2s audio;
 void audio_task(void *) { audio.run(); }
+void pitch_task(void *) {
+  for (;;) {
+    if (!vocal_fx_run_pitch_analysis(4))
+      vTaskDelay(1);
+  }
+}
 void telemetry_task(void *) {
   for (;;) {
     const auto s = vocal_fx_profile_stats(VocalFxProfileSection::Pipeline);
@@ -17,6 +23,12 @@ void telemetry_task(void *) {
              static_cast<unsigned long long>(s.blocks), average,
              static_cast<unsigned long long>(s.worst_us),
              static_cast<unsigned long long>(s.deadline_misses));
+#if CONFIG_VOCAL_FX_PITCH_DEBUG
+    const auto pitch = vocal_fx_latest_pitch();
+    ESP_LOGI("vocal_fx_pitch", "f0=%.2f confidence=%.3f voiced=%d state=%u",
+             pitch.frequency_hz, pitch.confidence, pitch.voiced,
+             static_cast<unsigned>(vocal_fx_pitch_track_state()));
+#endif
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }
@@ -38,6 +50,12 @@ extern "C" void app_main(void) {
                                 configMAX_PRIORITIES - 2, nullptr,
                                 0) != pdPASS) {
       ESP_LOGE("vocal_fx", "failed to create audio task");
+      return;
+    }
+    if (xTaskCreatePinnedToCore(pitch_task, "vocal_pitch", 8192, nullptr,
+                                configMAX_PRIORITIES - 5, nullptr,
+                                1) != pdPASS) {
+      ESP_LOGE("vocal_fx", "failed to create pitch analysis task");
       return;
     }
     if (xTaskCreatePinnedToCore(telemetry_task, "vocal_telemetry", 3072,

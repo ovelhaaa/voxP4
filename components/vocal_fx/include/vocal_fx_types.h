@@ -30,10 +30,42 @@ enum class VocalFxParameter : uint16_t {
 };
 
 struct PitchResult {
+  PitchResult() = default;
+  // Milestone-1 source compatibility.
+  PitchResult(float hz, float certainty, bool is_voiced, uint64_t timestamp)
+      : frequency_hz(hz), confidence(certainty), voiced(is_voiced),
+        analysis_timestamp_samples(timestamp), timestamp_samples(timestamp) {}
   float frequency_hz = 0.0f;
+  // Period in the original input-rate domain (48 kHz by default).
+  float period_samples = 0.0f;
   float confidence = 0.0f;
   bool voiced = false;
+  bool onset = false;
+  bool pitch_changed = false;
+  // Centre of the analysis window in original input sample positions.
+  uint64_t analysis_timestamp_samples = 0;
+  // Compatibility alias retained for Milestone-1 callers.
   uint64_t timestamp_samples = 0;
+};
+
+struct PitchMark {
+  uint64_t sample_position = 0;
+  float confidence = 0.0f;
+};
+
+enum class PitchTrackState : uint8_t { Unlocked, Acquiring, Locked };
+
+enum class PitchAnalysisProfileSection : uint8_t {
+  Decimator,
+  YinDifference,
+  YinCmnd,
+  YinSearch,
+  YinInterpolation,
+  VoicedClassifier,
+  PitchSmoother,
+  PitchMarkSearch,
+  Total,
+  Count
 };
 
 enum class VocalFxProfileSection : uint8_t {

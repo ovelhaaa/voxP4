@@ -1,0 +1,99 @@
+#include "yin_detector.h"
+#include <algorithm>
+#include <cmath>
+
+namespace {
+ProfileSection profile_section(PitchAnalysisProfileSection s) {
+  return static_cast<ProfileSection>(
+      static_cast<size_t>(s) +
+      static_cast<size_t>(ProfileSection::AnalysisDecimator));
+}
+} // namespace
+
+bool YinDetector::init(const PitchAnalysisConfig &c) {
+  if (!std::isfinite(c.analysis_sample_rate) || c.analysis_sample_rate < 4000 ||
+      c.window_size < 64 || c.window_size > kMaxWindow || c.hop_size == 0 ||
+      c.hop_size >= c.window_size || c.min_frequency <= 0 ||
+      c.max_frequency <= c.min_frequency || c.yin_threshold <= 0 ||
+      c.yin_threshold >= 1)
+    return false;
+  config_ = c;
+  tau_min_ = static_cast<size_t>(c.analysis_sample_rate / c.max_frequency);
+  tau_max_ = static_cast<size_t>(c.analysis_sample_rate / c.min_frequency);
+  return tau_min_ >= 2 && tau_max_ + 1 < c.window_size &&
+         tau_max_ <= kMaxWindow;
+}
+
+PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
+                                              uint64_t) {
+  PitchDetectorMeasurement out;
+  if (!x || n < config_.window_size)
+    return out;
+  double energy = 0;
+  for (size_t i = 0; i < n; ++i)
+    energy += static_cast<double>(x[i]) * x[i];
+  out.rms_db = 10.0f * std::log10(static_cast<float>(energy / n) + 1e-20f);
+  profiler_.begin(profile_section(PitchAnalysisProfileSection::YinDifference));
+  difference_[0] = 0;
+  for (size_t tau = 1; tau <= tau_max_ + 1; ++tau) {
+    float sum = 0;
+    for (size_t i = 0; i + tau < n; ++i) {
+      const float d = x[i] - x[i + tau];
+      sum += d * d;
+    }
+    difference_[tau] = sum;
+  }
+  profiler_.end(profile_section(PitchAnalysisProfileSection::YinDifference));
+  profiler_.begin(profile_section(PitchAnalysisProfileSection::YinCmnd));
+  cmnd_[0] = 1;
+  double cumulative = 0;
+  for (size_t tau = 1; tau <= tau_max_ + 1; ++tau) {
+    cumulative += difference_[tau];
+    cmnd_[tau] = cumulative > 1e-20
+                     ? static_cast<float>(difference_[tau] * tau / cumulative)
+                     : 1.0f;
+  }
+  profiler_.end(profile_section(PitchAnalysisProfileSection::YinCmnd));
+  profiler_.begin(profile_section(PitchAnalysisProfileSection::YinSearch));
+  size_t candidate = 0;
+  for (size_t tau = tau_min_; tau <= tau_max_; ++tau) {
+    if (cmnd_[tau] < config_.yin_threshold) {
+      while (tau < tau_max_ && cmnd_[tau + 1] < cmnd_[tau])
+        ++tau;
+      candidate = tau;
+      break;
+    }
+  }
+  if (!candidate) {
+    candidate = tau_min_;
+    for (size_t tau = tau_min_ + 1; tau <= tau_max_; ++tau)
+      if (cmnd_[tau] < cmnd_[candidate])
+        candidate = tau;
+  }
+  profiler_.end(profile_section(PitchAnalysisProfileSection::YinSearch));
+  profiler_.begin(
+      profile_section(PitchAnalysisProfileSection::YinInterpolation));
+  // Interpolate the raw difference valley: unlike CMND it is locally
+  // symmetric for an integer-period sinusoid and avoids high-F0 bias.
+  const float y0 = difference_[candidate - 1], y1 = difference_[candidate],
+              y2 = difference_[candidate + 1];
+  const float denom = y0 - 2.0f * y1 + y2;
+  float offset = std::fabs(denom) > 1e-12f ? .5f * (y0 - y2) / denom : 0;
+  offset = std::clamp(offset, -.5f, .5f);
+  const float period = candidate + offset;
+  out.confidence = std::clamp(1.0f - cmnd_[candidate], 0.0f, 1.0f);
+  if (period > 0 && std::isfinite(period)) {
+    out.period_samples = period;
+    out.frequency_hz = config_.analysis_sample_rate / period;
+  }
+  profiler_.end(profile_section(PitchAnalysisProfileSection::YinInterpolation));
+  return out;
+}
+void YinDetector::reset() {
+  difference_.fill(0);
+  cmnd_.fill(0);
+  profiler_.reset();
+}
+ProfileStats YinDetector::profile(PitchAnalysisProfileSection s) const {
+  return profiler_.stats(profile_section(s));
+}
