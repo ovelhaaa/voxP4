@@ -39,6 +39,11 @@ idf.py build
 idf.py flash monitor
 ```
 
+Every push and pull request also builds the `esp32p4` target with ESP-IDF 5.3 in
+GitHub Actions. Successful runs retain the application, bootloader, partition
+table, and flashing metadata as the `vox-p4-firmware` artifact for 14 days. The
+workflow can also be started manually from the Actions tab.
+
 ## Host tests
 
 ```sh
