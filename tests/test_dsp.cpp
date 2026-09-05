@@ -1,12 +1,17 @@
+#include "audio_i2s.h"
 #include "biquad.h"
 #include "compressor.h"
 #include "delay.h"
 #include "fdn_reverb.h"
 #include "gate.h"
+#include "parameter_queue.h"
+#include "profiling.h"
 #include "smoothing.h"
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <vector>
 #define CHECK(x)                                                               \
   do {                                                                         \
@@ -44,6 +49,37 @@ int main() {
     prev = v;
   }
   CHECK(prev > .999f);
+  ParameterQueue<4> queue;
+  CHECK(queue.push({VocalFxParameter::DelayWet, .1f}));
+  CHECK(queue.push({VocalFxParameter::DelayWet, .2f}));
+  CHECK(queue.push({VocalFxParameter::DelayWet, .3f}));
+  CHECK(!queue.push({VocalFxParameter::DelayWet, .4f}));
+  ParameterChange change;
+  CHECK(queue.pop(change) && change.value == .1f);
+  CHECK(queue.pop(change) && change.value == .2f);
+  CHECK(queue.pop(change) && change.value == .3f);
+  CHECK(!queue.pop(change));
+  ParameterQueue<64> concurrent_queue;
+  constexpr uint32_t update_count = 100000;
+  std::thread producer([&] {
+    for (uint32_t i = 0; i < update_count; ++i)
+      while (
+          !concurrent_queue.push({VocalFxParameter::CompressorRatio, (float)i}))
+        std::this_thread::yield();
+  });
+  for (uint32_t expected = 0; expected < update_count; ++expected) {
+    while (!concurrent_queue.pop(change))
+      std::this_thread::yield();
+    CHECK(change.value == (float)expected);
+  }
+  producer.join();
+  using vocal_fx_platform::AudioI2s;
+  CHECK(AudioI2s::float_to_pcm16(1.0f) == 32767);
+  CHECK(AudioI2s::float_to_pcm16(-1.0f) == -32768);
+  CHECK(std::fabs(AudioI2s::pcm16_to_float(16384) - .5f) < 1e-6f);
+  CHECK((AudioI2s::float_to_pcm24(.5f) & 0xff) == 0);
+  CHECK(std::fabs(AudioI2s::pcm24_to_float(AudioI2s::float_to_pcm24(.5f)) -
+                  .5f) < 1e-6f);
   Gate g;
   g.init(48000);
   for (int i = 0; i < 10000; i++)
@@ -87,6 +123,24 @@ int main() {
     fdn.process(0, l, r);
     CHECK(l == 0 && r == 0);
   }
+  Profiler profiler;
+  std::atomic<bool> writer_done{false};
+  std::thread writer([&] {
+    for (int i = 0; i < 10000; ++i) {
+      profiler.begin(ProfileSection::Pipeline);
+      profiler.end(ProfileSection::Pipeline, 1000000);
+    }
+    writer_done.store(true, std::memory_order_release);
+  });
+  uint64_t observed_calls = 0;
+  while (!writer_done.load(std::memory_order_acquire)) {
+    const auto snapshot = profiler.stats(ProfileSection::Pipeline);
+    CHECK(snapshot.calls >= observed_calls);
+    CHECK(snapshot.max_us <= snapshot.total_us);
+    observed_calls = snapshot.calls;
+  }
+  writer.join();
+  CHECK(profiler.stats(ProfileSection::Pipeline).calls == 10000);
   std::puts("all DSP tests passed");
   return 0;
 }

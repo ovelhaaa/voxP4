@@ -14,10 +14,19 @@ bypasses and all buffers are allocated during initialization. The audio task doe
 not allocate, log, access files, or lock. An atomic seqlock mailbox exposes the
 latest `PitchResult` without implementing a detector.
 
-The codec-neutral I2S adapter uses 32-bit stereo slots and performs block PCM ↔
-float conversion outside interrupts. Board pin/codec control remains a board
+The codec-neutral I2S adapter uses stereo slots matching the configured PCM width
+and performs block PCM ↔ float conversion outside interrupts. Board pin/codec control remains a board
 integration responsibility. Hot delay/FDN buffers use normal internal-capable
 allocation in this milestone; their measured sizes are exposed for boot reports.
+PCM16, left-aligned PCM24, and PCM32 slots have matching ESP-IDF transfer and
+conversion paths. Mono input selects the left slot; stereo input is safely mixed
+to the engine's mono bus.
+
+Runtime parameter writes use a bounded, non-blocking SPSC queue. The audio task
+drains it only at block boundaries, so control-core updates cannot race DSP state
+or expose partial coefficient sets. Profiling similarly publishes coherent
+cross-core snapshots through a 32-bit-atomic seqlock instead of sharing mutable
+64-bit counters.
 
 ## Build for ESP32-P4
 

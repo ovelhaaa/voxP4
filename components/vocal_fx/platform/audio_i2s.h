@@ -15,9 +15,15 @@ public:
   void run();
   static float pcm32_to_float(int32_t v);
   static int32_t float_to_pcm32(float v);
+  static float pcm24_to_float(int32_t left_aligned_v);
+  static int32_t float_to_pcm24(float v);
+  static float pcm16_to_float(int16_t v);
+  static int16_t float_to_pcm16(float v);
 
 private:
   size_t block_size_ = 0;
+  PcmWidth width_ = PcmWidth::Bits32;
+  bool stereo_input_ = false;
 #ifdef ESP_PLATFORM
   void *tx_ = nullptr;
   void *rx_ = nullptr;

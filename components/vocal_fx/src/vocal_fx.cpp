@@ -5,6 +5,7 @@
 #include "fdn_reverb.h"
 #include "gate.h"
 #include "limiter.h"
+#include "parameter_queue.h"
 #include "profiling.h"
 #include <algorithm>
 #include <atomic>
@@ -29,6 +30,7 @@ struct Engine {
         delay_dry = 1, delay_wet = .2f;
 };
 Engine e;
+ParameterQueue<64> parameter_queue;
 struct PitchMailbox {
   std::atomic<uint32_t> seq{0};
   std::atomic<float> hz{0}, confidence{0};
@@ -41,6 +43,12 @@ void gate_update() {
 void comp_update() {
   e.compressor.set(e.comp_t, e.comp_ratio, e.comp_a, e.comp_r, e.comp_makeup,
                    e.comp_knee);
+}
+void apply_parameter(VocalFxParameter p, float v);
+void apply_pending_parameters() {
+  ParameterChange change;
+  while (parameter_queue.pop(change))
+    apply_parameter(change.parameter, change.value);
 }
 } // namespace
 bool vocal_fx_init(const VocalFxConfig &c) {
@@ -55,6 +63,7 @@ bool vocal_fx_init(const VocalFxConfig &c) {
       !e.reverb.init(c.sample_rate))
     return false;
   e.limiter.init(c.sample_rate);
+  parameter_queue.reset();
   e.ready = true;
   return true;
 }
@@ -73,6 +82,7 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     return;
   while (frames) {
     size_t n = std::min<size_t>(frames, VOCAL_FX_MAX_BLOCK_SIZE);
+    apply_pending_parameters();
     [[maybe_unused]] uint64_t deadline =
         (uint64_t)(1000000.0 * n / e.cfg.sample_rate);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Pipeline);
@@ -115,7 +125,8 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     frames -= n;
   }
 }
-void vocal_fx_set_parameter(VocalFxParameter p, float v) {
+namespace {
+void apply_parameter(VocalFxParameter p, float v) {
   switch (p) {
   case VocalFxParameter::GateThresholdDb:
     e.gate_t = v;
@@ -208,6 +219,12 @@ void vocal_fx_set_parameter(VocalFxParameter p, float v) {
     e.cfg.enable_reverb = v >= .5f;
     break;
   }
+}
+} // namespace
+void vocal_fx_set_parameter(VocalFxParameter p, float v) {
+  // Deliberately non-blocking. If the SPSC queue is saturated, retaining the
+  // last complete audio-thread state is safer than a partial cross-core update.
+  (void)parameter_queue.push({p, v});
 }
 void vocal_fx_publish_pitch(const PitchResult &r) {
   pitch.seq.fetch_add(1, std::memory_order_acq_rel);

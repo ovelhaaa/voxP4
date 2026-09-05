@@ -9,8 +9,9 @@ bool StereoDelay::init(float sr, float maxs) {
   } catch (...) {
     return false;
   }
-  dl_.init(.25f * sr, sr);
-  dr_.init(.375f * sr, sr);
+  const float maximum_delay = (float)l_.size() - 2.0f;
+  dl_.init(std::min(.25f * sr, maximum_delay), sr);
+  dr_.init(std::min(.375f * sr, maximum_delay), sr);
   wet_.init(.2f, sr);
   dry_.init(1, sr);
   set_feedback_lowpass(6000);
@@ -38,6 +39,7 @@ void StereoDelay::set_feedback_lowpass(float hz) {
       std::exp(-2 * 3.14159265f * std::clamp(hz, 20.0f, sr_ * .49f) / sr_);
 }
 float StereoDelay::read(float d) const {
+  d = std::clamp(d, 1.0f, (float)l_.size() - 2.0f);
   float p = (float)pos_ - d;
   if (p < 0)
     p += l_.size();
@@ -47,7 +49,9 @@ float StereoDelay::read(float d) const {
 }
 void StereoDelay::process(float x, float &ol, float &orr) {
   float a = read(dl_.next());
-  float p = (float)pos_ - dr_.next();
+  const float right_delay =
+      std::clamp(dr_.next(), 1.0f, (float)r_.size() - 2.0f);
+  float p = (float)pos_ - right_delay;
   if (p < 0)
     p += r_.size();
   size_t i = (size_t)p, j = (i + 1) % r_.size();

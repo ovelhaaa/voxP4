@@ -11,6 +11,8 @@ copy and print the counters. Measure a release build for at least 10 minutes,
 including silence, impulses, full-scale noise, and parameter changes. Report
 average/max microseconds, convert cycles using the measured CPU clock, and count
 callbacks exceeding the calculated deadline. Confirm I2S underruns separately.
+The audio-side counters are copied into a coherent seqlock snapshot composed of
+32-bit atomics, preventing torn 64-bit telemetry reads on ESP32-P4.
 
 At boot, report `vocal_fx_dsp_memory_bytes()`, DMA allocation, internal heap via
 `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`, and PSRAM via
