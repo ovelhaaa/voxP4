@@ -5,4 +5,10 @@ config VOCAL_FX_ENABLE_PROFILING
     help
         Record section timings without logging in the audio path. Disable for
         production after performance validation.
+config VOCAL_FX_PITCH_DEBUG
+    bool "Enable low-priority pitch telemetry"
+    default n
+    help
+        Print pitch state from the telemetry task. The detector and audio task
+        never log, irrespective of this option.
 endmenu

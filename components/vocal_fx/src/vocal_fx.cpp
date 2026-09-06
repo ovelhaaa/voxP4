@@ -6,6 +6,7 @@
 #include "gate.h"
 #include "limiter.h"
 #include "parameter_queue.h"
+#include "pitch_analysis.h"
 #include "profiling.h"
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,7 @@ struct Engine {
   FdnReverb reverb;
   Limiter limiter;
   Profiler profiler;
+  PitchAnalysis pitch_analysis;
   bool ready = false;
   float work[VOCAL_FX_MAX_BLOCK_SIZE], left[VOCAL_FX_MAX_BLOCK_SIZE],
       right[VOCAL_FX_MAX_BLOCK_SIZE];
@@ -35,9 +37,31 @@ struct PitchMailbox {
   std::atomic_flag publisher_lock = ATOMIC_FLAG_INIT;
   std::atomic<uint32_t> seq{0};
   std::atomic<float> hz{0}, confidence{0};
+  std::atomic<float> period{0};
   std::atomic<bool> voiced{false};
+  std::atomic<bool> onset{false}, changed{false};
   std::atomic<uint64_t> timestamp{0};
 } pitch;
+constexpr uint32_t kPitchResetting = 1U << 31U;
+std::atomic<uint32_t> pitch_users{0};
+bool enter_pitch_path() {
+  uint32_t state = pitch_users.load(std::memory_order_acquire);
+  if (state & kPitchResetting)
+    return false;
+  return pitch_users.compare_exchange_strong(
+      state, state + 1U, std::memory_order_acq_rel, std::memory_order_relaxed);
+}
+void leave_pitch_path() {
+  pitch_users.fetch_sub(1U, std::memory_order_release);
+}
+void reset_pitch_analysis() {
+  pitch_users.fetch_or(kPitchResetting, std::memory_order_acq_rel);
+  while ((pitch_users.load(std::memory_order_acquire) & ~kPitchResetting) !=
+         0) {
+  }
+  e.pitch_analysis.reset();
+  pitch_users.store(0, std::memory_order_release);
+}
 void gate_update() {
   e.gate.set(e.gate_t, e.gate_a, e.gate_h, e.gate_r, e.gate_range);
 }
@@ -65,9 +89,27 @@ bool vocal_fx_init(const VocalFxConfig &c) {
       !e.reverb.init(c.sample_rate))
     return false;
   e.limiter.init(c.sample_rate);
+  if (c.enable_pitch_analysis) {
+    PitchAnalysisConfig pitch_config{};
+    pitch_config.input_sample_rate = c.sample_rate;
+    if (!e.pitch_analysis.init(pitch_config))
+      return false;
+  }
   parameter_queue.reset();
   e.ready = true;
   return true;
+}
+bool vocal_fx_init_pitch_analysis(const PitchAnalysisConfig &config) {
+  pitch_users.fetch_or(kPitchResetting, std::memory_order_acq_rel);
+  while ((pitch_users.load(std::memory_order_acquire) & ~kPitchResetting) !=
+         0) {
+  }
+  e.cfg.enable_pitch_analysis = false;
+  const bool initialized = e.pitch_analysis.init(config);
+  if (initialized)
+    e.cfg.enable_pitch_analysis = true;
+  pitch_users.store(0, std::memory_order_release);
+  return initialized;
 }
 void vocal_fx_reset() {
   if (!e.ready)
@@ -78,12 +120,18 @@ void vocal_fx_reset() {
   e.delay.reset();
   e.reverb.reset();
   e.limiter.reset();
+  if (e.cfg.enable_pitch_analysis)
+    reset_pitch_analysis();
 }
 void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
   if (!e.ready || !in || !ol || !orr)
     return;
   while (frames) {
     size_t n = std::min<size_t>(frames, VOCAL_FX_MAX_BLOCK_SIZE);
+    if (e.cfg.enable_pitch_analysis && enter_pitch_path()) {
+      e.pitch_analysis.tap(in, n);
+      leave_pitch_path();
+    }
     apply_pending_parameters();
     [[maybe_unused]] uint64_t deadline =
         (uint64_t)(1000000.0 * n / e.cfg.sample_rate);
@@ -234,8 +282,14 @@ void vocal_fx_publish_pitch(const PitchResult &r) {
   pitch.seq.fetch_add(1, std::memory_order_acq_rel);
   pitch.hz.store(r.frequency_hz, std::memory_order_relaxed);
   pitch.confidence.store(r.confidence, std::memory_order_relaxed);
+  pitch.period.store(r.period_samples, std::memory_order_relaxed);
   pitch.voiced.store(r.voiced, std::memory_order_relaxed);
-  pitch.timestamp.store(r.timestamp_samples, std::memory_order_relaxed);
+  pitch.onset.store(r.onset, std::memory_order_relaxed);
+  pitch.changed.store(r.pitch_changed, std::memory_order_relaxed);
+  pitch.timestamp.store(r.analysis_timestamp_samples
+                            ? r.analysis_timestamp_samples
+                            : r.timestamp_samples,
+                        std::memory_order_relaxed);
   pitch.seq.fetch_add(1, std::memory_order_release);
   pitch.publisher_lock.clear(std::memory_order_release);
 }
@@ -246,14 +300,47 @@ PitchResult vocal_fx_latest_pitch() {
     a = pitch.seq.load(std::memory_order_acquire);
     r.frequency_hz = pitch.hz.load(std::memory_order_relaxed);
     r.confidence = pitch.confidence.load(std::memory_order_relaxed);
+    r.period_samples = pitch.period.load(std::memory_order_relaxed);
     r.voiced = pitch.voiced.load(std::memory_order_relaxed);
-    r.timestamp_samples = pitch.timestamp.load(std::memory_order_relaxed);
+    r.onset = pitch.onset.load(std::memory_order_relaxed);
+    r.pitch_changed = pitch.changed.load(std::memory_order_relaxed);
+    r.analysis_timestamp_samples =
+        pitch.timestamp.load(std::memory_order_relaxed);
+    r.timestamp_samples = r.analysis_timestamp_samples;
     b = pitch.seq.load(std::memory_order_acquire);
   } while (a != b || (a & 1));
   return r;
 }
+size_t vocal_fx_run_pitch_analysis(size_t max_hops) {
+  if (!e.cfg.enable_pitch_analysis || !enter_pitch_path())
+    return 0;
+  const size_t count = e.pitch_analysis.run(max_hops);
+  if (count)
+    vocal_fx_publish_pitch(e.pitch_analysis.latest());
+  leave_pitch_path();
+  return count;
+}
+bool vocal_fx_get_latest_pitch_mark(PitchMark *mark) {
+  return e.pitch_analysis.latest_mark(mark);
+}
+size_t vocal_fx_get_pitch_marks(uint64_t start, uint64_t end, PitchMark *out,
+                                size_t capacity) {
+  return e.pitch_analysis.marks(start, end, out, capacity);
+}
+PitchTrackState vocal_fx_pitch_track_state() {
+  return e.pitch_analysis.track_state();
+}
+uint64_t vocal_fx_analysis_latency_samples() {
+  return e.pitch_analysis.latency_samples();
+}
+VocalFxProfileStats
+vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section) {
+  const auto stats = e.pitch_analysis.profile(section);
+  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
+}
 size_t vocal_fx_dsp_memory_bytes() {
-  return e.delay.memory_bytes() + e.reverb.memory_bytes();
+  return e.delay.memory_bytes() + e.reverb.memory_bytes() +
+         (e.cfg.enable_pitch_analysis ? e.pitch_analysis.memory_bytes() : 0);
 }
 
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {

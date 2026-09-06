@@ -42,3 +42,12 @@ patterns in `build-host/fdn_impulse.wav`.
 
 Host timings are regression indicators only; the `<50%` milestone target must be
 validated on ESP32-P4 hardware with the real codec and DMA configuration.
+
+Pitch analysis has its own per-stage counters and host driver:
+
+```sh
+(cd build-host && ./pitch_benchmark)
+```
+
+See [`pitch_analysis.md`](pitch_analysis.md) for timestamp semantics, the
+filled host-quality table, analysis memory, and the target benchmark table.

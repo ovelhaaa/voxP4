@@ -9,6 +9,15 @@ enum class ProfileSection : uint8_t {
   Delay,
   Reverb,
   Pipeline,
+  AnalysisDecimator,
+  YinDifference,
+  YinCmnd,
+  YinSearch,
+  YinInterpolation,
+  VoicedClassifier,
+  PitchSmoother,
+  PitchMarkSearch,
+  AnalysisTotal,
   Count
 };
 struct ProfileStats {
