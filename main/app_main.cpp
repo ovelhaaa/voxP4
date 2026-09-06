@@ -10,7 +10,9 @@ vocal_fx_platform::AudioI2s audio;
 void audio_task(void *) { audio.run(); }
 void pitch_task(void *) {
   for (;;) {
-    if (!vocal_fx_run_pitch_analysis(4))
+    if (vocal_fx_run_pitch_analysis(4))
+      taskYIELD();
+    else
       vTaskDelay(1);
   }
 }
@@ -46,15 +48,18 @@ extern "C" void app_main(void) {
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   if (audio.init(io, cfg.block_size)) {
+    TaskHandle_t audio_task_handle = nullptr;
     if (xTaskCreatePinnedToCore(audio_task, "vocal_audio", 8192, nullptr,
-                                configMAX_PRIORITIES - 2, nullptr,
+                                configMAX_PRIORITIES - 2, &audio_task_handle,
                                 0) != pdPASS) {
       ESP_LOGE("vocal_fx", "failed to create audio task");
       return;
     }
-    if (xTaskCreatePinnedToCore(pitch_task, "vocal_pitch", 8192, nullptr,
+    if (cfg.enable_pitch_analysis &&
+        xTaskCreatePinnedToCore(pitch_task, "vocal_pitch", 8192, nullptr,
                                 configMAX_PRIORITIES - 5, nullptr,
                                 1) != pdPASS) {
+      vTaskDelete(audio_task_handle);
       ESP_LOGE("vocal_fx", "failed to create pitch analysis task");
       return;
     }

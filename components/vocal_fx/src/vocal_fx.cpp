@@ -42,6 +42,26 @@ struct PitchMailbox {
   std::atomic<bool> onset{false}, changed{false};
   std::atomic<uint64_t> timestamp{0};
 } pitch;
+constexpr uint32_t kPitchResetting = 1U << 31U;
+std::atomic<uint32_t> pitch_users{0};
+bool enter_pitch_path() {
+  uint32_t state = pitch_users.load(std::memory_order_acquire);
+  if (state & kPitchResetting)
+    return false;
+  return pitch_users.compare_exchange_strong(
+      state, state + 1U, std::memory_order_acq_rel, std::memory_order_relaxed);
+}
+void leave_pitch_path() {
+  pitch_users.fetch_sub(1U, std::memory_order_release);
+}
+void reset_pitch_analysis() {
+  pitch_users.fetch_or(kPitchResetting, std::memory_order_acq_rel);
+  while ((pitch_users.load(std::memory_order_acquire) & ~kPitchResetting) !=
+         0) {
+  }
+  e.pitch_analysis.reset();
+  pitch_users.store(0, std::memory_order_release);
+}
 void gate_update() {
   e.gate.set(e.gate_t, e.gate_a, e.gate_h, e.gate_r, e.gate_range);
 }
@@ -80,7 +100,16 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   return true;
 }
 bool vocal_fx_init_pitch_analysis(const PitchAnalysisConfig &config) {
-  return e.pitch_analysis.init(config);
+  pitch_users.fetch_or(kPitchResetting, std::memory_order_acq_rel);
+  while ((pitch_users.load(std::memory_order_acquire) & ~kPitchResetting) !=
+         0) {
+  }
+  e.cfg.enable_pitch_analysis = false;
+  const bool initialized = e.pitch_analysis.init(config);
+  if (initialized)
+    e.cfg.enable_pitch_analysis = true;
+  pitch_users.store(0, std::memory_order_release);
+  return initialized;
 }
 void vocal_fx_reset() {
   if (!e.ready)
@@ -92,15 +121,17 @@ void vocal_fx_reset() {
   e.reverb.reset();
   e.limiter.reset();
   if (e.cfg.enable_pitch_analysis)
-    e.pitch_analysis.reset();
+    reset_pitch_analysis();
 }
 void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
   if (!e.ready || !in || !ol || !orr)
     return;
   while (frames) {
     size_t n = std::min<size_t>(frames, VOCAL_FX_MAX_BLOCK_SIZE);
-    if (e.cfg.enable_pitch_analysis)
+    if (e.cfg.enable_pitch_analysis && enter_pitch_path()) {
       e.pitch_analysis.tap(in, n);
+      leave_pitch_path();
+    }
     apply_pending_parameters();
     [[maybe_unused]] uint64_t deadline =
         (uint64_t)(1000000.0 * n / e.cfg.sample_rate);
@@ -281,10 +312,12 @@ PitchResult vocal_fx_latest_pitch() {
   return r;
 }
 size_t vocal_fx_run_pitch_analysis(size_t max_hops) {
-  const size_t count =
-      e.cfg.enable_pitch_analysis ? e.pitch_analysis.run(max_hops) : 0;
+  if (!e.cfg.enable_pitch_analysis || !enter_pitch_path())
+    return 0;
+  const size_t count = e.pitch_analysis.run(max_hops);
   if (count)
     vocal_fx_publish_pitch(e.pitch_analysis.latest());
+  leave_pitch_path();
   return count;
 }
 bool vocal_fx_get_latest_pitch_mark(PitchMark *mark) {

@@ -14,7 +14,8 @@ struct PitchDetectorMeasurement {
 class PitchDetector {
 public:
   virtual ~PitchDetector() = default;
-  virtual bool init(const PitchAnalysisConfig &) = 0;
-  virtual PitchDetectorMeasurement analyze(const float *, size_t, uint64_t) = 0;
+  virtual bool init(const PitchAnalysisConfig &config) = 0;
+  virtual PitchDetectorMeasurement analyze(const float *samples, size_t frames,
+                                           uint64_t timestamp) = 0;
   virtual void reset() = 0;
 };

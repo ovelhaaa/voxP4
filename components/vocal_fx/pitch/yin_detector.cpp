@@ -11,29 +11,38 @@ ProfileSection profile_section(PitchAnalysisProfileSection s) {
 } // namespace
 
 bool YinDetector::init(const PitchAnalysisConfig &c) {
+  initialized_ = false;
   if (!std::isfinite(c.analysis_sample_rate) || c.analysis_sample_rate < 4000 ||
       c.window_size < 64 || c.window_size > kMaxWindow || c.hop_size == 0 ||
-      c.hop_size >= c.window_size || c.min_frequency <= 0 ||
-      c.max_frequency <= c.min_frequency || c.yin_threshold <= 0 ||
-      c.yin_threshold >= 1)
+      c.hop_size >= c.window_size || !std::isfinite(c.min_frequency) ||
+      !std::isfinite(c.max_frequency) || c.min_frequency <= 0 ||
+      c.max_frequency <= c.min_frequency || !std::isfinite(c.yin_threshold) ||
+      c.yin_threshold <= 0 || c.yin_threshold >= 1)
+    return false;
+  const double tau_min = c.analysis_sample_rate / c.max_frequency;
+  const double tau_max = c.analysis_sample_rate / c.min_frequency;
+  if (!std::isfinite(tau_min) || !std::isfinite(tau_max) || tau_min < 2.0 ||
+      tau_max < tau_min || tau_max > kMaxWindow ||
+      tau_max + 1.0 >= c.window_size)
     return false;
   config_ = c;
-  tau_min_ = static_cast<size_t>(c.analysis_sample_rate / c.max_frequency);
-  tau_max_ = static_cast<size_t>(c.analysis_sample_rate / c.min_frequency);
-  return tau_min_ >= 2 && tau_max_ + 1 < c.window_size &&
-         tau_max_ <= kMaxWindow;
+  tau_min_ = static_cast<size_t>(tau_min);
+  tau_max_ = static_cast<size_t>(tau_max);
+  initialized_ = true;
+  return true;
 }
 
 PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
                                               uint64_t) {
   PitchDetectorMeasurement out;
-  if (!x || n < config_.window_size)
+  if (!initialized_ || !x || n < config_.window_size)
     return out;
   double energy = 0;
   for (size_t i = 0; i < n; ++i)
     energy += static_cast<double>(x[i]) * x[i];
   out.rms_db = 10.0f * std::log10(static_cast<float>(energy / n) + 1e-20f);
-  profiler_.begin(profile_section(PitchAnalysisProfileSection::YinDifference));
+  VF_PROFILE_BEGIN(profiler_,
+                   profile_section(PitchAnalysisProfileSection::YinDifference));
   difference_[0] = 0;
   for (size_t tau = 1; tau <= tau_max_ + 1; ++tau) {
     float sum = 0;
@@ -43,8 +52,11 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
     }
     difference_[tau] = sum;
   }
-  profiler_.end(profile_section(PitchAnalysisProfileSection::YinDifference));
-  profiler_.begin(profile_section(PitchAnalysisProfileSection::YinCmnd));
+  VF_PROFILE_END(profiler_,
+                 profile_section(PitchAnalysisProfileSection::YinDifference),
+                 0);
+  VF_PROFILE_BEGIN(profiler_,
+                   profile_section(PitchAnalysisProfileSection::YinCmnd));
   cmnd_[0] = 1;
   double cumulative = 0;
   for (size_t tau = 1; tau <= tau_max_ + 1; ++tau) {
@@ -53,8 +65,10 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
                      ? static_cast<float>(difference_[tau] * tau / cumulative)
                      : 1.0f;
   }
-  profiler_.end(profile_section(PitchAnalysisProfileSection::YinCmnd));
-  profiler_.begin(profile_section(PitchAnalysisProfileSection::YinSearch));
+  VF_PROFILE_END(profiler_,
+                 profile_section(PitchAnalysisProfileSection::YinCmnd), 0);
+  VF_PROFILE_BEGIN(profiler_,
+                   profile_section(PitchAnalysisProfileSection::YinSearch));
   size_t candidate = 0;
   for (size_t tau = tau_min_; tau <= tau_max_; ++tau) {
     if (cmnd_[tau] < config_.yin_threshold) {
@@ -70,8 +84,10 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
       if (cmnd_[tau] < cmnd_[candidate])
         candidate = tau;
   }
-  profiler_.end(profile_section(PitchAnalysisProfileSection::YinSearch));
-  profiler_.begin(
+  VF_PROFILE_END(profiler_,
+                 profile_section(PitchAnalysisProfileSection::YinSearch), 0);
+  VF_PROFILE_BEGIN(
+      profiler_,
       profile_section(PitchAnalysisProfileSection::YinInterpolation));
   // Interpolate the raw difference valley: unlike CMND it is locally
   // symmetric for an integer-period sinusoid and avoids high-F0 bias.
@@ -86,7 +102,9 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
     out.period_samples = period;
     out.frequency_hz = config_.analysis_sample_rate / period;
   }
-  profiler_.end(profile_section(PitchAnalysisProfileSection::YinInterpolation));
+  VF_PROFILE_END(profiler_,
+                 profile_section(PitchAnalysisProfileSection::YinInterpolation),
+                 0);
   return out;
 }
 void YinDetector::reset() {
@@ -95,5 +113,8 @@ void YinDetector::reset() {
   profiler_.reset();
 }
 ProfileStats YinDetector::profile(PitchAnalysisProfileSection s) const {
+  if (s < PitchAnalysisProfileSection::YinDifference ||
+      s > PitchAnalysisProfileSection::YinInterpolation)
+    return {};
   return profiler_.stats(profile_section(s));
 }

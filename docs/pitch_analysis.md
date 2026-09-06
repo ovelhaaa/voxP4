@@ -109,7 +109,7 @@ Profiling uses timestamps without processing-time logging for decimation, YIN
 difference, CMND, search, interpolation, voiced classification, smoothing,
 mark correlation, and total analysis. `pitch_benchmark` prints average/max host
 microseconds; firmware telemetry can convert target microseconds to cycles using
-the measured P4 clock. The subsystem is 114,376 bytes (approximately 112 KiB)
+the measured P4 clock. The subsystem is 114,368 bytes (approximately 112 KiB)
 of static/owned state (16,384-sample input history, 2,048-entry FIFO,
 rolling/scratch/YIN arrays, marks and state). No memory is allocated after
 initialization.

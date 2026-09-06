@@ -41,7 +41,12 @@ void PitchAnalysis::reset() {
   linear_.fill(0);
   audio_.fill(0);
   pitch_history_.fill(0);
-  mark_ring_.fill({});
+  for (auto &mark : mark_ring_) {
+    mark.sequence.store(0, std::memory_order_relaxed);
+    mark.position_low.store(0, std::memory_order_relaxed);
+    mark.position_high.store(0, std::memory_order_relaxed);
+    mark.confidence.store(0, std::memory_order_relaxed);
+  }
   rolling_write_ = rolling_count_ = since_hop_ = 0;
   input_position_ = latest_analysis_position_ = 0;
   audio_end_.store(0);
@@ -49,7 +54,8 @@ void PitchAnalysis::reset() {
   good_frames_ = bad_frames_ = change_frames_ = 0;
   smoothed_cents_ = previous_energy_ = 0;
   history_count_ = history_write_ = 0;
-  mark_write_ = mark_count_ = 0;
+  mark_metadata_.store(0, std::memory_order_relaxed);
+  mark_generation_.store(0, std::memory_order_relaxed);
   previous_mark_ = 0;
   coherent_marks_ = mark_failures_ = 0;
   mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked));
@@ -58,7 +64,7 @@ void PitchAnalysis::reset() {
 void PitchAnalysis::tap(const float *samples, size_t n) {
   if (!samples)
     return;
-  profiler_.begin(ps(PitchAnalysisProfileSection::Decimator));
+  VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::Decimator));
   for (size_t i = 0; i < n; ++i) {
     const float x = std::isfinite(samples[i]) ? samples[i] : 0;
     audio_[input_position_ % kAudioHistory] = x;
@@ -68,7 +74,7 @@ void PitchAnalysis::tap(const float *samples, size_t n) {
     ++input_position_;
   }
   audio_end_.store(input_position_, std::memory_order_release);
-  profiler_.end(ps(PitchAnalysisProfileSection::Decimator));
+  VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Decimator), 0);
 }
 float PitchAnalysis::median_history() const {
   if (!history_count_)
@@ -90,9 +96,10 @@ size_t PitchAnalysis::run(size_t max_hops) {
     since_hop_ = 0;
     for (size_t i = 0; i < config_.window_size; ++i)
       linear_[i] = rolling_[(rolling_write_ + i) % config_.window_size];
-    profiler_.begin(ps(PitchAnalysisProfileSection::Total));
+    VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::Total));
     auto measurement = yin_.analyze(linear_.data(), config_.window_size, 0);
-    profiler_.begin(ps(PitchAnalysisProfileSection::VoicedClassifier));
+    VF_PROFILE_BEGIN(profiler_,
+                     ps(PitchAnalysisProfileSection::VoicedClassifier));
     const bool level_ok = measurement.rms_db > config_.min_input_db;
     const float threshold = voiced_ ? config_.voiced_exit_confidence
                                     : config_.voiced_enter_confidence;
@@ -111,8 +118,9 @@ size_t PitchAnalysis::run(size_t max_hops) {
     const bool onset = energy > 1e-12f && previous_energy_ > 1e-12f &&
                        energy > previous_energy_ * config_.onset_ratio;
     previous_energy_ = .8f * previous_energy_ + .2f * energy;
-    profiler_.end(ps(PitchAnalysisProfileSection::VoicedClassifier));
-    profiler_.begin(ps(PitchAnalysisProfileSection::PitchSmoother));
+    VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::VoicedClassifier),
+                   0);
+    VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchSmoother));
     PitchResult result{};
     result.confidence = measurement.confidence;
     result.voiced = voiced_;
@@ -154,21 +162,23 @@ size_t PitchAnalysis::run(size_t max_hops) {
       result.frequency_hz = cents_to_hz(smoothed_cents_);
       result.period_samples = config_.input_sample_rate / result.frequency_hz;
     }
-    const double center_back = .5 * config_.window_size *
-                               config_.input_sample_rate /
-                               config_.analysis_sample_rate;
+    const double center_back = decimator_.group_delay_input_samples() +
+                               .5 * config_.window_size *
+                                   config_.input_sample_rate /
+                                   config_.analysis_sample_rate;
     result.analysis_timestamp_samples =
         latest_analysis_position_ > center_back
             ? latest_analysis_position_ -
                   static_cast<uint64_t>(std::llround(center_back))
             : 0;
     result.timestamp_samples = result.analysis_timestamp_samples;
-    profiler_.end(ps(PitchAnalysisProfileSection::PitchSmoother));
+    VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchSmoother),
+                   0);
     update_marks(result);
     publish(result);
-    profiler_.end(ps(PitchAnalysisProfileSection::Total),
-                  static_cast<uint64_t>(1000000.0 * config_.hop_size /
-                                        config_.analysis_sample_rate));
+    VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Total),
+                   static_cast<uint64_t>(1000000.0 * config_.hop_size /
+                                         config_.analysis_sample_rate));
     ++completed;
   }
   return completed;
@@ -192,26 +202,41 @@ float PitchAnalysis::audio_at(uint64_t p) const {
   return audio_[p % kAudioHistory];
 }
 void PitchAnalysis::add_mark(PitchMark mark) {
-  mark_seq_.fetch_add(1, std::memory_order_acq_rel);
-  mark_ring_[mark_write_] = mark;
-  mark_write_ = (mark_write_ + 1) % kMarkCapacity;
-  mark_count_ = std::min(mark_count_ + 1, kMarkCapacity);
-  mark_seq_.fetch_add(1, std::memory_order_release);
+  mark_generation_.fetch_add(1, std::memory_order_acq_rel);
+  const uint32_t metadata = mark_metadata_.load(std::memory_order_relaxed);
+  const size_t write = metadata & 0xffffU;
+  const size_t count = metadata >> 16U;
+  auto &destination = mark_ring_[write];
+  destination.sequence.fetch_add(1, std::memory_order_acq_rel);
+  destination.position_low.store(static_cast<uint32_t>(mark.sample_position),
+                                 std::memory_order_relaxed);
+  destination.position_high.store(
+      static_cast<uint32_t>(mark.sample_position >> 32U),
+      std::memory_order_relaxed);
+  destination.confidence.store(mark.confidence, std::memory_order_relaxed);
+  destination.sequence.fetch_add(1, std::memory_order_release);
+  const uint32_t next_write = (write + 1) % kMarkCapacity;
+  const uint32_t next_count = std::min(count + 1, kMarkCapacity);
+  mark_metadata_.store((next_count << 16U) | next_write,
+                       std::memory_order_release);
+  mark_generation_.fetch_add(1, std::memory_order_release);
 }
 void PitchAnalysis::update_marks(const PitchResult &p) {
-  profiler_.begin(ps(PitchAnalysisProfileSection::PitchMarkSearch));
+  VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch));
   if (!p.voiced || p.confidence < config_.voiced_exit_confidence || p.onset) {
     previous_mark_ = 0;
     coherent_marks_ = 0;
     mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
                       std::memory_order_release);
-    profiler_.end(ps(PitchAnalysisProfileSection::PitchMarkSearch));
+    VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
+                   0);
     return;
   }
   const uint64_t available = audio_end_.load(std::memory_order_acquire);
   const size_t period = static_cast<size_t>(std::lround(p.period_samples));
   if (period < 8 || period * 3 >= kAudioHistory) {
-    profiler_.end(ps(PitchAnalysisProfileSection::PitchMarkSearch));
+    VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
+                   0);
     return;
   }
   if (!previous_mark_) {
@@ -223,7 +248,8 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
   } else {
     const uint64_t predicted = previous_mark_ + period;
     if (predicted + period / 2 >= available) {
-      profiler_.end(ps(PitchAnalysisProfileSection::PitchMarkSearch));
+      VF_PROFILE_END(profiler_,
+                     ps(PitchAnalysisProfileSection::PitchMarkSearch), 0);
       return;
     }
     const int radius = std::max<int>(2, period / 5),
@@ -271,45 +297,71 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
                         std::memory_order_release);
     }
   }
-  profiler_.end(ps(PitchAnalysisProfileSection::PitchMarkSearch));
+  VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
+                 0);
+}
+PitchMark PitchAnalysis::read_mark(size_t index) const {
+  const auto &source = mark_ring_[index];
+  PitchMark result;
+  uint32_t before, after;
+  do {
+    before = source.sequence.load(std::memory_order_acquire);
+    if (before & 1U) {
+      after = before;
+      continue;
+    }
+    const uint64_t low = source.position_low.load(std::memory_order_relaxed);
+    const uint64_t high = source.position_high.load(std::memory_order_relaxed);
+    result.sample_position = low | (high << 32U);
+    result.confidence = source.confidence.load(std::memory_order_relaxed);
+    after = source.sequence.load(std::memory_order_acquire);
+  } while (before != after || (after & 1U));
+  return result;
 }
 bool PitchAnalysis::latest_mark(PitchMark *out) const {
   if (!out)
     return false;
-  uint32_t a, b;
-  size_t count, write;
-  PitchMark m;
+  uint32_t before, after;
+  size_t count;
   do {
-    a = mark_seq_.load(std::memory_order_acquire);
-    count = mark_count_;
-    write = mark_write_;
+    before = mark_generation_.load(std::memory_order_acquire);
+    if (before & 1U) {
+      after = before;
+      continue;
+    }
+    const uint32_t metadata = mark_metadata_.load(std::memory_order_acquire);
+    count = metadata >> 16U;
+    const size_t write = metadata & 0xffffU;
     if (count)
-      m = mark_ring_[(write + kMarkCapacity - 1) % kMarkCapacity];
-    b = mark_seq_.load(std::memory_order_acquire);
-  } while (a != b || (a & 1));
-  if (!count)
-    return false;
-  *out = m;
-  return true;
+      *out = read_mark((write + kMarkCapacity - 1) % kMarkCapacity);
+    after = mark_generation_.load(std::memory_order_acquire);
+  } while (before != after || (after & 1U));
+  return count != 0;
 }
 size_t PitchAnalysis::marks(uint64_t start, uint64_t end, PitchMark *out,
                             size_t cap) const {
   if (!out || !cap || start > end)
     return 0;
-  uint32_t a, b;
+  uint32_t before, after;
   size_t n;
   do {
-    a = mark_seq_.load(std::memory_order_acquire);
-    n = 0;
-    const size_t first =
-        (mark_write_ + kMarkCapacity - mark_count_) % kMarkCapacity;
-    for (size_t i = 0; i < mark_count_ && n < cap; ++i) {
-      const auto m = mark_ring_[(first + i) % kMarkCapacity];
-      if (m.sample_position >= start && m.sample_position <= end)
-        out[n++] = m;
+    before = mark_generation_.load(std::memory_order_acquire);
+    if (before & 1U) {
+      after = before;
+      continue;
     }
-    b = mark_seq_.load(std::memory_order_acquire);
-  } while (a != b || (a & 1));
+    const uint32_t metadata = mark_metadata_.load(std::memory_order_acquire);
+    const size_t count = metadata >> 16U;
+    const size_t write = metadata & 0xffffU;
+    const size_t first = (write + kMarkCapacity - count) % kMarkCapacity;
+    n = 0;
+    for (size_t i = 0; i < count && n < cap; ++i) {
+      const auto mark = read_mark((first + i) % kMarkCapacity);
+      if (mark.sample_position >= start && mark.sample_position <= end)
+        out[n++] = mark;
+    }
+    after = mark_generation_.load(std::memory_order_acquire);
+  } while (before != after || (after & 1U));
   return n;
 }
 PitchTrackState PitchAnalysis::track_state() const {
@@ -317,6 +369,8 @@ PitchTrackState PitchAnalysis::track_state() const {
       mark_state_.load(std::memory_order_acquire));
 }
 ProfileStats PitchAnalysis::profile(PitchAnalysisProfileSection s) const {
+  if (s >= PitchAnalysisProfileSection::Count)
+    return {};
   if (s >= PitchAnalysisProfileSection::YinDifference &&
       s <= PitchAnalysisProfileSection::YinInterpolation)
     return yin_.profile(s);
