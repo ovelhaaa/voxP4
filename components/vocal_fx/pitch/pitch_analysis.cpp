@@ -49,7 +49,9 @@ void PitchAnalysis::reset() {
   }
   rolling_write_ = rolling_count_ = since_hop_ = 0;
   input_position_ = latest_analysis_position_ = 0;
-  audio_end_.store(0);
+  audio_end_sequence_.store(0, std::memory_order_relaxed);
+  audio_end_low_.store(0, std::memory_order_relaxed);
+  audio_end_high_.store(0, std::memory_order_relaxed);
   voiced_ = have_smoothed_ = false;
   good_frames_ = bad_frames_ = change_frames_ = 0;
   smoothed_cents_ = previous_energy_ = 0;
@@ -73,14 +75,22 @@ void PitchAnalysis::tap(const float *samples, size_t n) {
       (void)fifo_.push({y, input_position_}); // drop newest on overload
     ++input_position_;
   }
-  audio_end_.store(input_position_, std::memory_order_release);
+  publish_audio_end(input_position_);
   VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Decimator), 0);
 }
 float PitchAnalysis::median_history() const {
   if (!history_count_)
     return smoothed_cents_;
   std::array<float, 8> v = pitch_history_;
-  std::sort(v.begin(), v.begin() + history_count_);
+  for (size_t i = 1; i < history_count_; ++i) {
+    const float value = v[i];
+    size_t j = i;
+    while (j > 0 && v[j - 1] > value) {
+      v[j] = v[j - 1];
+      --j;
+    }
+    v[j] = value;
+  }
   return v[history_count_ / 2];
 }
 size_t PitchAnalysis::run(size_t max_hops) {
@@ -125,8 +135,15 @@ size_t PitchAnalysis::run(size_t max_hops) {
     result.confidence = measurement.confidence;
     result.voiced = voiced_;
     result.onset = onset;
-    if (measurement.frequency_hz > 0 &&
-        std::isfinite(measurement.frequency_hz)) {
+    const bool reliable_measurement =
+        level_ok && measurement.confidence >= config_.voiced_exit_confidence &&
+        measurement.frequency_hz > 0 && std::isfinite(measurement.frequency_hz);
+    if (!voiced_) {
+      have_smoothed_ = false;
+      history_count_ = history_write_ = 0;
+      change_frames_ = 0;
+    }
+    if (reliable_measurement) {
       float cents = hz_to_cents(measurement.frequency_hz);
       if (have_smoothed_) {
         const float historical = median_history();
@@ -159,6 +176,8 @@ size_t PitchAnalysis::run(size_t max_hops) {
         history_write_ = (history_write_ + 1) % pitch_history_.size();
         history_count_ = std::min(history_count_ + 1, pitch_history_.size());
       }
+    }
+    if (have_smoothed_) {
       result.frequency_hz = cents_to_hz(smoothed_cents_);
       result.period_samples = config_.input_sample_rate / result.frequency_hz;
     }
@@ -201,6 +220,30 @@ PitchResult PitchAnalysis::latest() const {
 float PitchAnalysis::audio_at(uint64_t p) const {
   return audio_[p % kAudioHistory];
 }
+void PitchAnalysis::publish_audio_end(uint64_t position) {
+  audio_end_sequence_.fetch_add(1, std::memory_order_acq_rel);
+  audio_end_low_.store(static_cast<uint32_t>(position),
+                       std::memory_order_relaxed);
+  audio_end_high_.store(static_cast<uint32_t>(position >> 32U),
+                        std::memory_order_relaxed);
+  audio_end_sequence_.fetch_add(1, std::memory_order_release);
+}
+uint64_t PitchAnalysis::audio_end() const {
+  uint32_t before = 0, after = 0;
+  uint64_t result = 0;
+  do {
+    before = audio_end_sequence_.load(std::memory_order_acquire);
+    if (before & 1U) {
+      after = before;
+      continue;
+    }
+    const uint64_t low = audio_end_low_.load(std::memory_order_relaxed);
+    const uint64_t high = audio_end_high_.load(std::memory_order_relaxed);
+    result = low | (high << 32U);
+    after = audio_end_sequence_.load(std::memory_order_acquire);
+  } while (before != after || (after & 1U));
+  return result;
+}
 void PitchAnalysis::add_mark(PitchMark mark) {
   mark_generation_.fetch_add(1, std::memory_order_acq_rel);
   const uint32_t metadata = mark_metadata_.load(std::memory_order_relaxed);
@@ -232,7 +275,7 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
                    0);
     return;
   }
-  const uint64_t available = audio_end_.load(std::memory_order_acquire);
+  const uint64_t available = audio_end();
   const size_t period = static_cast<size_t>(std::lround(p.period_samples));
   if (period < 8 || period * 3 >= kAudioHistory) {
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
@@ -246,55 +289,67 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
     mark_state_.store(static_cast<uint8_t>(PitchTrackState::Acquiring),
                       std::memory_order_release);
   } else {
-    const uint64_t predicted = previous_mark_ + period;
-    if (predicted + period / 2 >= available) {
-      VF_PROFILE_END(profiler_,
-                     ps(PitchAnalysisProfileSection::PitchMarkSearch), 0);
-      return;
+    const uint64_t boundary = p.analysis_timestamp_samples;
+    if (previous_mark_ + period + kAudioHistory <= available) {
+      previous_mark_ = boundary;
+      coherent_marks_ = 1;
+      mark_failures_ = 0;
+      add_mark({previous_mark_, p.confidence * .5f});
+      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Acquiring),
+                        std::memory_order_release);
     }
     const int radius = std::max<int>(2, period / 5),
               window = std::max<int>(4, period / 2);
-    float best = -2;
-    int best_offset = 0;
-    // Hotspot candidate for ESP32-P4 Xai/SIMD.
-    for (int offset = -radius; offset <= radius; ++offset) {
-      const int64_t candidate = static_cast<int64_t>(predicted) + offset;
-      if (candidate < window || previous_mark_ < static_cast<uint64_t>(window))
-        continue;
-      float dot = 0, aa = 0, bb = 0;
-      for (int i = -window; i < 0; ++i) {
-        const float a = audio_at(previous_mark_ + i),
-                    b = audio_at(candidate + i);
-        dot += a * b;
-        aa += a * a;
-        bb += b * b;
+    while (previous_mark_ + period <= boundary) {
+      const uint64_t predicted = previous_mark_ + period;
+      if (predicted + period / 2 >= available)
+        break;
+      float best = -2;
+      int best_offset = 0;
+      // Hotspot candidate for ESP32-P4 Xai/SIMD.
+      for (int offset = -radius; offset <= radius; ++offset) {
+        const int64_t candidate = static_cast<int64_t>(predicted) + offset;
+        if (candidate < window ||
+            previous_mark_ < static_cast<uint64_t>(window))
+          continue;
+        float dot = 0, aa = 0, bb = 0;
+        for (int i = -window; i < 0; ++i) {
+          const float a = audio_at(previous_mark_ + i),
+                      b = audio_at(candidate + i);
+          dot += a * b;
+          aa += a * a;
+          bb += b * b;
+        }
+        const float score = dot / std::sqrt(std::max(aa * bb, 1e-20f));
+        if (score > best) {
+          best = score;
+          best_offset = offset;
+        }
       }
-      const float score = dot / std::sqrt(std::max(aa * bb, 1e-20f));
-      if (score > best) {
-        best = score;
-        best_offset = offset;
+      if (best > .35f) {
+        previous_mark_ = static_cast<uint64_t>(static_cast<int64_t>(predicted) +
+                                               best_offset);
+        const float distance =
+            1.0f - std::fabs(static_cast<float>(best_offset)) / (radius + 1);
+        add_mark({previous_mark_,
+                  std::clamp(.5f * p.confidence + .35f * std::max(best, 0.0f) +
+                                 .15f * distance,
+                             0.0f, 1.0f)});
+        coherent_marks_ =
+            static_cast<uint8_t>(std::min<int>(255, coherent_marks_ + 1));
+        mark_failures_ = 0;
+        if (coherent_marks_ >= 3)
+          mark_state_.store(static_cast<uint8_t>(PitchTrackState::Locked),
+                            std::memory_order_release);
+      } else {
+        if (++mark_failures_ >= 3) {
+          previous_mark_ = 0;
+          coherent_marks_ = mark_failures_ = 0;
+          mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
+                            std::memory_order_release);
+        }
+        break;
       }
-    }
-    if (best > .35f) {
-      previous_mark_ =
-          static_cast<uint64_t>(static_cast<int64_t>(predicted) + best_offset);
-      const float distance =
-          1.0f - std::fabs(static_cast<float>(best_offset)) / (radius + 1);
-      add_mark({previous_mark_,
-                std::clamp(.5f * p.confidence + .35f * std::max(best, 0.0f) +
-                               .15f * distance,
-                           0.0f, 1.0f)});
-      coherent_marks_ =
-          static_cast<uint8_t>(std::min<int>(255, coherent_marks_ + 1));
-      mark_failures_ = 0;
-      if (coherent_marks_ >= 3)
-        mark_state_.store(static_cast<uint8_t>(PitchTrackState::Locked),
-                          std::memory_order_release);
-    } else if (++mark_failures_ >= 3) {
-      previous_mark_ = 0;
-      coherent_marks_ = mark_failures_ = 0;
-      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
-                        std::memory_order_release);
     }
   }
   VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
@@ -322,7 +377,7 @@ bool PitchAnalysis::latest_mark(PitchMark *out) const {
   if (!out)
     return false;
   uint32_t before, after;
-  size_t count;
+  size_t count = 0;
   do {
     before = mark_generation_.load(std::memory_order_acquire);
     if (before & 1U) {
@@ -343,7 +398,7 @@ size_t PitchAnalysis::marks(uint64_t start, uint64_t end, PitchMark *out,
   if (!out || !cap || start > end)
     return 0;
   uint32_t before, after;
-  size_t n;
+  size_t n = 0;
   do {
     before = mark_generation_.load(std::memory_order_acquire);
     if (before & 1U) {

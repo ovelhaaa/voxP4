@@ -36,6 +36,8 @@ private:
     std::atomic<float> confidence{0};
   };
   float audio_at(uint64_t position) const;
+  uint64_t audio_end() const;
+  void publish_audio_end(uint64_t position);
   PitchMark read_mark(size_t index) const;
   void publish(const PitchResult &);
   void update_marks(const PitchResult &);
@@ -48,7 +50,8 @@ private:
   std::array<float, YinDetector::kMaxWindow> rolling_{}, linear_{};
   size_t rolling_write_ = 0, rolling_count_ = 0, since_hop_ = 0;
   std::array<float, kAudioHistory> audio_{};
-  std::atomic<uint64_t> audio_end_{0};
+  std::atomic<uint32_t> audio_end_sequence_{0}, audio_end_low_{0},
+      audio_end_high_{0};
   uint64_t input_position_ = 0, latest_analysis_position_ = 0;
   uint64_t latency_samples_ = 0;
   bool voiced_ = false;

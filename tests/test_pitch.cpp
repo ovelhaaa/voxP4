@@ -147,6 +147,82 @@ int main() {
     backlog.tap(block.data(), block.size());
   CHECK(backlog.run(4) == 4);
   CHECK(backlog.run(4) == 4);
+  auto high_frequency_marks_are_current = [](float frequency) {
+    PitchAnalysis tracker;
+    PitchAnalysisConfig cfg{};
+    if (!tracker.init(cfg))
+      return false;
+    float samples[64];
+    uint64_t position = 0;
+    for (int block_index = 0; block_index < 750; ++block_index) {
+      for (float &sample : samples)
+        sample = .5f * std::sin(2 * pi * frequency * position++ / 48000);
+      tracker.tap(samples, 64);
+      tracker.run(8);
+    }
+    PitchMark latest;
+    PitchMark snapshot[64];
+    const auto pitch = tracker.latest();
+    const size_t count = tracker.marks(0, position, snapshot, 64);
+    if (!tracker.latest_mark(&latest) || count < 32 || !pitch.voiced)
+      return false;
+    const float expected_period = 48000 / frequency;
+    const uint64_t lag =
+        latest.sample_position > pitch.analysis_timestamp_samples
+            ? latest.sample_position - pitch.analysis_timestamp_samples
+            : pitch.analysis_timestamp_samples - latest.sample_position;
+    if (lag > 1.5f * expected_period)
+      return false;
+    for (size_t i = 1; i < count; ++i) {
+      const float period = static_cast<float>(snapshot[i].sample_position -
+                                              snapshot[i - 1].sample_position);
+      if (std::fabs(period - expected_period) > .3f * expected_period)
+        return false;
+    }
+    return true;
+  };
+  CHECK(high_frequency_marks_are_current(440));
+  CHECK(high_frequency_marks_are_current(1000));
+
+  PitchAnalysis reacquisition;
+  CHECK(reacquisition.init(c));
+  uint64_t reacquisition_position = 0;
+  auto feed_reacquisition = [&](float frequency, size_t sample_count) {
+    for (size_t processed = 0; processed < sample_count;) {
+      const size_t frames = std::min(block.size(), sample_count - processed);
+      for (size_t i = 0; i < frames; ++i) {
+        block[i] = frequency > 0
+                       ? .5f * std::sin(2 * pi * frequency *
+                                        reacquisition_position / 48000)
+                       : 0;
+        ++reacquisition_position;
+      }
+      reacquisition.tap(block.data(), frames);
+      reacquisition.run(8);
+      processed += frames;
+    }
+  };
+  feed_reacquisition(220, 24000);
+  CHECK(reacquisition.latest().voiced);
+  feed_reacquisition(0, 12032);
+  CHECK(!reacquisition.latest().voiced);
+  CHECK(reacquisition.latest().frequency_hz == 0);
+  float first_reacquired_hz = 0;
+  for (int block_index = 0; block_index < 100 && first_reacquired_hz == 0;
+       ++block_index) {
+    for (float &sample : block) {
+      sample = .5f * std::sin(2 * pi * 220 * reacquisition_position / 48000);
+      ++reacquisition_position;
+    }
+    reacquisition.tap(block.data(), block.size());
+    reacquisition.run(8);
+    const auto result = reacquisition.latest();
+    if (result.voiced)
+      first_reacquired_hz = result.frequency_hz;
+  }
+  CHECK(first_reacquired_hz > 0);
+  CHECK(std::fabs(cents(first_reacquired_hz, 220)) < 10);
+
   auto run_signal = [](auto generator, int frames) {
     PitchAnalysis tracker;
     PitchAnalysisConfig cfg{};

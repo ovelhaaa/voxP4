@@ -42,7 +42,9 @@ Voicing requires both window RMS above -55 dBFS and confidence. Entry uses 0.80
 for two frames; retention uses 0.60 and release takes three bad frames. Onset is
 a configurable short-term energy ratio (default 2.5) against the smoothed prior
 energy. This classifier therefore does not equate a nonzero frequency with
-voicing.
+voicing. Low-level or low-confidence YIN fallback candidates never update the
+smoother; leaving the voiced state clears its pitch history so reacquisition
+starts from the new reliable measurement rather than a silence-biased value.
 
 Reliable pitch is retained in an eight-frame history. The tracker converts Hz
 to cents relative to 440 Hz, rejects a ±1200-cent candidate when its octave is
@@ -73,7 +75,9 @@ the analysis task runs; it is intentionally kept separate from the fixed value.
 The tracker exposes `Unlocked`, `Acquiring`, and `Locked`. A first reliable mark
 anchors at the result timestamp. Each subsequent mark is predicted one smoothed
 period later and searched within ±20% of the period. Normalized correlation of
-the preceding half-cycle chooses the local candidate. Confidence combines pitch
+the preceding half-cycle chooses the local candidate. Every elapsed period is
+emitted up to the current analysis timestamp, including multiple marks per hop
+above the 200 Hz hop rate. Confidence combines pitch
 confidence (50%), correlation (35%), and prediction distance (15%). Three
 coherent marks lock tracking; unvoiced input, low confidence, onset, or three
 failed searches unlock it. A seqlock-protected 64-entry ring supports latest
@@ -109,7 +113,7 @@ Profiling uses timestamps without processing-time logging for decimation, YIN
 difference, CMND, search, interpolation, voiced classification, smoothing,
 mark correlation, and total analysis. `pitch_benchmark` prints average/max host
 microseconds; firmware telemetry can convert target microseconds to cycles using
-the measured P4 clock. The subsystem is 114,368 bytes (approximately 112 KiB)
+the measured P4 clock. The subsystem is 114,376 bytes (approximately 112 KiB)
 of static/owned state (16,384-sample input history, 2,048-entry FIFO,
 rolling/scratch/YIN arrays, marks and state). No memory is allocated after
 initialization.
@@ -125,12 +129,12 @@ initialization.
 | Pitch mark tracker | TBD hardware | TBD hardware | TBD | TBD |
 | Total analysis | TBD hardware | TBD hardware | TBD | TBD |
 
-The host regression currently uses 512/60 at 12 kHz. It measured 506.12 us/hop
-(10.1% of the hop): difference 306.61 us average, CMND 2.21 us, search 0.28 us,
-interpolation 0.11 us, classifier 0.13 us, smoothing 0.69 us, pitch-mark search
-156.92 us, and instrumented total 470.63 us average/4017 us maximum. Target CPU
-percentage and worst-case cycles must be filled from ESP32-P4 release firmware;
-host timings are regression observations, not target measurements.
+The host regression currently uses 512/60 at 12 kHz. After emitting every pitch
+period it measured 1.10 ms/hop (21.9% of the 5 ms hop) in a representative run,
+including 624 us average for the YIN difference function and 392 us for pitch
+mark search. Target CPU percentage and worst-case cycles must be filled from
+ESP32-P4 release firmware; host timings are regression observations, not target
+measurements.
 
 ## Offline CSV and next work
 
