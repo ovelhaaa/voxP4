@@ -7,3 +7,5 @@
 /build-asan/
 
 /build-noexcept/
+
+/tests/output/

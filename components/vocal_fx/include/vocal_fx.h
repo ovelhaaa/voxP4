@@ -9,6 +9,13 @@ void vocal_fx_reset();
 void vocal_fx_process(const float *input, float *output_l, float *output_r,
                       size_t frames);
 void vocal_fx_set_parameter(VocalFxParameter parameter, float value);
+void vocal_fx_set_pitch_shift_enabled(bool enabled);
+void vocal_fx_set_pitch_shift_semitones(float semitones);
+void vocal_fx_set_pitch_shift_mix(float wet);
+uint32_t vocal_fx_pitch_shift_latency_samples();
+PitchShiftTelemetry vocal_fx_pitch_shift_telemetry();
+VocalFxProfileStats
+vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection section);
 void vocal_fx_publish_pitch(const PitchResult &result);
 PitchResult vocal_fx_latest_pitch();
 // Called by the lower-priority analysis task; never by the audio callback.

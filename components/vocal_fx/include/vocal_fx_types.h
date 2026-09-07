@@ -26,7 +26,51 @@ enum class VocalFxParameter : uint16_t {
   EnableGate,
   EnableCompressor,
   EnableDelay,
-  EnableReverb
+  EnableReverb,
+  PitchShiftEnabled,
+  PitchShiftSemitones,
+  PitchShiftWet
+};
+
+enum class PitchShiftMode : uint8_t { Bypass, FixedInterval };
+enum class PitchShiftState : uint8_t {
+  Bypass,
+  WaitingForAnalysis,
+  Acquiring,
+  Active,
+  Fallback
+};
+
+struct PitchShiftConfig {
+  bool enabled = false;
+  float semitones = 0.0f;
+  float wet = 1.0f;
+  float smoothing_ms = 30.0f;
+};
+
+enum class PitchShiftProfileSection : uint8_t {
+  SourceLookup,
+  GrainPreparation,
+  WindowOla,
+  Normalization,
+  Unvoiced,
+  Crossfade,
+  Total,
+  Count
+};
+
+struct PitchShiftTelemetry {
+  uint64_t blocks = 0;
+  uint64_t grains = 0;
+  uint32_t max_grains_per_block = 0;
+  uint64_t pitch_mark_underflows = 0;
+  uint64_t audio_history_underflows = 0;
+  uint64_t psola_resyncs = 0;
+  uint64_t fallback_frames = 0;
+  uint64_t max_grains_exceeded = 0;
+  uint64_t invalid_pitch = 0;
+  uint64_t invalid_mark = 0;
+  PitchShiftState state = PitchShiftState::Bypass;
 };
 
 struct PitchResult {
