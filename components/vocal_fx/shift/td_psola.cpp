@@ -15,9 +15,31 @@ ProfileSection section(PitchShiftProfileSection s) {
 }
 } // namespace
 
-bool TdPsola::init(float rate, const PitchShiftConfig &config) {
+void SharedPitchShiftResources::init() {
+  for (size_t i = 0; i < hann_.size(); ++i)
+    hann_[i] = .5f - .5f * std::cos(2.0f * kPi * i / (hann_.size() - 1));
+  reset();
+}
+void SharedPitchShiftResources::reset() { history_.fill(0); input_end_ = 0; }
+void SharedPitchShiftResources::push(const float *input, size_t frames) {
+  for (size_t i = 0; i < frames; ++i)
+    history_[(input_end_ + i) & (kHistorySize - 1)] =
+        std::isfinite(input[i]) ? input[i] : 0.0f;
+  input_end_ += frames;
+}
+bool SharedPitchShiftResources::available(uint64_t first, uint64_t last) const {
+  const uint64_t oldest = input_end_ > kHistorySize ? input_end_ - kHistorySize : 0;
+  return first >= oldest && last < input_end_ && first <= last;
+}
+float SharedPitchShiftResources::sample(uint64_t p) const {
+  return history_[p & (kHistorySize - 1)];
+}
+
+bool TdPsola::init(float rate, const PitchShiftConfig &config,
+                   SharedPitchShiftResources *shared) {
   if (!std::isfinite(rate) || rate < 8000 || rate > 192000)
     return false;
+  if (!shared) return false;
   const PitchShiftConfig defaults{};
   const float smoothing_ms = std::isfinite(config.smoothing_ms)
                                  ? config.smoothing_ms
@@ -26,13 +48,12 @@ bool TdPsola::init(float rate, const PitchShiftConfig &config) {
       std::isfinite(config.semitones) ? config.semitones : defaults.semitones;
   const float wet = std::isfinite(config.wet) ? config.wet : defaults.wet;
   sample_rate_ = rate;
+  resources_ = shared;
   history_offset_ = static_cast<uint32_t>(std::lround(rate * 0.032));
   smoothing_ms_ = std::clamp(smoothing_ms, 1.0f, 500.0f);
   target_enabled_ = config.enabled;
   target_semitones_ = std::clamp(semitones, -12.0f, 12.0f);
   target_wet_ = std::clamp(wet, 0.0f, 1.0f);
-  for (size_t i = 0; i < hann_.size(); ++i)
-    hann_[i] = .5f - .5f * std::cos(2.0f * kPi * i / (hann_.size() - 1));
   reset();
   return true;
 }
@@ -41,12 +62,12 @@ void TdPsola::clear_ola() {
   norm_.fill(0);
 }
 void TdPsola::reset() {
-  history_.fill(0);
   clear_ola();
   profiler_.reset();
-  input_end_ = output_position_ = 0;
+  output_position_ = 0;
   next_synthesis_mark_ = 0;
   have_cursor_ = false;
+  block_has_psola_ = false;
   current_semitones_ = target_semitones_;
   current_wet_ = target_wet_;
   psola_gain_ = 0;
@@ -62,17 +83,24 @@ void TdPsola::set_semitones(float value) {
   if (std::isfinite(value))
     target_semitones_ = std::clamp(value, -12.0f, 12.0f);
 }
+void TdPsola::set_ratio(float ratio) {
+  if (std::isfinite(ratio) && ratio > 0.0f)
+    set_semitones(12.0f * std::log2(ratio));
+}
+void TdPsola::set_smoothing(float value) {
+  if (std::isfinite(value)) smoothing_ms_ = std::clamp(value, 1.0f, 500.0f);
+}
 void TdPsola::set_wet(float value) {
   if (std::isfinite(value))
     target_wet_ = std::clamp(value, 0.0f, 1.0f);
 }
 float TdPsola::history_at(uint64_t p) const {
-  return history_[p & (kHistorySize - 1)];
+  return resources_->sample(p);
 }
 bool TdPsola::history_available(uint64_t first, uint64_t last) const {
   const uint64_t oldest =
-      input_end_ > kHistorySize ? input_end_ - kHistorySize : 0;
-  return first >= oldest && last < input_end_ && first <= last;
+      resources_->input_end() > kHistorySize ? resources_->input_end() - kHistorySize : 0;
+  return first >= oldest && last < resources_->input_end() && first <= last;
 }
 bool TdPsola::select_mark(double source, const PitchMark *marks, size_t count,
                           size_t &best, float &period) const {
@@ -132,7 +160,7 @@ bool TdPsola::add_grain(double destination, double source,
       continue;
     const size_t wi = static_cast<size_t>(
         (static_cast<int64_t>(n + half) * (kHannSize - 1)) / (2 * half));
-    const float w = hann_[wi];
+    const float w = resources_->window(wi);
     const size_t oi = static_cast<uint64_t>(absolute) & (kOlaSize - 1);
     ola_[oi] +=
         history_at(static_cast<uint64_t>(static_cast<int64_t>(center) + n)) * w;
@@ -146,13 +174,17 @@ void TdPsola::process(const float *input, float *output, size_t frames,
                       const PitchMark *marks, size_t mark_count) {
   if (!input || !output || !frames)
     return;
+  resources_->push(input, frames);
+  process_shared(input, output, frames, pitch, track, marks, mark_count);
+}
+void TdPsola::process_shared(const float *input, float *output, size_t frames,
+                      const PitchResult &pitch, PitchTrackState track,
+                      const PitchMark *marks, size_t mark_count) {
+  if (!input || !output || !frames) return;
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::Total));
+  block_has_psola_ = false;
   const uint64_t block_start = output_position_,
                  block_end = block_start + frames;
-  for (size_t i = 0; i < frames; ++i)
-    history_[(input_end_ + i) & (kHistorySize - 1)] =
-        std::isfinite(input[i]) ? input[i] : 0.0f;
-  input_end_ += frames;
   ++telemetry_.blocks;
   if (!target_enabled_) {
     state_ = PitchShiftState::Bypass;
@@ -245,7 +277,12 @@ void TdPsola::process(const float *input, float *output, size_t frames,
     const float fallback = history_ready && history_available(source, source)
                                ? history_at(source)
                                : 0.0f;
-    output[i] = norm_[oi] > 1e-5f ? ola_[oi] / norm_[oi] : fallback;
+    if (norm_[oi] > 1e-5f) {
+      output[i] = ola_[oi] / norm_[oi];
+      block_has_psola_ = true;
+    } else {
+      output[i] = fallback;
+    }
     ola_[oi] = norm_[oi] = 0;
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Normalization),

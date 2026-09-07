@@ -106,6 +106,10 @@ int main() {
     CHECK(std::isfinite(l) && std::isfinite(r));
   }
   d.reset();
+  d.set_mix(1, 1);
+  d.process_wet(1, l, r);
+  CHECK(l == 0 && r == 0); // parallel return never contains the dry input
+  d.reset();
   for (int i = 0; i < 5000; i++)
     d.process(i % 97 == 0 ? .1f : 0, l, r);
   float h[8] = {1, 0, 0, 0, 0, 0, 0, 0};

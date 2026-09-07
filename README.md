@@ -79,6 +79,9 @@ for listening (48 kHz PCM16 and float32 inputs). See
 [`docs/benchmarking.md`](docs/benchmarking.md) for target profiling, memory,
 latency, deadline, and impulse-response procedures.
 
-The optimized quality range is currently ±7 semitones; the API clamps to ±12.
-Scale/MIDI harmony, a second voice, WSOLA, formant preservation, correction,
-and vocoder remain intentionally unimplemented.
+The engine now provides two TD-PSOLA harmony voices with shared source history,
+fixed intervals, major/natural-minor diatonic targets, preserved cents
+deviation, hysteretic note identity, and lock-free MIDI chord targets. See
+[`docs/harmony_engine.md`](docs/harmony_engine.md). The optimized quality range
+is currently ±7 semitones; the API clamps synthesis to ±12. WSOLA, formant
+preservation, correction, and vocoder remain intentionally unimplemented.

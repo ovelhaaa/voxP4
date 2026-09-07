@@ -1,6 +1,7 @@
 #pragma once
 #include "vocal_fx_config.h"
 #include "vocal_fx_types.h"
+#include "harmony_engine.h"
 #include <cstddef>
 
 bool vocal_fx_init(const VocalFxConfig &config);
@@ -12,6 +13,19 @@ void vocal_fx_set_parameter(VocalFxParameter parameter, float value);
 void vocal_fx_set_pitch_shift_enabled(bool enabled);
 void vocal_fx_set_pitch_shift_semitones(float semitones);
 void vocal_fx_set_pitch_shift_mix(float wet);
+void vocal_fx_set_harmony_mode(HarmonyMode mode);
+void vocal_fx_set_key(uint8_t chromatic_root);
+void vocal_fx_set_scale(ScaleType scale);
+void vocal_fx_set_harmony_enabled(size_t voice, bool enabled);
+void vocal_fx_set_harmony_interval(size_t voice, float semitones);
+void vocal_fx_set_harmony_degree(size_t voice, int degrees);
+void vocal_fx_set_harmony_gain(size_t voice, float gain);
+void vocal_fx_set_harmony_pan(size_t voice, float pan);
+void vocal_fx_set_harmony_smoothing(size_t voice, float milliseconds);
+void vocal_fx_midi_note_on(uint8_t note, uint8_t velocity);
+void vocal_fx_midi_note_off(uint8_t note);
+void vocal_fx_midi_all_notes_off();
+PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t voice);
 uint32_t vocal_fx_pitch_shift_latency_samples();
 PitchShiftTelemetry vocal_fx_pitch_shift_telemetry();
 VocalFxProfileStats

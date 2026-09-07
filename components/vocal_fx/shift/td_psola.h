@@ -8,26 +8,52 @@
 
 // Single-writer, absolute-addressed historical TD-PSOLA renderer. All storage
 // is owned by the object and process() performs no allocation.
+class SharedPitchShiftResources {
+public:
+  static constexpr size_t kHistorySize = 16384;
+  static constexpr size_t kHannSize = 2048;
+  void init();
+  void reset();
+  void push(const float *input, size_t frames);
+  bool available(uint64_t first, uint64_t last) const;
+  float sample(uint64_t position) const;
+  uint64_t input_end() const { return input_end_; }
+  float window(size_t index) const { return hann_[index]; }
+  size_t memory_bytes() const { return sizeof(*this); }
+private:
+  std::array<float, kHistorySize> history_{};
+  std::array<float, kHannSize> hann_{};
+  uint64_t input_end_ = 0;
+};
+
 class TdPsola {
 public:
   static_assert(ATOMIC_INT_LOCK_FREE == 2,
                 "pitch-shift telemetry requires lock-free 32-bit atomics");
-  static constexpr size_t kHistorySize = 16384;
+  static constexpr size_t kHistorySize = SharedPitchShiftResources::kHistorySize;
   static constexpr size_t kOlaSize = 4096;
-  static constexpr size_t kHannSize = 2048;
+  static constexpr size_t kHannSize = SharedPitchShiftResources::kHannSize;
   static constexpr size_t kMaxMarks = 64;
   static constexpr size_t kMaxGrainsPerBlock = 8;
   static constexpr uint32_t kHistoryOffset = 1536; // 32 ms at 48 kHz
 
-  bool init(float sample_rate, const PitchShiftConfig &config);
+  bool init(float sample_rate, const PitchShiftConfig &config,
+            SharedPitchShiftResources *shared);
   void reset();
   void set_enabled(bool enabled) { target_enabled_ = enabled; }
   void set_semitones(float semitones);
+  void set_ratio(float ratio);
+  void set_smoothing(float milliseconds);
   void set_wet(float wet);
   bool enabled() const { return target_enabled_; }
+  bool has_usable_output() const { return block_has_psola_; }
   void process(const float *input, float *output, size_t frames,
                const PitchResult &pitch, PitchTrackState track,
                const PitchMark *marks, size_t mark_count);
+  // The owner writes the common history once, then renders every voice.
+  void process_shared(const float *input, float *output, size_t frames,
+                      const PitchResult &pitch, PitchTrackState track,
+                      const PitchMark *marks, size_t mark_count);
   uint32_t latency_samples() const { return history_offset_; }
   size_t memory_bytes() const { return sizeof(*this); }
   PitchShiftTelemetry telemetry() const;
@@ -57,12 +83,12 @@ private:
 
   float sample_rate_ = 48000.0f;
   uint32_t history_offset_ = kHistoryOffset;
-  std::array<float, kHistorySize> history_{};
   std::array<float, kOlaSize> ola_{}, norm_{};
-  std::array<float, kHannSize> hann_{};
-  uint64_t input_end_ = 0, output_position_ = 0;
+  SharedPitchShiftResources *resources_ = nullptr;
+  uint64_t output_position_ = 0;
   double next_synthesis_mark_ = 0.0;
   bool have_cursor_ = false, target_enabled_ = false;
+  bool block_has_psola_ = false;
   float target_semitones_ = 0, current_semitones_ = 0;
   float target_wet_ = 1, current_wet_ = 1;
   float smoothing_ms_ = 30, psola_gain_ = 0, active_mix_ = 0;

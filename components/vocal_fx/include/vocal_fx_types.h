@@ -30,6 +30,13 @@ enum class VocalFxParameter : uint16_t {
   PitchShiftEnabled,
   PitchShiftSemitones,
   PitchShiftWet
+  ,HarmonyMode, HarmonyKey, HarmonyScale,
+  HarmonyVoice1Enabled, HarmonyVoice2Enabled,
+  HarmonyVoice1Interval, HarmonyVoice2Interval,
+  HarmonyVoice1Degree, HarmonyVoice2Degree,
+  HarmonyVoice1Gain, HarmonyVoice2Gain,
+  HarmonyVoice1Pan, HarmonyVoice2Pan,
+  HarmonyVoice1Smoothing, HarmonyVoice2Smoothing
 };
 
 enum class PitchShiftMode : uint8_t { Bypass, FixedInterval };

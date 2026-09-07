@@ -46,9 +46,10 @@ float estimate(const std::vector<float> &x, size_t begin, float expected) {
   return frequency;
 }
 void accuracy(float semitones) {
+  SharedPitchShiftResources shared; shared.init();
   TdPsola p;
   PitchShiftConfig c{true, semitones, 1, 1};
-  require(p.init(kRate, c), "init");
+  require(p.init(kRate, c, &shared), "init");
   constexpr size_t total = 48000 * 3, block = 64;
   std::vector<float> in(total), out(total);
   const float f = 220, period = kRate / f;
@@ -102,9 +103,10 @@ void transition_safety() {
       in[i] = .3f * std::sin(phase);
     }
   }
+  SharedPitchShiftResources shared; shared.init();
   TdPsola p;
   PitchShiftConfig c{true, 4, 1, 30};
-  require(p.init(kRate, c), "transition init");
+  require(p.init(kRate, c, &shared), "transition init");
   for (size_t pos = 0; pos < total; pos += block) {
     if (pos == 12000)
       p.set_semitones(7);
@@ -138,6 +140,7 @@ void transition_safety() {
 } // namespace
 int main() {
   for (int field = 0; field < 3; ++field) {
+    SharedPitchShiftResources invalid_shared; invalid_shared.init();
     TdPsola invalid;
     PitchShiftConfig bad{true, 4, 1, 30};
     const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -147,7 +150,7 @@ int main() {
       bad.wet = nan;
     else
       bad.smoothing_ms = nan;
-    require(invalid.init(kRate, bad),
+    require(invalid.init(kRate, bad, &invalid_shared),
             "replace non-finite config with defaults");
     std::array<float, 64> input{}, output{};
     PitchResult no_pitch{};
@@ -159,9 +162,31 @@ int main() {
   }
   for (float st : {-7.f, -5.f, -4.f, -3.f, 3.f, 4.f, 5.f, 7.f})
     accuracy(st);
+  // Two independent synthesis timelines share one aggressively wrapping source
+  // history; neither voice owns or writes a duplicate history.
+  SharedPitchShiftResources dual_shared;
+  dual_shared.init();
+  TdPsola lower, upper;
+  PitchShiftConfig lower_cfg{true, -3, 1, 30}, upper_cfg{true, 7, 1, 30};
+  require(lower.init(kRate, lower_cfg, &dual_shared) &&
+              upper.init(kRate, upper_cfg, &dual_shared),
+          "dual shared init");
+  std::array<float,64> dual_in{}, dual_a{}, dual_b{};
+  PitchResult dual_pitch{};
+  for(int i=0;i<5000;++i){
+    dual_shared.push(dual_in.data(),dual_in.size());
+    lower.process_shared(dual_in.data(),dual_a.data(),dual_in.size(),dual_pitch,
+                         PitchTrackState::Unlocked,nullptr,0);
+    upper.process_shared(dual_in.data(),dual_b.data(),dual_in.size(),dual_pitch,
+                         PitchTrackState::Unlocked,nullptr,0);
+  }
+  require(std::all_of(dual_a.begin(),dual_a.end(),[](float x){return std::isfinite(x);}) &&
+              std::all_of(dual_b.begin(),dual_b.end(),[](float x){return std::isfinite(x);}),
+          "two voice independent ring wrap");
+  SharedPitchShiftResources shared; shared.init();
   TdPsola p;
   PitchShiftConfig c{true, 4, 1, 30};
-  require(p.init(kRate, c), "safety init");
+  require(p.init(kRate, c, &shared), "safety init");
   std::array<float, 64> z{}, o{};
   PitchResult r{};
   for (int i = 0; i < 5000; ++i)
@@ -170,8 +195,9 @@ int main() {
   require(std::all_of(o.begin(), o.end(), [](float v) { return v == 0; }),
           "silence and repeated ring wrap");
   require(p.telemetry().fallback_frames > 0, "fallback telemetry");
+  SharedPitchShiftResources startup_shared; startup_shared.init();
   TdPsola startup;
-  require(startup.init(kRate, c), "startup init");
+  require(startup.init(kRate, c, &shared), "startup init");
   std::array<float, 64> nonzero{}, startup_out{};
   nonzero.fill(0.25f);
   startup.process(nonzero.data(), startup_out.data(), nonzero.size(), r,
