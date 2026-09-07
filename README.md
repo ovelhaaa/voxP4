@@ -1,8 +1,8 @@
 # voxP4 vocal effects firmware
 
 ESP-IDF firmware foundation for a low-latency ESP32-P4 vocal processor. The
-current milestone implements the measurable audio core and the asynchronous
-Milestone 2 vocal-analysis subsystem—not pitch shifting or harmonization.
+current milestone implements the measurable audio core, asynchronous vocal
+analysis, and one fixed-interval monophonic TD-PSOLA pitch-shift voice.
 [`specs.md`](specs.md) is the architectural source of
 truth whenever this overview is incomplete.
 
@@ -16,6 +16,8 @@ not allocate, log, access files, or lock. An atomic seqlock mailbox exposes the
 latest `PitchResult`. A 31-tap anti-alias FIR decimates the input tap to 12 kHz;
 a Core-1 task runs rolling-window YIN, voiced hysteresis, cents-domain tracking,
 octave suppression, onset detection, and correlation-refined pitch marks.
+On Core 0, a 16,384-sample absolute-addressed history feeds bounded TD-PSOLA;
+unvoiced and transient regions use the same 32 ms delayed history timeline.
 
 The codec-neutral I2S adapter uses stereo slots matching the configured PCM width
 and performs block PCM ↔ float conversion outside interrupts. Board pin/codec control remains a board
@@ -62,12 +64,13 @@ Hadamard energy, FDN silence and a ten-second bounded impulse response. Pitch
 tests cover clean tones from 65–1000 Hz, harmonics/missing fundamental, noise,
 vibrato, glissando, note transitions, state hysteresis, pitch marks, numerical
 edge cases, and stop-band alias rejection. `pitch_analyze` exports a PCM16 or
-float32 WAV to CSV. See [`docs/pitch_analysis.md`](docs/pitch_analysis.md) and
+float32 WAV to CSV. `pitch_shift input.wav output.wav +4` renders a float32 WAV
+for listening (48 kHz PCM16 and float32 inputs). See
+[`docs/pitch_analysis.md`](docs/pitch_analysis.md),
+[`docs/td_psola.md`](docs/td_psola.md), and
 [`docs/benchmarking.md`](docs/benchmarking.md) for target profiling, memory,
 latency, deadline, and impulse-response procedures.
 
-## Next milestone
-
-Add TD-PSOLA synthesis using the historical, input-domain pitch marks and the
-explicit analysis latency. WSOLA/unvoiced synthesis, harmony voices, MIDI,
-formants, correction, and vocoder remain intentionally unimplemented.
+The optimized quality range is currently ±7 semitones; the API clamps to ±12.
+Scale/MIDI harmony, a second voice, WSOLA, formant preservation, correction,
+and vocoder remain intentionally unimplemented.

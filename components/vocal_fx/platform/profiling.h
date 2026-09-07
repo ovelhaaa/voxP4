@@ -18,6 +18,13 @@ enum class ProfileSection : uint8_t {
   PitchSmoother,
   PitchMarkSearch,
   AnalysisTotal,
+  PitchShiftLookup,
+  PitchShiftGrain,
+  PitchShiftWindowOla,
+  PitchShiftNormalization,
+  PitchShiftUnvoiced,
+  PitchShiftCrossfade,
+  PitchShiftTotal,
   Count
 };
 struct ProfileStats {

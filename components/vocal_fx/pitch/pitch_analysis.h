@@ -24,6 +24,9 @@ public:
   PitchResult latest() const;
   bool latest_mark(PitchMark *) const;
   size_t marks(uint64_t, uint64_t, PitchMark *, size_t) const;
+  // Single-attempt snapshot for hard real-time readers. Returns false rather
+  // than waiting when the analysis writer is publishing a mark.
+  bool try_marks(uint64_t, uint64_t, PitchMark *, size_t, size_t *) const;
   PitchTrackState track_state() const;
   uint64_t latency_samples() const { return latency_samples_; }
   ProfileStats profile(PitchAnalysisProfileSection) const;
@@ -39,6 +42,7 @@ private:
   uint64_t audio_end() const;
   void publish_audio_end(uint64_t position);
   PitchMark read_mark(size_t index) const;
+  bool try_read_mark(size_t index, PitchMark *) const;
   void publish(const PitchResult &);
   void update_marks(const PitchResult &);
   void add_mark(PitchMark);
