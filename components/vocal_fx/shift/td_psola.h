@@ -1,10 +1,12 @@
 #pragma once
 #include "profiling.h"
 #include "vocal_fx_types.h"
+#include "lpc.h"
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 
 // Single-writer, absolute-addressed historical TD-PSOLA renderer. All storage
 // is owned by the object and process() performs no allocation.
@@ -38,13 +40,17 @@ public:
   static constexpr uint32_t kHistoryOffset = 1536; // 32 ms at 48 kHz
 
   bool init(float sample_rate, const PitchShiftConfig &config,
-            SharedPitchShiftResources *shared);
+            SharedPitchShiftResources *shared, const SharedLpcAnalysis *lpc = nullptr);
   void reset();
   void set_enabled(bool enabled) { target_enabled_ = enabled; }
   void set_semitones(float semitones);
   void set_ratio(float ratio);
   void set_smoothing(float milliseconds);
   void set_wet(float wet);
+  void set_formants(FormantMode mode, float amount) { formant_mode_=mode; formant_amount_=std::clamp(amount,0.0f,1.0f); }
+  FormantMode formant_mode() const { return formant_mode_; }
+  float formant_amount() const { return formant_amount_; }
+  uint64_t formant_frames() const { return formant_frames_; }
   bool enabled() const { return target_enabled_; }
   bool has_usable_output() const { return block_has_psola_; }
   void process(const float *input, float *output, size_t frames,
@@ -97,4 +103,10 @@ private:
   PitchShiftTelemetry telemetry_{};
   PublishedTelemetry published_telemetry_{};
   Profiler profiler_;
+  const SharedLpcAnalysis *lpc_ = nullptr;
+  FormantMode formant_mode_ = FormantMode::Off;
+  float formant_amount_ = 1.0f, formant_mix_ = 0.0f;
+  SharedLpcModel grain_model_{};
+  std::array<float, VOCAL_FX_LPC_MAX_ORDER> synthesis_state_{};
+  uint64_t formant_frames_ = 0;
 };

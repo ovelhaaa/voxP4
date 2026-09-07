@@ -10,6 +10,7 @@
 #include "profiling.h"
 #include "td_psola.h"
 #include "harmony_engine.h"
+#include "lpc.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -25,6 +26,7 @@ struct Engine {
   Limiter limiter;
   Profiler profiler;
   PitchAnalysis pitch_analysis;
+  SharedLpcAnalysis lpc_analysis;
   SharedPitchShiftResources pitch_resources;
   TdPsola pitch_shift[2];
   HarmonyEngine harmony;
@@ -108,10 +110,11 @@ bool vocal_fx_init(const VocalFxConfig &c) {
       return false;
   }
   e.pitch_resources.init();
+  if (!e.lpc_analysis.init(c.sample_rate, c.lpc)) return false;
   PitchShiftConfig render_config = c.pitch_shift;
   render_config.wet = 1.0f;
   for (auto &voice : e.pitch_shift)
-    if (!voice.init(c.sample_rate, render_config, &e.pitch_resources))
+    if (!voice.init(c.sample_rate, render_config, &e.pitch_resources, &e.lpc_analysis))
       return false;
   HarmonyVoiceConfig legacy{}; legacy.enabled=c.pitch_shift.enabled;
   legacy.interval=std::isfinite(c.pitch_shift.semitones)
@@ -150,6 +153,7 @@ void vocal_fx_reset() {
   e.reverb.reset();
   e.limiter.reset();
   e.pitch_resources.reset();
+  e.lpc_analysis.reset();
   for (auto &voice : e.pitch_shift) voice.reset();
   e.harmony.reset();
   e.pitch_shift_mark_count = 0;
@@ -164,6 +168,7 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     size_t n = std::min<size_t>(frames, VOCAL_FX_MAX_BLOCK_SIZE);
     if (e.cfg.enable_pitch_analysis && enter_pitch_path()) {
       e.pitch_analysis.tap(in, n);
+      e.lpc_analysis.tap(in, n);
       leave_pitch_path();
     }
     apply_pending_parameters();
@@ -403,6 +408,8 @@ void vocal_fx_set_harmony_degree(size_t v,int x){if(v<2)vocal_fx_set_parameter(v
 void vocal_fx_set_harmony_gain(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Gain),x);}
 void vocal_fx_set_harmony_pan(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Pan),x);}
 void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
+void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<2)e.pitch_shift[v].set_formants(mode,e.pitch_shift[v].formant_amount());}
+void vocal_fx_set_formant_amount(size_t v,float amount){if(v<2)e.pitch_shift[v].set_formants(e.pitch_shift[v].formant_mode(),amount);}
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
 void vocal_fx_midi_all_notes_off(){e.midi.all_notes_off();}
@@ -472,6 +479,7 @@ size_t vocal_fx_run_pitch_analysis(size_t max_hops) {
   const size_t count = e.pitch_analysis.run(max_hops);
   if (count)
     vocal_fx_publish_pitch(e.pitch_analysis.latest());
+  (void)e.lpc_analysis.run(max_hops, e.pitch_analysis.latest());
   leave_pitch_path();
   return count;
 }
@@ -501,8 +509,11 @@ size_t vocal_fx_dsp_memory_bytes() {
   return e.delay.memory_bytes() + e.reverb.memory_bytes() +
          e.pitch_resources.memory_bytes() +
          e.pitch_shift[0].memory_bytes() + e.pitch_shift[1].memory_bytes() +
+         e.lpc_analysis.memory_bytes() +
          (e.cfg.enable_pitch_analysis ? e.pitch_analysis.memory_bytes() : 0);
 }
+LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].formant_frames();x.voice2_formant_frames=e.pitch_shift[1].formant_frames();return x;}
+VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection s){const auto x=e.lpc_analysis.profile(s);return{x.calls,x.total_us,x.max_us,x.deadline_misses};}
 
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {
   const auto stats = e.profiler.stats(static_cast<ProfileSection>(section));

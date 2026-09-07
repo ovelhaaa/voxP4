@@ -40,6 +40,7 @@ enum class VocalFxParameter : uint16_t {
 };
 
 enum class PitchShiftMode : uint8_t { Bypass, FixedInterval };
+enum class FormantMode : uint8_t { Off, Lpc };
 enum class PitchShiftState : uint8_t {
   Bypass,
   WaitingForAnalysis,

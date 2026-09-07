@@ -25,6 +25,7 @@ enum class ProfileSection : uint8_t {
   PitchShiftUnvoiced,
   PitchShiftCrossfade,
   PitchShiftTotal,
+  LpcWindowing, LpcAutocorrelation, LpcLevinsonDurbin, LpcPublication, LpcTotal,
   Count
 };
 struct ProfileStats {

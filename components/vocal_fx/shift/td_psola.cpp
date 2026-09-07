@@ -36,7 +36,7 @@ float SharedPitchShiftResources::sample(uint64_t p) const {
 }
 
 bool TdPsola::init(float rate, const PitchShiftConfig &config,
-                   SharedPitchShiftResources *shared) {
+                   SharedPitchShiftResources *shared, const SharedLpcAnalysis *lpc) {
   if (!std::isfinite(rate) || rate < 8000 || rate > 192000)
     return false;
   if (!shared) return false;
@@ -49,6 +49,7 @@ bool TdPsola::init(float rate, const PitchShiftConfig &config,
   const float wet = std::isfinite(config.wet) ? config.wet : defaults.wet;
   sample_rate_ = rate;
   resources_ = shared;
+  lpc_ = lpc;
   history_offset_ = static_cast<uint32_t>(std::lround(rate * 0.032));
   smoothing_ms_ = std::clamp(smoothing_ms, 1.0f, 500.0f);
   target_enabled_ = config.enabled;
@@ -76,6 +77,7 @@ void TdPsola::reset() {
   state_ = target_enabled_ ? PitchShiftState::WaitingForAnalysis
                            : PitchShiftState::Bypass;
   telemetry_ = {};
+  synthesis_state_.fill(0); grain_model_={}; formant_mix_=0; formant_frames_=0;
   telemetry_.state = state_;
   publish_telemetry();
 }
@@ -151,6 +153,10 @@ bool TdPsola::add_grain(double destination, double source,
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::GrainPreparation),
                  0);
+  SharedLpcModel model;
+  const bool use_lpc=formant_mode_==FormantMode::Lpc && formant_amount_>0 &&
+                     lpc_ && lpc_->model_near(center,&model) && model.confidence>.15f;
+  if(use_lpc) grain_model_=model;
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::WindowOla));
   const int64_t dst = static_cast<int64_t>(std::llround(destination));
   for (int n = -half; n <= half; ++n) {
@@ -162,8 +168,13 @@ bool TdPsola::add_grain(double destination, double source,
         (static_cast<int64_t>(n + half) * (kHannSize - 1)) / (2 * half));
     const float w = resources_->window(wi);
     const size_t oi = static_cast<uint64_t>(absolute) & (kOlaSize - 1);
-    ola_[oi] +=
-        history_at(static_cast<uint64_t>(static_cast<int64_t>(center) + n)) * w;
+    const uint64_t source_sample=static_cast<uint64_t>(static_cast<int64_t>(center)+n);
+    float sample=history_at(source_sample);
+    if(use_lpc){
+      for(size_t j=1;j<=model.order;++j)
+        if(source_sample>=j) sample+=model.coefficients[j]*history_at(source_sample-j);
+    }
+    ola_[oi] += sample*w;
     norm_[oi] += w;
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::WindowOla), 0);
@@ -279,6 +290,17 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
                                : 0.0f;
     if (norm_[oi] > 1e-5f) {
       output[i] = ola_[oi] / norm_[oi];
+      const float target=(formant_mode_==FormantMode::Lpc && grain_model_.valid)
+                             ? formant_amount_*grain_model_.confidence:0.0f;
+      formant_mix_+=.002f*(target-formant_mix_);
+      if(formant_mix_>1e-4f){
+        float restored=output[i];
+        for(size_t j=1;j<=grain_model_.order;++j)restored-=grain_model_.coefficients[j]*synthesis_state_[j-1];
+        if(std::isfinite(restored)&&std::fabs(restored)<8.0f){
+          for(size_t j=grain_model_.order-1;j>0;--j)synthesis_state_[j]=synthesis_state_[j-1];
+          synthesis_state_[0]=restored; output[i]+=(restored-output[i])*formant_mix_; ++formant_frames_;
+        } else { synthesis_state_.fill(0); formant_mix_=0; }
+      }
       block_has_psola_ = true;
     } else {
       output[i] = fallback;
