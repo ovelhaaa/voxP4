@@ -9,13 +9,26 @@ void vocal_fx_reset();
 void vocal_fx_process(const float *input, float *output_l, float *output_r,
                       size_t frames);
 void vocal_fx_set_parameter(VocalFxParameter parameter, float value);
+void vocal_fx_set_pitch_shift_enabled(bool enabled);
+void vocal_fx_set_pitch_shift_semitones(float semitones);
+void vocal_fx_set_pitch_shift_mix(float wet);
+uint32_t vocal_fx_pitch_shift_latency_samples();
+PitchShiftTelemetry vocal_fx_pitch_shift_telemetry();
+VocalFxProfileStats
+vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection section);
 void vocal_fx_publish_pitch(const PitchResult &result);
 PitchResult vocal_fx_latest_pitch();
+// Single-attempt snapshot for real-time callers. Returns false rather than
+// waiting when a publisher is active or the snapshot changes during the read.
+bool vocal_fx_try_latest_pitch(PitchResult *result);
 // Called by the lower-priority analysis task; never by the audio callback.
 size_t vocal_fx_run_pitch_analysis(size_t max_hops = 1);
 bool vocal_fx_get_latest_pitch_mark(PitchMark *mark);
 size_t vocal_fx_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
                                 PitchMark *destination, size_t capacity);
+bool vocal_fx_try_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
+                                  PitchMark *destination, size_t capacity,
+                                  size_t *written);
 PitchTrackState vocal_fx_pitch_track_state();
 uint64_t vocal_fx_analysis_latency_samples();
 VocalFxProfileStats

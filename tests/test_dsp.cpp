@@ -162,11 +162,18 @@ int main() {
     pitch_writers_done.store(true, std::memory_order_release);
   });
   while (!pitch_writers_done.load(std::memory_order_acquire)) {
-    const auto result = vocal_fx_latest_pitch();
-    CHECK(result.frequency_hz == result.confidence);
-    CHECK((uint64_t)result.frequency_hz == result.timestamp_samples);
+    PitchResult result;
+    if (vocal_fx_try_latest_pitch(&result)) {
+      CHECK(result.frequency_hz == result.confidence);
+      CHECK((uint64_t)result.frequency_hz == result.timestamp_samples);
+    }
   }
   pitch_completion.join();
+  PitchResult final_pitch;
+  CHECK(vocal_fx_try_latest_pitch(&final_pitch));
+  CHECK(final_pitch.frequency_hz == final_pitch.confidence);
+  CHECK((uint64_t)final_pitch.frequency_hz == final_pitch.timestamp_samples);
+  CHECK(!vocal_fx_try_latest_pitch(nullptr));
   std::puts("all DSP tests passed");
   return 0;
 }
