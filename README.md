@@ -79,6 +79,13 @@ for listening (48 kHz PCM16 and float32 inputs). See
 [`docs/benchmarking.md`](docs/benchmarking.md) for target profiling, memory,
 latency, deadline, and impulse-response procedures.
 
+The host `pitch_shift` WAV renderer uses a diagnostic, 100%-wet voice-1 path:
+it bypasses the product dry/harmony mixer and input HPF while retaining the
+same pitch analysis and TD-PSOLA implementation. This prevents a fixed-interval
+render from being mistaken for the normal dry-plus-harmony product output.
+`--history-offset-ms` and `--debug-csv` support offline timing investigations;
+they do not change the product defaults.
+
 The engine now provides two TD-PSOLA harmony voices with shared source history,
 fixed intervals, major/natural-minor diatonic targets, preserved cents
 deviation, hysteretic note identity, and lock-free MIDI chord targets. See

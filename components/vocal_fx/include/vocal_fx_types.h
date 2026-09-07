@@ -56,6 +56,17 @@ struct PitchShiftConfig {
   float semitones = 0.0f;
   float wet = 1.0f;
   float smoothing_ms = 30.0f;
+  uint32_t history_offset_samples = 1536;
+};
+
+struct PitchShiftDebug {
+  uint64_t input_absolute_sample = 0, pitch_timestamp = 0;
+  uint64_t selected_source_mark = 0, source_grain_timestamp = 0;
+  uint64_t output_synthesis_timestamp = 0, analysis_age = 0;
+  uint32_t history_offset = 0;
+  float requested_semitones = 0, target_ratio = 1, current_smoothed_ratio = 1;
+  float source_f0 = 0, target_f0 = 0, actual_synthesis_period = 0;
+  PitchShiftState voice_state = PitchShiftState::Bypass;
 };
 
 enum class PitchShiftProfileSection : uint8_t {

@@ -50,7 +50,10 @@ bool TdPsola::init(float rate, const PitchShiftConfig &config,
   sample_rate_ = rate;
   resources_ = shared;
   lpc_ = lpc;
-  history_offset_ = static_cast<uint32_t>(std::lround(rate * 0.032));
+  history_offset_ = config.history_offset_samples == 1536
+                        ? static_cast<uint32_t>(std::lround(rate * 0.032))
+                        : std::clamp<uint32_t>(config.history_offset_samples,
+                                               1152, 3072);
   smoothing_ms_ = std::clamp(smoothing_ms, 1.0f, 500.0f);
   target_enabled_ = config.enabled;
   target_semitones_ = std::clamp(semitones, -12.0f, 12.0f);
@@ -79,6 +82,8 @@ void TdPsola::reset() {
                            : PitchShiftState::Bypass;
   telemetry_ = {};
   synthesis_state_.fill(0); grain_model_={}; formant_mix_=0; formant_frames_=0;
+  debug_ = {};
+  debug_.history_offset = history_offset_;
   telemetry_.state = state_;
   publish_telemetry();
 }
@@ -145,6 +150,10 @@ bool TdPsola::add_grain(double destination, double source,
                    section(PitchShiftProfileSection::GrainPreparation));
   const int half = std::clamp(static_cast<int>(std::lround(period)), 24, 800);
   const uint64_t center = marks[index].sample_position;
+  debug_.selected_source_mark = center;
+  debug_.source_grain_timestamp = static_cast<uint64_t>(std::max(0.0, source));
+  debug_.output_synthesis_timestamp =
+      static_cast<uint64_t>(std::max(0.0, destination));
   if (center < static_cast<uint64_t>(half) ||
       !history_available(center - half, center + half)) {
     VF_PROFILE_END(profiler_,
@@ -201,6 +210,16 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
   block_has_psola_ = false;
   const uint64_t block_start = output_position_,
                  block_end = block_start + frames;
+  debug_.input_absolute_sample = resources_ ? resources_->input_end() : block_end;
+  debug_.pitch_timestamp = pitch.analysis_timestamp_samples;
+  debug_.analysis_age = block_end > pitch.analysis_timestamp_samples
+                            ? block_end - pitch.analysis_timestamp_samples
+                            : 0;
+  debug_.history_offset = history_offset_;
+  debug_.requested_semitones = target_semitones_;
+  debug_.target_ratio = std::exp2(target_semitones_ / 12.0f);
+  debug_.source_f0 = pitch.frequency_hz;
+  debug_.target_f0 = pitch.frequency_hz * debug_.target_ratio;
   ++telemetry_.blocks;
   if (!target_enabled_) {
     state_ = PitchShiftState::Bypass;
@@ -267,6 +286,9 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
       current_semitones_ +=
           pitch_alpha * (target_semitones_ - current_semitones_);
       const float ratio = std::exp2(current_semitones_ / 12.0f);
+      debug_.current_smoothed_ratio = ratio;
+      debug_.actual_synthesis_period =
+          pitch.period_samples / std::max(ratio, .5f);
       const double source = next_synthesis_mark_ - history_offset_;
       if (source >= 0 &&
           add_grain(next_synthesis_mark_, source, marks, mark_count))
@@ -342,6 +364,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Crossfade), 0);
   output_position_ += frames;
   telemetry_.state = state_;
+  debug_.voice_state = state_;
   publish_telemetry();
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Total),
                  static_cast<uint64_t>(1000000.0 * frames / sample_rate_));

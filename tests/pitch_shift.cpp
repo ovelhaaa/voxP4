@@ -1,5 +1,6 @@
 #include "vocal_fx.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -21,7 +22,7 @@ static void put32(std::ofstream &f, uint32_t v) {
 }
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20]\n");
+    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--history-offset-ms 24|32|40|48|64] [--debug-csv file]\n");
     return 2;
   }
   std::ifstream f(argv[1], std::ios::binary);
@@ -61,12 +62,16 @@ int main(int argc, char **argv) {
   c.pitch_shift.enabled = true;
   c.pitch_shift.semitones = std::stof(argv[3]);
   c.pitch_shift.wet = 1;
+  c.isolate_pitch_shift_output = true;
   FormantMode formants=FormantMode::Off; float amount=1.0f;
+  std::string debug_path;
   for(int i=4;i<argc;++i){
     const std::string option=argv[i];
     if(option=="--formants" && i+1<argc){const std::string value=argv[++i];if(value=="lpc")formants=FormantMode::Lpc;else if(value!="off"){std::fprintf(stderr,"invalid formant mode\n");return 2;}}
     else if(option=="--formant-amount"&&i+1<argc)amount=std::stof(argv[++i]);
     else if(option=="--lpc-order"&&i+1<argc)c.lpc.order=static_cast<uint16_t>(std::stoi(argv[++i]));
+    else if(option=="--history-offset-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.history_offset_samples=static_cast<uint32_t>(std::lround(ms*48.0f));}
+    else if(option=="--debug-csv"&&i+1<argc)debug_path=argv[++i];
     else {std::fprintf(stderr,"unknown option: %s\n",option.c_str());return 2;}
   }
   if (!vocal_fx_init(c)) {
@@ -74,6 +79,11 @@ int main(int argc, char **argv) {
     return 2;
   }
   vocal_fx_set_formant_mode(0,formants); vocal_fx_set_formant_amount(0,amount);
+  std::ofstream debug;
+  if(!debug_path.empty()){
+    debug.open(debug_path);
+    debug << "time,input_absolute_sample,pitch_timestamp,selected_source_mark,source_grain_timestamp,output_synthesis_timestamp,history_offset,analysis_age,requested_semitones,target_ratio,current_smoothed_ratio,source_f0,target_f0,actual_synthesis_period,voice_state\n";
+  }
   const size_t stride = ch * bits / 8, frames = bytes / stride;
   std::vector<float> mono(frames), out(frames), right(64);
   for (size_t i = 0; i < frames; ++i) {
@@ -95,6 +105,7 @@ int main(int argc, char **argv) {
     vocal_fx_process(mono.data() + i, out.data() + i, right.data(), n);
     while (vocal_fx_run_pitch_analysis(8)) {
     }
+    if(debug){const auto d=vocal_fx_pitch_shift_debug();debug << static_cast<double>(i+n)/rate << ',' << d.input_absolute_sample << ',' << d.pitch_timestamp << ',' << d.selected_source_mark << ',' << d.source_grain_timestamp << ',' << d.output_synthesis_timestamp << ',' << d.history_offset << ',' << d.analysis_age << ',' << d.requested_semitones << ',' << d.target_ratio << ',' << d.current_smoothed_ratio << ',' << d.source_f0 << ',' << d.target_f0 << ',' << d.actual_synthesis_period << ',' << static_cast<unsigned>(d.voice_state) << '\n';}
   }
   std::ofstream w(argv[2], std::ios::binary);
   if (!w.is_open()) {

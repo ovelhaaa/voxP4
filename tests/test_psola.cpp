@@ -1,4 +1,5 @@
 #include "td_psola.h"
+#include "vocal_fx.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -85,6 +86,39 @@ void accuracy(float semitones) {
                   [](float v) { return std::isfinite(v) && std::fabs(v) < 2; }),
       "finite bounded output");
 }
+double tone_power(const std::vector<float> &x, size_t begin, float hz) {
+  double re = 0, im = 0;
+  for (size_t i = begin; i < x.size(); ++i) {
+    const double phase = 2 * kPi * hz * i / kRate;
+    re += x[i] * std::cos(phase);
+    im -= x[i] * std::sin(phase);
+  }
+  return re * re + im * im;
+}
+void isolated_engine_output() {
+  VocalFxConfig c{};
+  c.enable_gate = c.enable_compressor = c.enable_delay = c.enable_reverb = false;
+  c.isolate_pitch_shift_output = true;
+  c.pitch_shift = {true, 4, 1, 1};
+  require(vocal_fx_init(c), "isolated engine init");
+  constexpr size_t total = 48000 * 3, block = 64;
+  std::vector<float> in(total), out(total);
+  std::array<float, block> right{};
+  for (size_t i = 0; i < total; ++i)
+    for (int h = 1; h <= 5; ++h)
+      in[i] += .12f / h * std::sin(2 * kPi * 220 * h * i / kRate);
+  for (size_t i = 0; i < total; i += block) {
+    vocal_fx_process(in.data() + i, out.data() + i, right.data(),
+                     std::min(block, total - i));
+    while (vocal_fx_run_pitch_analysis(8)) {
+    }
+  }
+  const double shifted =
+      tone_power(out, total - 24000, 220 * std::exp2(4.0 / 12));
+  const double dry = tone_power(out, total - 24000, 220);
+  require(shifted > dry * 10,
+          "isolated host path must not contain dominant dry pitch");
+}
 void transition_safety() {
   constexpr size_t total = 72000, block = 64;
   std::vector<float> in(total), out(total);
@@ -139,6 +173,7 @@ void transition_safety() {
 }
 } // namespace
 int main() {
+  isolated_engine_output();
   for (int field = 0; field < 3; ++field) {
     SharedPitchShiftResources invalid_shared; invalid_shared.init();
     TdPsola invalid;

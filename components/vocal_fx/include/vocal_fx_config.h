@@ -17,6 +17,8 @@ struct VocalFxConfig {
   bool enable_delay = true;
   bool enable_reverb = true;
   bool enable_pitch_analysis = true;
+  // Diagnostic host path; false preserves the product mixer and input HPF.
+  bool isolate_pitch_shift_output = false;
   PitchShiftConfig pitch_shift{};
   LpcConfig lpc{};
 };
