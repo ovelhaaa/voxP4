@@ -18,6 +18,9 @@ VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection section);
 void vocal_fx_publish_pitch(const PitchResult &result);
 PitchResult vocal_fx_latest_pitch();
+// Single-attempt snapshot for real-time callers. Returns false rather than
+// waiting when a publisher is active or the snapshot changes during the read.
+bool vocal_fx_try_latest_pitch(PitchResult *result);
 // Called by the lower-priority analysis task; never by the audio callback.
 size_t vocal_fx_run_pitch_analysis(size_t max_hops = 1);
 bool vocal_fx_get_latest_pitch_mark(PitchMark *mark);

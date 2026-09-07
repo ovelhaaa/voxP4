@@ -32,6 +32,7 @@ struct Engine {
   PitchMark pitch_shift_marks[TdPsola::kMaxMarks];
   PitchMark pitch_shift_candidate_marks[TdPsola::kMaxMarks];
   size_t pitch_shift_mark_count = 0;
+  PitchResult pitch_shift_pitch{};
   float gate_t = -55, gate_a = 5, gate_h = 40, gate_r = 120, gate_range = -60,
         comp_t = -18, comp_ratio = 3, comp_a = 10, comp_r = 100,
         comp_makeup = 3, comp_knee = 6, delay_l = 250, delay_r = 375,
@@ -103,6 +104,8 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   }
   if (!e.pitch_shift.init(c.sample_rate, c.pitch_shift))
     return false;
+  e.pitch_shift_pitch = {};
+  e.pitch_shift_mark_count = 0;
   parameter_queue.reset();
   e.ready = true;
   return true;
@@ -130,6 +133,7 @@ void vocal_fx_reset() {
   e.limiter.reset();
   e.pitch_shift.reset();
   e.pitch_shift_mark_count = 0;
+  e.pitch_shift_pitch = {};
   if (e.cfg.enable_pitch_analysis)
     reset_pitch_analysis();
 }
@@ -157,7 +161,10 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
       for (size_t i = 0; i < n; i++)
         e.work[i] = e.compressor.process(e.work[i]);
     VF_PROFILE_END(e.profiler, ProfileSection::Compressor, 0);
-    const PitchResult current_pitch = vocal_fx_latest_pitch();
+    PitchResult pitch_candidate;
+    if (vocal_fx_try_latest_pitch(&pitch_candidate))
+      e.pitch_shift_pitch = pitch_candidate;
+    const PitchResult current_pitch = e.pitch_shift_pitch;
     const uint64_t mark_end = current_pitch.analysis_timestamp_samples;
     const uint64_t mark_start = mark_end > PitchAnalysis::kAudioHistory
                                     ? mark_end - PitchAnalysis::kAudioHistory
@@ -356,21 +363,34 @@ void vocal_fx_publish_pitch(const PitchResult &r) {
 }
 PitchResult vocal_fx_latest_pitch() {
   PitchResult r;
-  uint32_t a, b;
-  do {
-    a = pitch.seq.load(std::memory_order_acquire);
-    r.frequency_hz = pitch.hz.load(std::memory_order_relaxed);
-    r.confidence = pitch.confidence.load(std::memory_order_relaxed);
-    r.period_samples = pitch.period.load(std::memory_order_relaxed);
-    r.voiced = pitch.voiced.load(std::memory_order_relaxed);
-    r.onset = pitch.onset.load(std::memory_order_relaxed);
-    r.pitch_changed = pitch.changed.load(std::memory_order_relaxed);
-    r.analysis_timestamp_samples =
-        pitch.timestamp.load(std::memory_order_relaxed);
-    r.timestamp_samples = r.analysis_timestamp_samples;
-    b = pitch.seq.load(std::memory_order_acquire);
-  } while (a != b || (a & 1));
+  while (!vocal_fx_try_latest_pitch(&r)) {
+  }
   return r;
+}
+bool vocal_fx_try_latest_pitch(PitchResult *result) {
+  if (!result)
+    return false;
+
+  const uint32_t before = pitch.seq.load(std::memory_order_acquire);
+  if (before & 1U)
+    return false;
+
+  PitchResult candidate;
+  candidate.frequency_hz = pitch.hz.load(std::memory_order_relaxed);
+  candidate.confidence = pitch.confidence.load(std::memory_order_relaxed);
+  candidate.period_samples = pitch.period.load(std::memory_order_relaxed);
+  candidate.voiced = pitch.voiced.load(std::memory_order_relaxed);
+  candidate.onset = pitch.onset.load(std::memory_order_relaxed);
+  candidate.pitch_changed = pitch.changed.load(std::memory_order_relaxed);
+  candidate.analysis_timestamp_samples =
+      pitch.timestamp.load(std::memory_order_relaxed);
+  candidate.timestamp_samples = candidate.analysis_timestamp_samples;
+
+  const uint32_t after = pitch.seq.load(std::memory_order_acquire);
+  if (before != after || (after & 1U))
+    return false;
+  *result = candidate;
+  return true;
 }
 size_t vocal_fx_run_pitch_analysis(size_t max_hops) {
   if (!e.cfg.enable_pitch_analysis || !enter_pitch_path())
