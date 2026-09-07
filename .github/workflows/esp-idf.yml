@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: ESP32-P4 / ESP-IDF 5.3
+    name: ESP32-P4 / pinned ESP-IDF
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -22,12 +22,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up pinned ESP-IDF
+        run: ./scripts/setup-codex.sh
+
       - name: Build firmware
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v5.3
-          target: esp32p4
-          path: .
+        run: ./scripts/build-p4.sh
 
       - name: Upload firmware artifacts
         if: success()

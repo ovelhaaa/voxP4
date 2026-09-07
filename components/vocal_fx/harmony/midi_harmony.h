@@ -14,4 +14,3 @@ private:
   std::array<std::atomic<uint8_t>,128> held_{};
   std::atomic<uint32_t> generation_{0};
 };
-

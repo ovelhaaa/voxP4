@@ -31,4 +31,3 @@ int transpose_scale_degrees(const ScaleConfig &s, int note, int degrees) {
   const int wrapped=total-7*floor_div(total,7);
   return static_cast<int>(s.root%12)+12*octave+v[static_cast<size_t>(wrapped)];
 }
-
