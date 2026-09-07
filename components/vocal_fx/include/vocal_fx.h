@@ -23,6 +23,9 @@ size_t vocal_fx_run_pitch_analysis(size_t max_hops = 1);
 bool vocal_fx_get_latest_pitch_mark(PitchMark *mark);
 size_t vocal_fx_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
                                 PitchMark *destination, size_t capacity);
+bool vocal_fx_try_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
+                                  PitchMark *destination, size_t capacity,
+                                  size_t *written);
 PitchTrackState vocal_fx_pitch_track_state();
 uint64_t vocal_fx_analysis_latency_samples();
 VocalFxProfileStats

@@ -14,6 +14,9 @@ ProfileSection section(PitchShiftProfileSection s) {
 bool TdPsola::init(float rate, const PitchShiftConfig &config) {
   if (!std::isfinite(rate) || rate < 8000 || rate > 192000)
     return false;
+  if (!std::isfinite(config.semitones) || !std::isfinite(config.wet) ||
+      !std::isfinite(config.smoothing_ms))
+    return false;
   sample_rate_ = rate;
   history_offset_ = static_cast<uint32_t>(std::lround(rate * 0.032));
   smoothing_ms_ = std::clamp(config.smoothing_ms, 1.0f, 500.0f);
@@ -45,6 +48,7 @@ void TdPsola::reset() {
                            : PitchShiftState::Bypass;
   telemetry_ = {};
   telemetry_.state = state_;
+  publish_telemetry();
 }
 void TdPsola::set_semitones(float value) {
   if (std::isfinite(value))
@@ -148,17 +152,19 @@ void TdPsola::process(const float *input, float *output, size_t frames,
     psola_gain_ = 0.0f;
     for (size_t i = 0; i < frames; ++i) {
       active_mix_ = std::max(0.0f, active_mix_ - 1.0f / (sample_rate_ * .020f));
-      const uint64_t source = block_start + i >= history_offset_
-                                  ? block_start + i - history_offset_
-                                  : 0;
-      const float fallback =
-          history_available(source, source) ? history_at(source) : input[i];
+      const bool history_ready = block_start + i >= history_offset_;
+      const uint64_t source =
+          history_ready ? block_start + i - history_offset_ : 0;
+      const float fallback = history_ready && history_available(source, source)
+                                 ? history_at(source)
+                                 : input[i];
       output[i] = input[i] * (1.0f - active_mix_) + fallback * active_mix_;
       const size_t oi = (block_start + i) & (kOlaSize - 1);
       ola_[oi] = norm_[oi] = 0.0f;
     }
     output_position_ += frames;
     telemetry_.state = state_;
+    publish_telemetry();
     VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Total),
                    static_cast<uint64_t>(1000000.0 * frames / sample_rate_));
     return;
@@ -225,11 +231,12 @@ void TdPsola::process(const float *input, float *output, size_t frames,
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::Normalization));
   for (size_t i = 0; i < frames; ++i) {
     const size_t oi = (block_start + i) & (kOlaSize - 1);
-    const uint64_t source = block_start + i >= history_offset_
-                                ? block_start + i - history_offset_
-                                : 0;
-    const float fallback =
-        history_available(source, source) ? history_at(source) : 0.0f;
+    const bool history_ready = block_start + i >= history_offset_;
+    const uint64_t source =
+        history_ready ? block_start + i - history_offset_ : 0;
+    const float fallback = history_ready && history_available(source, source)
+                               ? history_at(source)
+                               : 0.0f;
     output[i] = norm_[oi] > 1e-5f ? ola_[oi] / norm_[oi] : fallback;
     ola_[oi] = norm_[oi] = 0;
   }
@@ -246,11 +253,12 @@ void TdPsola::process(const float *input, float *output, size_t frames,
         std::clamp(desired_gain - psola_gain_, -gain_step, gain_step);
     if (onset_hold_)
       --onset_hold_;
-    const uint64_t source = block_start + i >= history_offset_
-                                ? block_start + i - history_offset_
-                                : 0;
-    const float fallback =
-        history_available(source, source) ? history_at(source) : 0.0f;
+    const bool history_ready = block_start + i >= history_offset_;
+    const uint64_t source =
+        history_ready ? block_start + i - history_offset_ : 0;
+    const float fallback = history_ready && history_available(source, source)
+                               ? history_at(source)
+                               : 0.0f;
     const float shifted = output[i];
     const float wet_signal =
         shifted * psola_gain_ + fallback * (1.0f - psola_gain_);
@@ -262,13 +270,72 @@ void TdPsola::process(const float *input, float *output, size_t frames,
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Crossfade), 0);
   output_position_ += frames;
   telemetry_.state = state_;
+  publish_telemetry();
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Total),
                  static_cast<uint64_t>(1000000.0 * frames / sample_rate_));
 }
+void TdPsola::store_atomic64(Atomic64Parts &destination, uint64_t value) {
+  destination.low.store(static_cast<uint32_t>(value),
+                        std::memory_order_relaxed);
+  destination.high.store(static_cast<uint32_t>(value >> 32U),
+                         std::memory_order_relaxed);
+}
+uint64_t TdPsola::load_atomic64(const Atomic64Parts &source) {
+  return source.low.load(std::memory_order_relaxed) |
+         (static_cast<uint64_t>(source.high.load(std::memory_order_relaxed))
+          << 32U);
+}
+void TdPsola::publish_telemetry() {
+  published_telemetry_.sequence.fetch_add(1, std::memory_order_acq_rel);
+  store_atomic64(published_telemetry_.blocks, telemetry_.blocks);
+  store_atomic64(published_telemetry_.grains, telemetry_.grains);
+  published_telemetry_.max_grains_per_block.store(
+      telemetry_.max_grains_per_block, std::memory_order_relaxed);
+  store_atomic64(published_telemetry_.pitch_mark_underflows,
+                 telemetry_.pitch_mark_underflows);
+  store_atomic64(published_telemetry_.audio_history_underflows,
+                 telemetry_.audio_history_underflows);
+  store_atomic64(published_telemetry_.psola_resyncs, telemetry_.psola_resyncs);
+  store_atomic64(published_telemetry_.fallback_frames,
+                 telemetry_.fallback_frames);
+  store_atomic64(published_telemetry_.max_grains_exceeded,
+                 telemetry_.max_grains_exceeded);
+  store_atomic64(published_telemetry_.invalid_pitch, telemetry_.invalid_pitch);
+  store_atomic64(published_telemetry_.invalid_mark, telemetry_.invalid_mark);
+  published_telemetry_.state.store(static_cast<uint32_t>(state_),
+                                   std::memory_order_relaxed);
+  published_telemetry_.sequence.fetch_add(1, std::memory_order_release);
+}
 PitchShiftTelemetry TdPsola::telemetry() const {
-  auto t = telemetry_;
-  t.state = state_;
-  return t;
+  PitchShiftTelemetry result;
+  uint32_t before, after;
+  do {
+    before = published_telemetry_.sequence.load(std::memory_order_acquire);
+    if (before & 1U) {
+      after = before;
+      continue;
+    }
+    result.blocks = load_atomic64(published_telemetry_.blocks);
+    result.grains = load_atomic64(published_telemetry_.grains);
+    result.max_grains_per_block =
+        published_telemetry_.max_grains_per_block.load(
+            std::memory_order_relaxed);
+    result.pitch_mark_underflows =
+        load_atomic64(published_telemetry_.pitch_mark_underflows);
+    result.audio_history_underflows =
+        load_atomic64(published_telemetry_.audio_history_underflows);
+    result.psola_resyncs = load_atomic64(published_telemetry_.psola_resyncs);
+    result.fallback_frames =
+        load_atomic64(published_telemetry_.fallback_frames);
+    result.max_grains_exceeded =
+        load_atomic64(published_telemetry_.max_grains_exceeded);
+    result.invalid_pitch = load_atomic64(published_telemetry_.invalid_pitch);
+    result.invalid_mark = load_atomic64(published_telemetry_.invalid_mark);
+    result.state = static_cast<PitchShiftState>(
+        published_telemetry_.state.load(std::memory_order_relaxed));
+    after = published_telemetry_.sequence.load(std::memory_order_acquire);
+  } while (before != after || (after & 1U));
+  return result;
 }
 ProfileStats TdPsola::profile(PitchShiftProfileSection s) const {
   if (s >= PitchShiftProfileSection::Count)

@@ -10,6 +10,13 @@ bounded snapshot of at most 64 real pitch marks; it never runs YIN, waits, takes
 a mutex, or allocates. `MAX_GRAINS_PER_BLOCK` is eight and backlog recovery
 falls back rather than looping.
 
+The audio callback uses a single-attempt mark snapshot. If either the ring or an
+entry is being published, it immediately keeps the preceding snapshot (which
+the normal source-distance guard will eventually reject) rather than spinning
+behind the lower-priority analysis task. Disabled pitch shifting performs no
+mark snapshot at all. The original retrying range API remains available for
+non-real-time host/control callers.
+
 ```text
 input position E -------- analysis centre E-1039 (- scheduler age)
        |                  source position D-1536
@@ -28,6 +35,8 @@ period. The wet-path reported latency is therefore **1,536 samples / 32 ms**;
 I/O DMA buffering is separate, while analysis latency is a prerequisite rather
 than an additional serial delay. The zero-latency dry contribution remains
 available when wet is below one.
+Before position 1,536 exists, enabled wet fallback is intentional silence; it
+does not clamp negative history time to position zero or replay the first sample.
 
 ## Grains, timelines, and normalization
 
@@ -73,6 +82,10 @@ insufficient snapshots. Failures produce aligned fallback and increment
 `invalid_mark`, `max_grains_exceeded`, `psola_resyncs`, and `fallback_frames` as
 applicable. Per-stage profilers cover lookup, grain preparation, Hann/OLA,
 normalization, fallback, crossfade, and total.
+
+Telemetry is copied after each audio block into a 32-bit-atomic seqlock
+publication. Its 64-bit counters are split into atomic high/low words, so a
+control-core read is coherent and never races the audio-owned mutable counters.
 
 Static synthesis storage is about 104 KiB: 64 KiB history, 32 KiB OLA/norm,
 8 KiB Hann LUT, plus small state. It is ordinary object storage intended for

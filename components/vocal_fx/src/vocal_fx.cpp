@@ -29,6 +29,9 @@ struct Engine {
   float work[VOCAL_FX_MAX_BLOCK_SIZE], left[VOCAL_FX_MAX_BLOCK_SIZE],
       right[VOCAL_FX_MAX_BLOCK_SIZE];
   float shifted[VOCAL_FX_MAX_BLOCK_SIZE];
+  PitchMark pitch_shift_marks[TdPsola::kMaxMarks];
+  PitchMark pitch_shift_candidate_marks[TdPsola::kMaxMarks];
+  size_t pitch_shift_mark_count = 0;
   float gate_t = -55, gate_a = 5, gate_h = 40, gate_r = 120, gate_range = -60,
         comp_t = -18, comp_ratio = 3, comp_a = 10, comp_r = 100,
         comp_makeup = 3, comp_knee = 6, delay_l = 250, delay_r = 375,
@@ -126,6 +129,7 @@ void vocal_fx_reset() {
   e.reverb.reset();
   e.limiter.reset();
   e.pitch_shift.reset();
+  e.pitch_shift_mark_count = 0;
   if (e.cfg.enable_pitch_analysis)
     reset_pitch_analysis();
 }
@@ -153,19 +157,26 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
       for (size_t i = 0; i < n; i++)
         e.work[i] = e.compressor.process(e.work[i]);
     VF_PROFILE_END(e.profiler, ProfileSection::Compressor, 0);
-    PitchMark marks[TdPsola::kMaxMarks];
     const PitchResult current_pitch = vocal_fx_latest_pitch();
     const uint64_t mark_end = current_pitch.analysis_timestamp_samples;
     const uint64_t mark_start = mark_end > PitchAnalysis::kAudioHistory
                                     ? mark_end - PitchAnalysis::kAudioHistory
                                     : 0;
-    const size_t mark_count =
-        e.cfg.enable_pitch_analysis
-            ? vocal_fx_get_pitch_marks(mark_start, mark_end, marks,
-                                       TdPsola::kMaxMarks)
-            : 0;
+    if (e.cfg.enable_pitch_analysis && e.pitch_shift.enabled()) {
+      size_t candidate_count = 0;
+      if (vocal_fx_try_get_pitch_marks(mark_start, mark_end,
+                                       e.pitch_shift_candidate_marks,
+                                       TdPsola::kMaxMarks, &candidate_count)) {
+        std::copy_n(e.pitch_shift_candidate_marks, candidate_count,
+                    e.pitch_shift_marks);
+        e.pitch_shift_mark_count = candidate_count;
+      }
+    } else {
+      e.pitch_shift_mark_count = 0;
+    }
     e.pitch_shift.process(e.work, e.shifted, n, current_pitch,
-                          vocal_fx_pitch_track_state(), marks, mark_count);
+                          vocal_fx_pitch_track_state(), e.pitch_shift_marks,
+                          e.pitch_shift_mark_count);
     std::copy_n(e.shifted, n, e.work);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
     for (size_t i = 0; i < n; i++) {
@@ -376,6 +387,10 @@ bool vocal_fx_get_latest_pitch_mark(PitchMark *mark) {
 size_t vocal_fx_get_pitch_marks(uint64_t start, uint64_t end, PitchMark *out,
                                 size_t capacity) {
   return e.pitch_analysis.marks(start, end, out, capacity);
+}
+bool vocal_fx_try_get_pitch_marks(uint64_t start, uint64_t end, PitchMark *out,
+                                  size_t capacity, size_t *written) {
+  return e.pitch_analysis.try_marks(start, end, out, capacity, written);
 }
 PitchTrackState vocal_fx_pitch_track_state() {
   return e.pitch_analysis.track_state();

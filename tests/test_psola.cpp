@@ -1,9 +1,12 @@
 #include "td_psola.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -134,6 +137,18 @@ void transition_safety() {
 }
 } // namespace
 int main() {
+  for (int field = 0; field < 3; ++field) {
+    TdPsola invalid;
+    PitchShiftConfig bad{true, 4, 1, 30};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    if (field == 0)
+      bad.semitones = nan;
+    else if (field == 1)
+      bad.wet = nan;
+    else
+      bad.smoothing_ms = nan;
+    require(!invalid.init(kRate, bad), "reject non-finite configuration");
+  }
   for (float st : {-7.f, -5.f, -4.f, -3.f, 3.f, 4.f, 5.f, 7.f})
     accuracy(st);
   TdPsola p;
@@ -147,6 +162,28 @@ int main() {
   require(std::all_of(o.begin(), o.end(), [](float v) { return v == 0; }),
           "silence and repeated ring wrap");
   require(p.telemetry().fallback_frames > 0, "fallback telemetry");
+  TdPsola startup;
+  require(startup.init(kRate, c), "startup init");
+  std::array<float, 64> nonzero{}, startup_out{};
+  nonzero.fill(0.25f);
+  startup.process(nonzero.data(), startup_out.data(), nonzero.size(), r,
+                  PitchTrackState::Unlocked, nullptr, 0);
+  require(std::all_of(startup_out.begin(), startup_out.end(),
+                      [](float value) { return value == 0.0f; }),
+          "pre-history fallback must be silence, not sample zero replay");
+  std::atomic<bool> reading{true};
+  std::thread telemetry_reader([&] {
+    while (reading.load(std::memory_order_relaxed)) {
+      const auto telemetry = startup.telemetry();
+      require(telemetry.max_grains_per_block <= TdPsola::kMaxGrainsPerBlock,
+              "coherent telemetry snapshot");
+    }
+  });
+  for (int i = 0; i < 100; ++i)
+    startup.process(nonzero.data(), startup_out.data(), nonzero.size(), r,
+                    PitchTrackState::Unlocked, nullptr, 0);
+  reading.store(false, std::memory_order_relaxed);
+  telemetry_reader.join();
   transition_safety();
   std::puts("TD-PSOLA tests passed");
 }

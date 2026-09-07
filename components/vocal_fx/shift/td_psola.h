@@ -2,6 +2,7 @@
 #include "profiling.h"
 #include "vocal_fx_types.h"
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -9,6 +10,8 @@
 // is owned by the object and process() performs no allocation.
 class TdPsola {
 public:
+  static_assert(ATOMIC_INT_LOCK_FREE == 2,
+                "pitch-shift telemetry requires lock-free 32-bit atomics");
   static constexpr size_t kHistorySize = 16384;
   static constexpr size_t kOlaSize = 4096;
   static constexpr size_t kHannSize = 2048;
@@ -21,6 +24,7 @@ public:
   void set_enabled(bool enabled) { target_enabled_ = enabled; }
   void set_semitones(float semitones);
   void set_wet(float wet);
+  bool enabled() const { return target_enabled_; }
   void process(const float *input, float *output, size_t frames,
                const PitchResult &pitch, PitchTrackState track,
                const PitchMark *marks, size_t mark_count);
@@ -30,6 +34,19 @@ public:
   ProfileStats profile(PitchShiftProfileSection section) const;
 
 private:
+  struct Atomic64Parts {
+    std::atomic<uint32_t> low{0}, high{0};
+  };
+  struct PublishedTelemetry {
+    std::atomic<uint32_t> sequence{0};
+    Atomic64Parts blocks, grains, pitch_mark_underflows,
+        audio_history_underflows, psola_resyncs, fallback_frames,
+        max_grains_exceeded, invalid_pitch, invalid_mark;
+    std::atomic<uint32_t> max_grains_per_block{0}, state{0};
+  };
+  static void store_atomic64(Atomic64Parts &, uint64_t);
+  static uint64_t load_atomic64(const Atomic64Parts &);
+  void publish_telemetry();
   bool history_available(uint64_t first, uint64_t last) const;
   float history_at(uint64_t position) const;
   bool select_mark(double source_position, const PitchMark *marks, size_t count,
@@ -52,5 +69,6 @@ private:
   uint32_t onset_hold_ = 0;
   PitchShiftState state_ = PitchShiftState::Bypass;
   PitchShiftTelemetry telemetry_{};
+  PublishedTelemetry published_telemetry_{};
   Profiler profiler_;
 };
