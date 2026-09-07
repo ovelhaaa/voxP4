@@ -17,6 +17,7 @@ int main(){
     double err=0,energy=0;for(size_t i=0;i<n;++i){err+=(restored[i]-signal[i])*(restored[i]-signal[i]);energy+=signal[i]*signal[i];} CHECK(std::sqrt(err/energy)<1e-4);
   }
   std::vector<float> silence(n); SharedLpcModel bad; CHECK(!SharedLpcAnalysis::solve(silence.data(),n,16,.97f,&bad));
+  std::vector<float> oversized(1025); CHECK(!SharedLpcAnalysis::solve(oversized.data(),oversized.size(),16,.97f,&bad));
   SharedLpcAnalysis analysis; LpcConfig c; CHECK(analysis.init(48000,c)); PitchResult p; p.voiced=true;p.confidence=1;
   analysis.tap(signal.data(),signal.size()); CHECK(analysis.run(4,p)>0); SharedLpcModel selected; CHECK(analysis.model_near(512,&selected));
   return failures?1:0;

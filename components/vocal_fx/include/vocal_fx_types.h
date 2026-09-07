@@ -37,6 +37,8 @@ enum class VocalFxParameter : uint16_t {
   HarmonyVoice1Gain, HarmonyVoice2Gain,
   HarmonyVoice1Pan, HarmonyVoice2Pan,
   HarmonyVoice1Smoothing, HarmonyVoice2Smoothing
+  ,FormantVoice1Mode, FormantVoice2Mode,
+  FormantVoice1Amount, FormantVoice2Amount
 };
 
 enum class PitchShiftMode : uint8_t { Bypass, FixedInterval };
@@ -78,6 +80,7 @@ struct PitchShiftTelemetry {
   uint64_t max_grains_exceeded = 0;
   uint64_t invalid_pitch = 0;
   uint64_t invalid_mark = 0;
+  uint64_t formant_frames = 0;
   PitchShiftState state = PitchShiftState::Bypass;
 };
 

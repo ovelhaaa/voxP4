@@ -24,14 +24,16 @@ void SharedLpcAnalysis::reset() {
   fifo_.reset(); frame_.fill(0); fill_ = since_frame_ = 0; last_position_ = 0;
   telemetry_ = {}; profiler_.reset(); published_.store(0, std::memory_order_release);
   for (auto &m : models_) { m.sequence.store(0); m.valid.store(0); }
+  publish_telemetry();
 }
 void SharedLpcAnalysis::tap(const float *x, size_t n) {
   for (size_t i=0;i<n;++i)
-    (void)fifo_.push({std::isfinite(x[i]) ? x[i] : 0.0f, last_position_++});
+    (void)fifo_.push({std::isfinite(x[i]) ? x[i] : 0.0f,
+                      static_cast<uint32_t>(last_position_++)});
 }
 bool SharedLpcAnalysis::solve(const float *x, size_t n, uint16_t order,
                               float pre, SharedLpcModel *out) {
-  if (!x || !out || n < static_cast<size_t>(order) + 2 ||
+  if (!x || !out || n > 1024 || n < static_cast<size_t>(order) + 2 ||
       order > VOCAL_FX_LPC_MAX_ORDER)
     return false;
   std::array<float, 1024> y{};
@@ -72,7 +74,7 @@ void SharedLpcAnalysis::publish(const SharedLpcModel &m) {
   published_.store(serial,std::memory_order_release);
 }
 size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
-  size_t made=0; AnalysisSample s;
+  size_t made=0; LpcSample s;
   while(made<maximum && fifo_.pop(s)){
     if(fill_<config_.window_size) frame_[fill_++]=s.value;
     else { std::move(frame_.begin()+1,frame_.begin()+config_.window_size,frame_.begin()); frame_[config_.window_size-1]=s.value; }
@@ -85,6 +87,7 @@ size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
       if(!m.valid)++telemetry_.lpc_invalid_frames;
       telemetry_.max_prediction_error=std::max(telemetry_.max_prediction_error,m.prediction_error);
       publish(m); ++telemetry_.lpc_frames; ++made;
+      publish_telemetry();
       VF_PROFILE_END(profiler_, section(LpcProfileSection::Total), 0);
     }
   }
@@ -104,3 +107,23 @@ bool SharedLpcAnalysis::model_near(uint64_t ts,SharedLpcModel *out) const {
   } return found && best<=uint64_t(config_.window_size+config_.hop_size);
 }
 ProfileStats SharedLpcAnalysis::profile(LpcProfileSection s) const{return profiler_.stats(section(s));}
+void SharedLpcAnalysis::publish_telemetry() {
+  auto store=[](std::atomic<uint32_t> &lo,std::atomic<uint32_t> &hi,uint64_t v){lo.store(uint32_t(v),std::memory_order_relaxed);hi.store(uint32_t(v>>32),std::memory_order_relaxed);};
+  published_telemetry_.sequence.fetch_add(1,std::memory_order_acq_rel);
+  store(published_telemetry_.frames_low,published_telemetry_.frames_high,telemetry_.lpc_frames);
+  store(published_telemetry_.invalid_low,published_telemetry_.invalid_high,telemetry_.lpc_invalid_frames);
+  store(published_telemetry_.fallback_low,published_telemetry_.fallback_high,telemetry_.lpc_fallback_frames);
+  published_telemetry_.max_error.store(telemetry_.max_prediction_error,std::memory_order_relaxed);
+  published_telemetry_.sequence.fetch_add(1,std::memory_order_release);
+}
+LpcTelemetry SharedLpcAnalysis::telemetry() const {
+  LpcTelemetry result; uint32_t before,after;
+  auto load=[](const std::atomic<uint32_t> &lo,const std::atomic<uint32_t> &hi){return uint64_t(lo.load(std::memory_order_relaxed))|(uint64_t(hi.load(std::memory_order_relaxed))<<32);};
+  do { before=published_telemetry_.sequence.load(std::memory_order_acquire); if(before&1U){after=before;continue;}
+    result.lpc_frames=load(published_telemetry_.frames_low,published_telemetry_.frames_high);
+    result.lpc_invalid_frames=load(published_telemetry_.invalid_low,published_telemetry_.invalid_high);
+    result.lpc_fallback_frames=load(published_telemetry_.fallback_low,published_telemetry_.fallback_high);
+    result.max_prediction_error=published_telemetry_.max_error.load(std::memory_order_relaxed);
+    after=published_telemetry_.sequence.load(std::memory_order_acquire);
+  } while(before!=after || (after&1U)); return result;
+}

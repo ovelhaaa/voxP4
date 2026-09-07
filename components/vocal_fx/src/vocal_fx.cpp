@@ -374,6 +374,18 @@ void apply_parameter(VocalFxParameter p, float v) {
   case VocalFxParameter::HarmonyMode:e.harmony.set_mode(static_cast<HarmonyMode>(std::clamp(static_cast<int>(v),0,2)));break;
   case VocalFxParameter::HarmonyKey:e.harmony.set_root(static_cast<uint8_t>(std::clamp(static_cast<int>(v),0,11)));break;
   case VocalFxParameter::HarmonyScale:e.harmony.set_scale_type(static_cast<ScaleType>(std::clamp(static_cast<int>(v),0,1)));break;
+  case VocalFxParameter::FormantVoice1Mode:
+  case VocalFxParameter::FormantVoice2Mode: {
+    const size_t voice=static_cast<size_t>(p)-static_cast<size_t>(VocalFxParameter::FormantVoice1Mode);
+    e.pitch_shift[voice].set_formants(v>=.5f?FormantMode::Lpc:FormantMode::Off,e.pitch_shift[voice].formant_amount());
+    break;
+  }
+  case VocalFxParameter::FormantVoice1Amount:
+  case VocalFxParameter::FormantVoice2Amount: {
+    const size_t voice=static_cast<size_t>(p)-static_cast<size_t>(VocalFxParameter::FormantVoice1Amount);
+    e.pitch_shift[voice].set_formants(e.pitch_shift[voice].formant_mode(),v);
+    break;
+  }
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
@@ -408,8 +420,8 @@ void vocal_fx_set_harmony_degree(size_t v,int x){if(v<2)vocal_fx_set_parameter(v
 void vocal_fx_set_harmony_gain(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Gain),x);}
 void vocal_fx_set_harmony_pan(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Pan),x);}
 void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
-void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<2)e.pitch_shift[v].set_formants(mode,e.pitch_shift[v].formant_amount());}
-void vocal_fx_set_formant_amount(size_t v,float amount){if(v<2)e.pitch_shift[v].set_formants(e.pitch_shift[v].formant_mode(),amount);}
+void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Mode),mode==FormantMode::Lpc?1.0f:0.0f);}
+void vocal_fx_set_formant_amount(size_t v,float amount){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Amount),amount);}
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
 void vocal_fx_midi_all_notes_off(){e.midi.all_notes_off();}
@@ -512,7 +524,7 @@ size_t vocal_fx_dsp_memory_bytes() {
          e.lpc_analysis.memory_bytes() +
          (e.cfg.enable_pitch_analysis ? e.pitch_analysis.memory_bytes() : 0);
 }
-LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].formant_frames();x.voice2_formant_frames=e.pitch_shift[1].formant_frames();return x;}
+LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].telemetry().formant_frames;x.voice2_formant_frames=e.pitch_shift[1].telemetry().formant_frames;return x;}
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection s){const auto x=e.lpc_analysis.profile(s);return{x.calls,x.total_us,x.max_us,x.deadline_misses};}
 
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {

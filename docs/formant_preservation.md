@@ -29,11 +29,14 @@ one hop is rejected. This costs no per-voice waveform history.
 The coefficient convention is `A(z)=1+a1 z^-1+...`. Grain preparation applies
 the inverse FIR `e[n]=x[n]+sum(a[k]x[n-k])` directly from shared source history;
 TD-PSOLA operates on that residual. A continuous per-voice all-pole synthesis
-state then applies `x[n]=e[n]-sum(a[k]x[n-k])`. State is not reset at grain
-boundaries. Coefficient/application strength is smoothly approached per sample;
-confidence and the user amount multiply the target blend. Invalid, stale,
+state then applies `x[n]=e[n]-sum(a[k]x[n-k])`. State is not reset between
+compatible LPC grains. The normal and complete LPC round-trip OLA paths remain
+separate until output, where confidence and the user amount control a smoothed
+blend. Thus amounts approaching zero converge continuously to normal PSOLA.
+Invalid, stale,
 unvoiced, or low-confidence models leave the established waveform PSOLA path
-unchanged. Non-finite/burst output clears filter state and falls back safely.
+unchanged and clear the obsolete synthesis state. Non-finite/burst output also
+clears filter state and falls back safely.
 
 Direct LPC coefficient interpolation can theoretically cross an unstable
 region. This first implementation instead retains the selected stable model
@@ -77,20 +80,20 @@ come from the pinned-IDF size reports; the added state is one shared FIFO/frame/
 
 | Metric | Pre-LPC | LPC | Delta |
 |---|---:|---:|---:|
-| Firmware `.bin` | ~272,800 B | 278,336 B | +5,536 B |
-| DIRAM used | ~348,683 B | 391,763 B | +43,080 B |
-| DIRAM free | ~227,781 B | 184,701 B | -43,080 B |
-| DRAM/BSS | ~283,692 B | 321,876 B | +38,184 B |
+| Firmware `.bin` | ~272,800 B | 279,024 B | +6,224 B |
+| DIRAM used | ~348,683 B | 408,203 B | +59,520 B |
+| DIRAM free | ~227,781 B | 168,261 B | -59,520 B |
+| DRAM/BSS | ~283,692 B | 338,316 B | +54,624 B |
 | IRAM | ~57,802 B | 57,802 B | 0 B |
-| `libvocal_fx` static RAM | ~277,748 B | 320,828 B | +43,080 B |
-| largest symbol | global Engine ~267,976 B | 311,056 B | +43,080 B |
+| `libvocal_fx` static RAM | ~277,748 B | 337,268 B | +59,520 B |
+| largest symbol | global Engine ~267,976 B | 327,496 B | +59,520 B |
 
-The DIRAM gate passes (184,701 B free, above 150 KiB), but the increment is
-slightly above the desired 40 KiB. Most of it is the 2049-entry SPSC FIFO:
-`AnalysisSample` carries a 64-bit timestamp and alignment, costing 16 bytes per
-entry. A future optimization should infer contiguous positions and store float
-samples only; this is preferred over shrinking source history or duplicating
-per-voice buffers.
+The DIRAM gate passes (168,261 B free, above 150 KiB), although the increment is
+above the desired 40 KiB. Correct partial blending requires retaining both the
+normal and residual OLA streams (16 KiB per voice). The LPC FIFO uses compact
+float/32-bit-position entries, saving 16 KiB versus the pitch analyser's aligned
+64-bit sample records without shrinking source history or adding analysis per
+voice.
 
 ## Decision gate
 

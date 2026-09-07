@@ -60,6 +60,7 @@ bool TdPsola::init(float rate, const PitchShiftConfig &config,
 }
 void TdPsola::clear_ola() {
   ola_.fill(0);
+  lpc_ola_.fill(0);
   norm_.fill(0);
 }
 void TdPsola::reset() {
@@ -156,7 +157,9 @@ bool TdPsola::add_grain(double destination, double source,
   SharedLpcModel model;
   const bool use_lpc=formant_mode_==FormantMode::Lpc && formant_amount_>0 &&
                      lpc_ && lpc_->model_near(center,&model) && model.confidence>.15f;
-  if(use_lpc) grain_model_=model;
+  grain_model_=use_lpc ? model : SharedLpcModel{};
+  if (!use_lpc)
+    synthesis_state_.fill(0);
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::WindowOla));
   const int64_t dst = static_cast<int64_t>(std::llround(destination));
   for (int n = -half; n <= half; ++n) {
@@ -169,12 +172,14 @@ bool TdPsola::add_grain(double destination, double source,
     const float w = resources_->window(wi);
     const size_t oi = static_cast<uint64_t>(absolute) & (kOlaSize - 1);
     const uint64_t source_sample=static_cast<uint64_t>(static_cast<int64_t>(center)+n);
-    float sample=history_at(source_sample);
+    const float plain=history_at(source_sample);
+    float sample=plain;
     if(use_lpc){
       for(size_t j=1;j<=model.order;++j)
         if(source_sample>=j) sample+=model.coefficients[j]*history_at(source_sample-j);
     }
-    ola_[oi] += sample*w;
+    ola_[oi] += plain*w;
+    lpc_ola_[oi] += sample*w;
     norm_[oi] += w;
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::WindowOla), 0);
@@ -211,7 +216,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
                                  : input[i];
       output[i] = input[i] * (1.0f - active_mix_) + fallback * active_mix_;
       const size_t oi = (block_start + i) & (kOlaSize - 1);
-      ola_[oi] = norm_[oi] = 0.0f;
+      ola_[oi] = lpc_ola_[oi] = norm_[oi] = 0.0f;
     }
     output_position_ += frames;
     telemetry_.state = state_;
@@ -294,7 +299,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
                              ? formant_amount_*grain_model_.confidence:0.0f;
       formant_mix_+=.002f*(target-formant_mix_);
       if(formant_mix_>1e-4f){
-        float restored=output[i];
+        float restored=lpc_ola_[oi]/norm_[oi];
         for(size_t j=1;j<=grain_model_.order;++j)restored-=grain_model_.coefficients[j]*synthesis_state_[j-1];
         if(std::isfinite(restored)&&std::fabs(restored)<8.0f){
           for(size_t j=grain_model_.order-1;j>0;--j)synthesis_state_[j]=synthesis_state_[j-1];
@@ -305,7 +310,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
     } else {
       output[i] = fallback;
     }
-    ola_[oi] = norm_[oi] = 0;
+    ola_[oi] = lpc_ola_[oi] = norm_[oi] = 0;
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Normalization),
                  0);
@@ -369,6 +374,7 @@ void TdPsola::publish_telemetry() {
                  telemetry_.max_grains_exceeded);
   store_atomic64(published_telemetry_.invalid_pitch, telemetry_.invalid_pitch);
   store_atomic64(published_telemetry_.invalid_mark, telemetry_.invalid_mark);
+  store_atomic64(published_telemetry_.formant_frames, formant_frames_);
   published_telemetry_.state.store(static_cast<uint32_t>(state_),
                                    std::memory_order_relaxed);
   published_telemetry_.sequence.fetch_add(1, std::memory_order_release);
@@ -398,6 +404,7 @@ PitchShiftTelemetry TdPsola::telemetry() const {
         load_atomic64(published_telemetry_.max_grains_exceeded);
     result.invalid_pitch = load_atomic64(published_telemetry_.invalid_pitch);
     result.invalid_mark = load_atomic64(published_telemetry_.invalid_mark);
+    result.formant_frames = load_atomic64(published_telemetry_.formant_frames);
     result.state = static_cast<PitchShiftState>(
         published_telemetry_.state.load(std::memory_order_relaxed));
     after = published_telemetry_.sequence.load(std::memory_order_acquire);

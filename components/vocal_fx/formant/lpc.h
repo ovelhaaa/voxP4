@@ -47,7 +47,7 @@ public:
   void tap(const float *samples, size_t count);
   size_t run(size_t max_frames, const PitchResult &pitch);
   bool model_near(uint64_t timestamp, SharedLpcModel *model) const;
-  LpcTelemetry telemetry() const { return telemetry_; }
+  LpcTelemetry telemetry() const;
   ProfileStats profile(LpcProfileSection section) const;
   size_t memory_bytes() const { return sizeof(*this); }
 
@@ -55,6 +55,7 @@ public:
   static bool solve(const float *frame, size_t count, uint16_t order,
                     float preemphasis, SharedLpcModel *model);
 private:
+  struct LpcSample { float value; uint32_t input_position; };
   struct PublishedModel {
     std::atomic<uint32_t> sequence{0};
     std::array<std::atomic<float>, VOCAL_FX_LPC_MAX_ORDER + 1> coefficients{};
@@ -62,14 +63,23 @@ private:
     std::atomic<uint32_t> timestamp_low{0}, timestamp_high{0}, order{0}, valid{0};
   };
   void publish(const SharedLpcModel &model);
+  void publish_telemetry();
+  struct PublishedTelemetry {
+    std::atomic<uint32_t> sequence{0};
+    std::atomic<uint32_t> frames_low{0}, frames_high{0};
+    std::atomic<uint32_t> invalid_low{0}, invalid_high{0};
+    std::atomic<uint32_t> fallback_low{0}, fallback_high{0};
+    std::atomic<float> max_error{0};
+  };
   LpcConfig config_{};
   float sample_rate_ = 48000.0f;
-  AnalysisFifo<2049> fifo_{};
+  AnalysisFifo<2049, LpcSample> fifo_{};
   std::array<float, 1024> frame_{};
   size_t fill_ = 0, since_frame_ = 0;
   uint64_t last_position_ = 0;
   std::array<PublishedModel, kModelCount> models_{};
   std::atomic<uint32_t> published_{0};
   LpcTelemetry telemetry_{};
+  PublishedTelemetry published_telemetry_{};
   Profiler profiler_{};
 };
