@@ -33,16 +33,24 @@ cross-core snapshots through a 32-bit-atomic seqlock instead of sharing mutable
 
 ## Build for ESP32-P4
 
-ESP-IDF **5.3 or newer** is expected because the component uses the standard-mode
-channel I2S driver. Configure the target and board pins before running:
+The project pins ESP-IDF in [`scripts/idf-version.sh`](scripts/idf-version.sh).
+The existing CI requirement was retained because that stable release supports
+ESP32-P4 and the standard-mode channel I2S driver. Set up and build from any
+directory without relying on persistent shell exports:
 
 ```sh
-idf.py set-target esp32p4
-idf.py build
-idf.py flash monitor
+./scripts/setup-codex.sh
+./scripts/check-environment.sh
+./scripts/build-p4.sh
 ```
 
-Every push and pull request also builds the `esp32p4` target with ESP-IDF 5.3 in
+`IDF_PATH` and `IDF_TOOLS_PATH` may override the defaults under `$HOME`. The
+build runs `idf.py set-target esp32p4` only when no configured target exists;
+an existing configuration for another target is rejected instead of being
+silently destroyed. `sdkconfig.defaults` makes fresh configurations select P4.
+To work interactively, use `source scripts/idf-env.sh`.
+
+Every push and pull request also builds the pinned `esp32p4` target in
 GitHub Actions. Successful runs retain the application, bootloader, partition
 table, and flashing metadata as the `vox-p4-firmware` artifact for 14 days. The
 workflow can also be started manually from the Actions tab.
