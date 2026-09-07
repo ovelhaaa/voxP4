@@ -9,6 +9,7 @@
 #include "pitch_analysis.h"
 #include "profiling.h"
 #include "td_psola.h"
+#include "harmony_engine.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -24,11 +25,15 @@ struct Engine {
   Limiter limiter;
   Profiler profiler;
   PitchAnalysis pitch_analysis;
-  TdPsola pitch_shift;
+  SharedPitchShiftResources pitch_resources;
+  TdPsola pitch_shift[2];
+  HarmonyEngine harmony;
+  MidiChordState midi;
   bool ready = false;
   float work[VOCAL_FX_MAX_BLOCK_SIZE], left[VOCAL_FX_MAX_BLOCK_SIZE],
       right[VOCAL_FX_MAX_BLOCK_SIZE];
-  float shifted[VOCAL_FX_MAX_BLOCK_SIZE];
+  float shifted[2][VOCAL_FX_MAX_BLOCK_SIZE];
+  float harmony_mix[2]{};
   PitchMark pitch_shift_marks[TdPsola::kMaxMarks];
   PitchMark pitch_shift_candidate_marks[TdPsola::kMaxMarks];
   size_t pitch_shift_mark_count = 0;
@@ -102,8 +107,13 @@ bool vocal_fx_init(const VocalFxConfig &c) {
     if (!e.pitch_analysis.init(pitch_config))
       return false;
   }
-  if (!e.pitch_shift.init(c.sample_rate, c.pitch_shift))
-    return false;
+  e.pitch_resources.init();
+  for (auto &voice : e.pitch_shift)
+    if (!voice.init(c.sample_rate, c.pitch_shift, &e.pitch_resources)) return false;
+  HarmonyVoiceConfig legacy{}; legacy.enabled=c.pitch_shift.enabled;
+  legacy.interval=c.pitch_shift.semitones; legacy.gain=c.pitch_shift.wet;
+  legacy.pan=0; legacy.smoothing_ms=c.pitch_shift.smoothing_ms;
+  e.harmony.set_voice(0,legacy); e.harmony.reset();
   e.pitch_shift_pitch = {};
   e.pitch_shift_mark_count = 0;
   parameter_queue.reset();
@@ -131,7 +141,9 @@ void vocal_fx_reset() {
   e.delay.reset();
   e.reverb.reset();
   e.limiter.reset();
-  e.pitch_shift.reset();
+  e.pitch_resources.reset();
+  for (auto &voice : e.pitch_shift) voice.reset();
+  e.harmony.reset();
   e.pitch_shift_mark_count = 0;
   e.pitch_shift_pitch = {};
   if (e.cfg.enable_pitch_analysis)
@@ -169,7 +181,8 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     const uint64_t mark_start = mark_end > PitchAnalysis::kAudioHistory
                                     ? mark_end - PitchAnalysis::kAudioHistory
                                     : 0;
-    if (e.cfg.enable_pitch_analysis && e.pitch_shift.enabled()) {
+    if (e.cfg.enable_pitch_analysis &&
+        (e.pitch_shift[0].enabled() || e.pitch_shift[1].enabled())) {
       size_t candidate_count = 0;
       if (vocal_fx_try_get_pitch_marks(mark_start, mark_end,
                                        e.pitch_shift_candidate_marks,
@@ -181,15 +194,30 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     } else {
       e.pitch_shift_mark_count = 0;
     }
-    e.pitch_shift.process(e.work, e.shifted, n, current_pitch,
-                          vocal_fx_pitch_track_state(), e.pitch_shift_marks,
-                          e.pitch_shift_mark_count);
-    std::copy_n(e.shifted, n, e.work);
+    e.pitch_resources.push(e.work,n);
+    const auto targets=e.harmony.update(current_pitch.frequency_hz,
+                                         current_pitch.voiced,e.midi);
+    for(size_t v=0;v<2;++v){
+      e.pitch_shift[v].set_enabled(targets[v].valid);
+      if(targets[v].valid) e.pitch_shift[v].set_ratio(targets[v].target_frequency_hz/current_pitch.frequency_hz);
+      e.pitch_shift[v].process_shared(e.work,e.shifted[v],n,current_pitch,
+          vocal_fx_pitch_track_state(),e.pitch_shift_marks,e.pitch_shift_mark_count);
+    }
+    // -6 dB headroom, centred dry, equal-power harmony pan. Unvoiced/onset
+    // attenuation is performed by each PSOLA voice's acquisition fade.
+    for(size_t i=0;i<n;++i){
+      float l=e.work[i],r=e.work[i];
+      for(size_t v=0;v<2;++v){const auto &c=e.harmony.voice(v);const float p=std::clamp(c.pan,-1.0f,1.0f);
+        const float wanted=targets[v].valid&&current_pitch.voiced&&!current_pitch.onset?1.0f:0.0f;
+        const float step=1.0f/std::max(1.0f,e.cfg.sample_rate*.020f);
+        e.harmony_mix[v]+=std::clamp(wanted-e.harmony_mix[v],-step,step);
+        l+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1-p));r+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1+p));}
+      e.left[i]=.5f*l;e.right[i]=.5f*r;
+    }
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
     for (size_t i = 0; i < n; i++) {
-      e.left[i] = e.right[i] = e.work[i];
       if (e.cfg.enable_delay)
-        e.delay.process(e.work[i], e.left[i], e.right[i]);
+        e.delay.process((e.left[i]+e.right[i])*.5f, e.left[i], e.right[i]);
     }
     VF_PROFILE_END(e.profiler, ProfileSection::Delay, 0);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Reverb);
@@ -307,14 +335,23 @@ void apply_parameter(VocalFxParameter p, float v) {
     e.cfg.enable_reverb = v >= .5f;
     break;
   case VocalFxParameter::PitchShiftEnabled:
-    e.pitch_shift.set_enabled(v >= .5f);
+    {auto c=e.harmony.voice(0);c.enabled=v>=.5f;e.harmony.set_voice(0,c);}
     break;
   case VocalFxParameter::PitchShiftSemitones:
-    e.pitch_shift.set_semitones(v);
+    {auto c=e.harmony.voice(0);c.interval=v;e.harmony.set_voice(0,c);}
     break;
   case VocalFxParameter::PitchShiftWet:
-    e.pitch_shift.set_wet(v);
+    {auto c=e.harmony.voice(0);c.gain=std::clamp(v,0.0f,1.0f);e.harmony.set_voice(0,c);}
     break;
+  case VocalFxParameter::HarmonyMode:e.harmony.set_mode(static_cast<HarmonyMode>(std::clamp(static_cast<int>(v),0,2)));break;
+  case VocalFxParameter::HarmonyKey:e.harmony.set_root(static_cast<uint8_t>(std::clamp(static_cast<int>(v),0,11)));break;
+  case VocalFxParameter::HarmonyScale:e.harmony.set_scale_type(static_cast<ScaleType>(std::clamp(static_cast<int>(v),0,1)));break;
+  default: {
+    const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
+    if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
+      if(field==0)c.enabled=v>=.5f;else if(field==1)c.interval=v;else if(field==2)c.degree=static_cast<int>(v);else if(field==3)c.gain=std::clamp(v,0.0f,1.0f);else if(field==4)c.pan=std::clamp(v,-1.0f,1.0f);else if(field==5)c.smoothing_ms=std::clamp(v,1.0f,500.0f);
+      e.harmony.set_voice(voice,c);e.pitch_shift[voice].set_smoothing(c.smoothing_ms);}
+    break; }
   }
 }
 } // namespace
@@ -333,15 +370,29 @@ void vocal_fx_set_pitch_shift_semitones(float semitones) {
 void vocal_fx_set_pitch_shift_mix(float wet) {
   vocal_fx_set_parameter(VocalFxParameter::PitchShiftWet, wet);
 }
+void vocal_fx_set_harmony_mode(HarmonyMode m){vocal_fx_set_parameter(VocalFxParameter::HarmonyMode,static_cast<float>(m));}
+void vocal_fx_set_key(uint8_t r){vocal_fx_set_parameter(VocalFxParameter::HarmonyKey,static_cast<float>(r%12));}
+void vocal_fx_set_scale(ScaleType s){vocal_fx_set_parameter(VocalFxParameter::HarmonyScale,static_cast<float>(s));}
+namespace { VocalFxParameter voice_param(size_t v,VocalFxParameter first){return static_cast<VocalFxParameter>(static_cast<int>(first)+static_cast<int>(v));} }
+void vocal_fx_set_harmony_enabled(size_t v,bool x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Enabled),x?1:0);}
+void vocal_fx_set_harmony_interval(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Interval),x);}
+void vocal_fx_set_harmony_degree(size_t v,int x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Degree),static_cast<float>(x));}
+void vocal_fx_set_harmony_gain(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Gain),x);}
+void vocal_fx_set_harmony_pan(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Pan),x);}
+void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
+void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
+void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
+void vocal_fx_midi_all_notes_off(){e.midi.all_notes_off();}
+PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t v){return v<2?e.pitch_shift[v].telemetry():PitchShiftTelemetry{};}
 uint32_t vocal_fx_pitch_shift_latency_samples() {
-  return e.pitch_shift.latency_samples();
+  return e.pitch_shift[0].latency_samples();
 }
 PitchShiftTelemetry vocal_fx_pitch_shift_telemetry() {
-  return e.pitch_shift.telemetry();
+  return e.pitch_shift[0].telemetry();
 }
 VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection s) {
-  const auto stats = e.pitch_shift.profile(s);
+  const auto stats = e.pitch_shift[0].profile(s);
   return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
 }
 void vocal_fx_publish_pitch(const PitchResult &r) {
@@ -425,7 +476,8 @@ vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section) {
 }
 size_t vocal_fx_dsp_memory_bytes() {
   return e.delay.memory_bytes() + e.reverb.memory_bytes() +
-         e.pitch_shift.memory_bytes() +
+         e.pitch_resources.memory_bytes() +
+         e.pitch_shift[0].memory_bytes() + e.pitch_shift[1].memory_bytes() +
          (e.cfg.enable_pitch_analysis ? e.pitch_analysis.memory_bytes() : 0);
 }
 
