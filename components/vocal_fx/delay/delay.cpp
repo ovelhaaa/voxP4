@@ -61,21 +61,34 @@ float StereoDelay::read(float d) const {
   float f = p - i;
   return l_[i] + (l_[j] - l_[i]) * f;
 }
-void StereoDelay::process(float x, float &ol, float &orr) {
-  float a = read(dl_.next());
+void StereoDelay::advance(float x, float &a, float &b, float &wet) {
+  a = read(dl_.next());
   const float right_delay = std::clamp(dr_.next(), 1.0f, (float)size_ - 2.0f);
   float p = (float)pos_ - right_delay;
   if (p < 0)
     p += size_;
   size_t i = (size_t)p, j = (i + 1) % size_;
-  float f = p - i, b = r_[i] + (r_[j] - r_[i]) * f;
+  float f = p - i;
+  b = r_[i] + (r_[j] - r_[i]) * f;
   lp_l_ = (1 - lp_alpha_) * a + lp_alpha_ * lp_l_;
   lp_r_ = (1 - lp_alpha_) * b + lp_alpha_ * lp_r_;
   l_[pos_] = x + feedback_ * lp_l_;
   r_[pos_] = x + feedback_ * lp_r_;
   pos_ = (pos_ + 1) % size_;
-  float dry = dry_.next(), wet = wet_.next();
+  wet = wet_.next();
+}
+void StereoDelay::process(float x, float &ol, float &orr) {
+  float a, b, wet;
+  advance(x, a, b, wet);
+  const float dry = dry_.next();
   ol = x * dry + a * wet;
   orr = x * dry + b * wet;
+}
+void StereoDelay::process_wet(float x, float &ol, float &orr) {
+  float a, b, wet;
+  advance(x, a, b, wet);
+  (void)dry_.next();
+  ol = a * wet;
+  orr = b * wet;
 }
 size_t StereoDelay::memory_bytes() const { return size_ * 2U * sizeof(float); }

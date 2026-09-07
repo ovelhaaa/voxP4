@@ -108,10 +108,18 @@ bool vocal_fx_init(const VocalFxConfig &c) {
       return false;
   }
   e.pitch_resources.init();
+  PitchShiftConfig render_config = c.pitch_shift;
+  render_config.wet = 1.0f;
   for (auto &voice : e.pitch_shift)
-    if (!voice.init(c.sample_rate, c.pitch_shift, &e.pitch_resources)) return false;
+    if (!voice.init(c.sample_rate, render_config, &e.pitch_resources))
+      return false;
   HarmonyVoiceConfig legacy{}; legacy.enabled=c.pitch_shift.enabled;
-  legacy.interval=c.pitch_shift.semitones; legacy.gain=c.pitch_shift.wet;
+  legacy.interval=std::isfinite(c.pitch_shift.semitones)
+                      ? std::clamp(c.pitch_shift.semitones, -12.0f, 12.0f)
+                      : 0.0f;
+  legacy.gain=std::isfinite(c.pitch_shift.wet)
+                  ? std::clamp(c.pitch_shift.wet, 0.0f, 1.0f)
+                  : 1.0f;
   legacy.pan=0; legacy.smoothing_ms=c.pitch_shift.smoothing_ms;
   e.harmony.set_voice(0,legacy); e.harmony.reset();
   e.pitch_shift_pitch = {};
@@ -208,7 +216,10 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     for(size_t i=0;i<n;++i){
       float l=e.work[i],r=e.work[i];
       for(size_t v=0;v<2;++v){const auto &c=e.harmony.voice(v);const float p=std::clamp(c.pan,-1.0f,1.0f);
-        const float wanted=targets[v].valid&&current_pitch.voiced&&!current_pitch.onset?1.0f:0.0f;
+        const float wanted = targets[v].valid &&
+                                     e.pitch_shift[v].has_usable_output()
+                                 ? 1.0f
+                                 : 0.0f;
         const float step=1.0f/std::max(1.0f,e.cfg.sample_rate*.020f);
         e.harmony_mix[v]+=std::clamp(wanted-e.harmony_mix[v],-step,step);
         l+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1-p));r+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1+p));}
@@ -216,8 +227,12 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
     for (size_t i = 0; i < n; i++) {
-      if (e.cfg.enable_delay)
-        e.delay.process((e.left[i]+e.right[i])*.5f, e.left[i], e.right[i]);
+      if (e.cfg.enable_delay) {
+        float delay_l, delay_r;
+        e.delay.process_wet((e.left[i] + e.right[i]) * .5f, delay_l, delay_r);
+        e.left[i] += delay_l;
+        e.right[i] += delay_r;
+      }
     }
     VF_PROFILE_END(e.profiler, ProfileSection::Delay, 0);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Reverb);
@@ -338,10 +353,18 @@ void apply_parameter(VocalFxParameter p, float v) {
     {auto c=e.harmony.voice(0);c.enabled=v>=.5f;e.harmony.set_voice(0,c);}
     break;
   case VocalFxParameter::PitchShiftSemitones:
-    {auto c=e.harmony.voice(0);c.interval=v;e.harmony.set_voice(0,c);}
+    if (std::isfinite(v)) {
+      auto c = e.harmony.voice(0);
+      c.interval = std::clamp(v, -12.0f, 12.0f);
+      e.harmony.set_voice(0, c);
+    }
     break;
   case VocalFxParameter::PitchShiftWet:
-    {auto c=e.harmony.voice(0);c.gain=std::clamp(v,0.0f,1.0f);e.harmony.set_voice(0,c);}
+    if (std::isfinite(v)) {
+      auto c = e.harmony.voice(0);
+      c.gain = std::clamp(v, 0.0f, 1.0f);
+      e.harmony.set_voice(0, c);
+    }
     break;
   case VocalFxParameter::HarmonyMode:e.harmony.set_mode(static_cast<HarmonyMode>(std::clamp(static_cast<int>(v),0,2)));break;
   case VocalFxParameter::HarmonyKey:e.harmony.set_root(static_cast<uint8_t>(std::clamp(static_cast<int>(v),0,11)));break;

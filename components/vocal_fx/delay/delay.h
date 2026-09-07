@@ -11,10 +11,12 @@ public:
   void set_feedback(float f);
   void set_feedback_lowpass(float hz);
   void process(float input, float &l, float &r);
+  void process_wet(float input, float &l, float &r);
   size_t memory_bytes() const;
 
 private:
   float read(float delay) const;
+  void advance(float input, float &delayed_l, float &delayed_r, float &wet);
   std::unique_ptr<float[]> l_, r_;
   size_t size_ = 0;
   size_t pos_ = 0;

@@ -67,6 +67,7 @@ void TdPsola::reset() {
   output_position_ = 0;
   next_synthesis_mark_ = 0;
   have_cursor_ = false;
+  block_has_psola_ = false;
   current_semitones_ = target_semitones_;
   current_wet_ = target_wet_;
   psola_gain_ = 0;
@@ -181,6 +182,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
                       const PitchMark *marks, size_t mark_count) {
   if (!input || !output || !frames) return;
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::Total));
+  block_has_psola_ = false;
   const uint64_t block_start = output_position_,
                  block_end = block_start + frames;
   ++telemetry_.blocks;
@@ -275,7 +277,12 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
     const float fallback = history_ready && history_available(source, source)
                                ? history_at(source)
                                : 0.0f;
-    output[i] = norm_[oi] > 1e-5f ? ola_[oi] / norm_[oi] : fallback;
+    if (norm_[oi] > 1e-5f) {
+      output[i] = ola_[oi] / norm_[oi];
+      block_has_psola_ = true;
+    } else {
+      output[i] = fallback;
+    }
     ola_[oi] = norm_[oi] = 0;
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Normalization),

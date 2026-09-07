@@ -7,11 +7,32 @@ void HarmonyEngine::reset(){have_identity_=false;previous_={0,0};}
 void HarmonyEngine::set_mode(HarmonyMode m){mode_=m;reset();}
 void HarmonyEngine::set_scale(ScaleConfig s){s.root%=12;scale_=s;reset();}
 void HarmonyEngine::set_voice(size_t i,const HarmonyVoiceConfig &c){if(i<2)voices_[i]=c;}
-int HarmonyEngine::identify(float midi){
- if(!have_identity_){identity_=mode_==HarmonyMode::Diatonic?nearest_scale_note(scale_,midi):static_cast<int>(std::lround(midi));have_identity_=true;}
- // 65 cents keeps identity through the equal-tempered midpoint.
- if(std::fabs(midi-identity_)>.65f) identity_=mode_==HarmonyMode::Diatonic?nearest_scale_note(scale_,midi):static_cast<int>(std::lround(midi));
- return identity_;
+int HarmonyEngine::identify(float midi) {
+  if (!have_identity_) {
+    identity_ = mode_ == HarmonyMode::Diatonic
+                    ? nearest_scale_note(scale_, midi)
+                    : static_cast<int>(std::lround(midi));
+    have_identity_ = true;
+  }
+  if (mode_ != HarmonyMode::Diatonic) {
+    // Preserve the existing chromatic 65-cent Schmitt threshold.
+    if (std::fabs(midi - identity_) > .65f)
+      identity_ = static_cast<int>(std::lround(midi));
+    return identity_;
+  }
+
+  const int candidate = nearest_scale_note(scale_, midi);
+  if (candidate != identity_) {
+    // Add 15 cents beyond the midpoint. Unlike distance from the current note,
+    // this remains a 30-cent Schmitt band across both semitone and whole-tone
+    // gaps in the scale.
+    const float midpoint = .5f * static_cast<float>(identity_ + candidate);
+    const bool crossed = candidate > identity_ ? midi > midpoint + .15f
+                                                : midi < midpoint - .15f;
+    if (crossed)
+      identity_ = candidate;
+  }
+  return identity_;
 }
 HarmonyVoiceTarget HarmonyEngine::target_for(size_t i,float midi,int note,const std::array<bool,128>&held){
  HarmonyVoiceTarget r{}; if(!voices_[i].enabled)return r; float target=0;

@@ -46,6 +46,7 @@ public:
   void set_smoothing(float milliseconds);
   void set_wet(float wet);
   bool enabled() const { return target_enabled_; }
+  bool has_usable_output() const { return block_has_psola_; }
   void process(const float *input, float *output, size_t frames,
                const PitchResult &pitch, PitchTrackState track,
                const PitchMark *marks, size_t mark_count);
@@ -87,6 +88,7 @@ private:
   uint64_t output_position_ = 0;
   double next_synthesis_mark_ = 0.0;
   bool have_cursor_ = false, target_enabled_ = false;
+  bool block_has_psola_ = false;
   float target_semitones_ = 0, current_semitones_ = 0;
   float target_wet_ = 1, current_wet_ = 1;
   float smoothing_ms_ = 30, psola_gain_ = 0, active_mix_ = 0;
