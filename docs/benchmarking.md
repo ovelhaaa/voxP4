@@ -51,3 +51,37 @@ Pitch analysis has its own per-stage counters and host driver:
 
 See [`pitch_analysis.md`](pitch_analysis.md) for timestamp semantics, the
 filled host-quality table, analysis memory, and the target benchmark table.
+
+## TD-PSOLA (Milestone 3)
+
+Run the bounded renderer alone and inside the enabled FX graph with:
+
+```sh
+build-host/psola_benchmark 60
+build-host/psola_benchmark 60 full
+```
+
+September 2026 x86 host observations for a 220 Hz two-harmonic signal, +4 st,
+64-sample blocks are below. These are regression measurements, **not ESP32-P4
+estimates**. Stage averages have different denominators: grain stages are per
+grain and sample/block stages are per block.
+
+| Stage | P4 avg cycles | P4 max cycles | Host avg us |
+|---|---:|---:|---:|
+| Source mark lookup | TBD hardware | TBD hardware | 0.50/grain |
+| Grain preparation | TBD hardware | TBD hardware | 0.17/grain |
+| Window + OLA | TBD hardware | TBD hardware | 11.54/grain |
+| Normalization | TBD hardware | TBD hardware | 1.73/block |
+| Historical fallback | TBD hardware | TBD hardware | 0.08/block |
+| Crossfade | TBD hardware | TBD hardware | 2.41/block |
+| Pitch shift total | TBD hardware | TBD hardware | 10.50/block |
+| Full FX chain + synchronous host analysis | TBD hardware | TBD hardware | 235.0 wall/block |
+
+The 60-second isolated run measured 169.4 us wall time/block including
+synchronous host YIN, 11.16 profiled audio-thread pitch-shift us/block, 0.369
+grains/block average, one maximum grain/block, 0 mark/history underflows after
+acquisition, and 0.122% startup fallback samples. The configured hard bound is
+eight grains/block. Total reported DSP-owned memory was 1,059,876 bytes with all
+existing delay/reverb/analysis storage; `TdPsola` contributes approximately
+104 KiB. P4 internal-RAM placement and release-build cycles remain mandatory
+hardware measurements before declaring the target CPU budget met.

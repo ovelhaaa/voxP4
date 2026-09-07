@@ -373,6 +373,24 @@ PitchMark PitchAnalysis::read_mark(size_t index) const {
   } while (before != after || (after & 1U));
   return result;
 }
+bool PitchAnalysis::try_read_mark(size_t index, PitchMark *out) const {
+  if (!out)
+    return false;
+  const auto &source = mark_ring_[index];
+  const uint32_t before = source.sequence.load(std::memory_order_acquire);
+  if (before & 1U)
+    return false;
+  const uint64_t low = source.position_low.load(std::memory_order_relaxed);
+  const uint64_t high = source.position_high.load(std::memory_order_relaxed);
+  PitchMark result;
+  result.sample_position = low | (high << 32U);
+  result.confidence = source.confidence.load(std::memory_order_relaxed);
+  const uint32_t after = source.sequence.load(std::memory_order_acquire);
+  if (before != after || (after & 1U))
+    return false;
+  *out = result;
+  return true;
+}
 bool PitchAnalysis::latest_mark(PitchMark *out) const {
   if (!out)
     return false;
@@ -418,6 +436,33 @@ size_t PitchAnalysis::marks(uint64_t start, uint64_t end, PitchMark *out,
     after = mark_generation_.load(std::memory_order_acquire);
   } while (before != after || (after & 1U));
   return n;
+}
+bool PitchAnalysis::try_marks(uint64_t start, uint64_t end, PitchMark *out,
+                              size_t cap, size_t *written) const {
+  if (written)
+    *written = 0;
+  if (!written || !out || !cap || start > end)
+    return false;
+  const uint32_t before = mark_generation_.load(std::memory_order_acquire);
+  if (before & 1U)
+    return false;
+  const uint32_t metadata = mark_metadata_.load(std::memory_order_acquire);
+  const size_t count = metadata >> 16U;
+  const size_t write = metadata & 0xffffU;
+  const size_t first = (write + kMarkCapacity - count) % kMarkCapacity;
+  size_t n = 0;
+  for (size_t i = 0; i < count && n < cap; ++i) {
+    PitchMark mark;
+    if (!try_read_mark((first + i) % kMarkCapacity, &mark))
+      return false;
+    if (mark.sample_position >= start && mark.sample_position <= end)
+      out[n++] = mark;
+  }
+  const uint32_t after = mark_generation_.load(std::memory_order_acquire);
+  if (before != after || (after & 1U))
+    return false;
+  *written = n;
+  return true;
 }
 PitchTrackState PitchAnalysis::track_state() const {
   return static_cast<PitchTrackState>(
