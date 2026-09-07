@@ -2,6 +2,7 @@
 #include "vocal_fx_config.h"
 #include "vocal_fx_types.h"
 #include "harmony_engine.h"
+#include "lpc.h"
 #include <cstddef>
 
 bool vocal_fx_init(const VocalFxConfig &config);
@@ -22,6 +23,8 @@ void vocal_fx_set_harmony_degree(size_t voice, int degrees);
 void vocal_fx_set_harmony_gain(size_t voice, float gain);
 void vocal_fx_set_harmony_pan(size_t voice, float pan);
 void vocal_fx_set_harmony_smoothing(size_t voice, float milliseconds);
+void vocal_fx_set_formant_mode(size_t voice, FormantMode mode);
+void vocal_fx_set_formant_amount(size_t voice, float amount);
 void vocal_fx_midi_note_on(uint8_t note, uint8_t velocity);
 void vocal_fx_midi_note_off(uint8_t note);
 void vocal_fx_midi_all_notes_off();
@@ -49,3 +52,5 @@ VocalFxProfileStats
 vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section);
 size_t vocal_fx_dsp_memory_bytes();
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section);
+LpcTelemetry vocal_fx_lpc_telemetry();
+VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection section);

@@ -20,8 +20,8 @@ static void put32(std::ofstream &f, uint32_t v) {
   f.write(b, 4);
 }
 int main(int argc, char **argv) {
-  if (argc != 4) {
-    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones\n");
+  if (argc < 4) {
+    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20]\n");
     return 2;
   }
   std::ifstream f(argv[1], std::ios::binary);
@@ -61,10 +61,19 @@ int main(int argc, char **argv) {
   c.pitch_shift.enabled = true;
   c.pitch_shift.semitones = std::stof(argv[3]);
   c.pitch_shift.wet = 1;
+  FormantMode formants=FormantMode::Off; float amount=1.0f;
+  for(int i=4;i<argc;++i){
+    const std::string option=argv[i];
+    if(option=="--formants" && i+1<argc){const std::string value=argv[++i];if(value=="lpc")formants=FormantMode::Lpc;else if(value!="off"){std::fprintf(stderr,"invalid formant mode\n");return 2;}}
+    else if(option=="--formant-amount"&&i+1<argc)amount=std::stof(argv[++i]);
+    else if(option=="--lpc-order"&&i+1<argc)c.lpc.order=static_cast<uint16_t>(std::stoi(argv[++i]));
+    else {std::fprintf(stderr,"unknown option: %s\n",option.c_str());return 2;}
+  }
   if (!vocal_fx_init(c)) {
     std::fprintf(stderr, "engine init failed\n");
     return 2;
   }
+  vocal_fx_set_formant_mode(0,formants); vocal_fx_set_formant_amount(0,amount);
   const size_t stride = ch * bits / 8, frames = bytes / stride;
   std::vector<float> mono(frames), out(frames), right(64);
   for (size_t i = 0; i < frames; ++i) {
@@ -124,4 +133,6 @@ int main(int argc, char **argv) {
                (unsigned long long)t.fallback_frames,
                (unsigned long long)t.pitch_mark_underflows,
                (unsigned long long)t.audio_history_underflows);
+  const auto lt=vocal_fx_lpc_telemetry();
+  std::fprintf(stderr,"lpc_frames=%llu invalid=%llu fallback=%llu max_error=%.6f\n",(unsigned long long)lt.lpc_frames,(unsigned long long)lt.lpc_invalid_frames,(unsigned long long)lt.lpc_fallback_frames,lt.max_prediction_error);
 }

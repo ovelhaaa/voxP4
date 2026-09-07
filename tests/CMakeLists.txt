@@ -9,8 +9,9 @@ add_library(vocal_fx_dsp
  ${VF}/platform/profiling.cpp ${VF}/platform/audio_i2s.cpp)
 target_sources(vocal_fx_dsp PRIVATE ${VF}/pitch/decimator.cpp
  ${VF}/pitch/yin_detector.cpp ${VF}/pitch/pitch_analysis.cpp ${VF}/shift/td_psola.cpp
+ ${VF}/formant/lpc.cpp
  ${VF}/harmony/scale.cpp ${VF}/harmony/midi_harmony.cpp ${VF}/harmony/harmony_engine.cpp)
-target_include_directories(vocal_fx_dsp PUBLIC ${VF}/include ${VF}/src ${VF}/dsp ${VF}/dynamics ${VF}/delay ${VF}/reverb ${VF}/platform ${VF}/pitch ${VF}/shift ${VF}/harmony)
+target_include_directories(vocal_fx_dsp PUBLIC ${VF}/include ${VF}/src ${VF}/dsp ${VF}/dynamics ${VF}/delay ${VF}/reverb ${VF}/platform ${VF}/pitch ${VF}/shift ${VF}/harmony ${VF}/formant)
 target_compile_features(vocal_fx_dsp PUBLIC cxx_std_17)
 target_compile_options(vocal_fx_dsp PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(vocal_fx_dsp PRIVATE VOCAL_FX_ENABLE_PROFILING=1)
@@ -23,6 +24,9 @@ add_test(NAME pitch_tests COMMAND pitch_tests)
 add_executable(psola_tests test_psola.cpp)
 target_link_libraries(psola_tests PRIVATE vocal_fx_dsp)
 add_test(NAME psola_tests COMMAND psola_tests)
+add_executable(lpc_tests test_lpc.cpp)
+target_link_libraries(lpc_tests PRIVATE vocal_fx_dsp)
+add_test(NAME lpc_tests COMMAND lpc_tests)
 add_executable(harmony_tests test_harmony.cpp)
 target_link_libraries(harmony_tests PRIVATE vocal_fx_dsp)
 add_test(NAME harmony_tests COMMAND harmony_tests)

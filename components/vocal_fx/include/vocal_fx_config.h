@@ -1,5 +1,6 @@
 #pragma once
 #include "vocal_fx_types.h"
+#include "lpc.h"
 #include <cstdint>
 
 constexpr float VOCAL_FX_DEFAULT_SAMPLE_RATE = 48000.0f;
@@ -17,6 +18,7 @@ struct VocalFxConfig {
   bool enable_reverb = true;
   bool enable_pitch_analysis = true;
   PitchShiftConfig pitch_shift{};
+  LpcConfig lpc{};
 };
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };
