@@ -9,3 +9,5 @@
 /build-noexcept/
 
 /tests/output/
+/artifacts/formant_eval/
+/artifacts/pitch_debug/

@@ -62,6 +62,7 @@ public:
   uint32_t latency_samples() const { return history_offset_; }
   size_t memory_bytes() const { return sizeof(*this); }
   PitchShiftTelemetry telemetry() const;
+  PitchShiftDebug debug() const { return debug_; }
   ProfileStats profile(PitchShiftProfileSection section) const;
 
 private:
@@ -108,4 +109,5 @@ private:
   SharedLpcModel grain_model_{};
   std::array<float, VOCAL_FX_LPC_MAX_ORDER> synthesis_state_{};
   uint64_t formant_frames_ = 0;
+  PitchShiftDebug debug_{};
 };

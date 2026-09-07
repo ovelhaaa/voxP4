@@ -177,7 +177,7 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Pipeline);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Input);
     for (size_t i = 0; i < n; i++) {
-      float x = e.hpf.process(in[i]);
+      float x = e.cfg.isolate_pitch_shift_output ? in[i] : e.hpf.process(in[i]);
       e.work[i] = e.cfg.enable_gate ? e.gate.process(x) : x;
     }
     VF_PROFILE_END(e.profiler, ProfileSection::Input, 0);
@@ -228,7 +228,11 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
         const float step=1.0f/std::max(1.0f,e.cfg.sample_rate*.020f);
         e.harmony_mix[v]+=std::clamp(wanted-e.harmony_mix[v],-step,step);
         l+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1-p));r+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1+p));}
-      e.left[i]=.5f*l;e.right[i]=.5f*r;
+      if (e.cfg.isolate_pitch_shift_output)
+        e.left[i] = e.right[i] = e.shifted[0][i];
+      else {
+        e.left[i]=.5f*l;e.right[i]=.5f*r;
+      }
     }
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
     for (size_t i = 0; i < n; i++) {
@@ -432,6 +436,7 @@ uint32_t vocal_fx_pitch_shift_latency_samples() {
 PitchShiftTelemetry vocal_fx_pitch_shift_telemetry() {
   return e.pitch_shift[0].telemetry();
 }
+PitchShiftDebug vocal_fx_pitch_shift_debug() { return e.pitch_shift[0].debug(); }
 VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection s) {
   const auto stats = e.pitch_shift[0].profile(s);

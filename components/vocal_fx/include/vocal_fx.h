@@ -31,6 +31,7 @@ void vocal_fx_midi_all_notes_off();
 PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t voice);
 uint32_t vocal_fx_pitch_shift_latency_samples();
 PitchShiftTelemetry vocal_fx_pitch_shift_telemetry();
+PitchShiftDebug vocal_fx_pitch_shift_debug();
 VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection section);
 void vocal_fx_publish_pitch(const PitchResult &result);
