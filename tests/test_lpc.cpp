@@ -20,5 +20,72 @@ int main(){
   std::vector<float> oversized(1025); CHECK(!SharedLpcAnalysis::solve(oversized.data(),oversized.size(),16,.97f,&bad));
   SharedLpcAnalysis analysis; LpcConfig c; CHECK(analysis.init(48000,c)); PitchResult p; p.voiced=true;p.confidence=1;
   analysis.tap(signal.data(),signal.size()); CHECK(analysis.run(4,p)>0); SharedLpcModel selected; CHECK(analysis.model_near(512,&selected));
+
+  // Test lambda_from_semitones
+  CHECK(std::fabs(SharedLpcAnalysis::lambda_from_semitones(0.0f)) < 1e-6f);
+  CHECK(SharedLpcAnalysis::lambda_from_semitones(7.0f) < -0.1f);
+  CHECK(SharedLpcAnalysis::lambda_from_semitones(-7.0f) > 0.1f);
+
+  // Test warp_polynomial
+  SharedLpcModel m16;
+  CHECK(SharedLpcAnalysis::solve(signal.data(), n, 16, 0.97f, &m16));
+  std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> warped{};
+
+  // Identity warp
+  CHECK(SharedLpcAnalysis::warp_polynomial(m16.coefficients.data(), 16, 0.0f, 1.0f, warped.data()));
+  for (size_t i = 0; i <= 16; ++i) {
+    CHECK(std::fabs(warped[i] - m16.coefficients[i]) < 1e-5f);
+  }
+
+  // Bandwidth expansion only
+  CHECK(SharedLpcAnalysis::warp_polynomial(m16.coefficients.data(), 16, 0.0f, 0.985f, warped.data()));
+  CHECK(std::fabs(warped[0] - 1.0f) < 1e-6f);
+  CHECK(std::fabs(warped[1] - m16.coefficients[1] * 0.985f) < 1e-5f);
+
+  // All-pass frequency warping (up and down)
+  const float lam_up = SharedLpcAnalysis::lambda_from_semitones(7.0f);
+  CHECK(SharedLpcAnalysis::warp_polynomial(m16.coefficients.data(), 16, lam_up, 0.985f, warped.data()));
+  CHECK(std::fabs(warped[0] - 1.0f) < 1e-5f);
+  for (size_t i = 0; i <= 16; ++i) {
+    CHECK(std::isfinite(warped[i]));
+  }
+
+  const float lam_down = SharedLpcAnalysis::lambda_from_semitones(-7.0f);
+  CHECK(SharedLpcAnalysis::warp_polynomial(m16.coefficients.data(), 16, lam_down, 0.985f, warped.data()));
+  CHECK(std::fabs(warped[0] - 1.0f) < 1e-5f);
+  for (size_t i = 0; i <= 16; ++i) {
+    CHECK(std::isfinite(warped[i]));
+  }
+
+  // Test identity for pitch=0, formant=0
+  const float lam_zero = SharedLpcAnalysis::lambda_from_semitones(0.0f);
+  CHECK(std::fabs(lam_zero) < 1e-7f);
+  CHECK(SharedLpcAnalysis::warp_polynomial(m16.coefficients.data(), 16, lam_zero, 1.0f, warped.data()));
+  for (size_t i = 0; i <= 16; ++i) {
+    CHECK(std::fabs(warped[i] - m16.coefficients[i]) < 1e-6f);
+  }
+
+  // Monotonicity test of bilinear warping across frequencies
+  for (float st : {-12.0f, -7.0f, -5.0f, -3.0f, 0.0f, 3.0f, 4.0f, 7.0f, 12.0f}) {
+    const float lam = SharedLpcAnalysis::lambda_from_semitones(st);
+    float prev_theta = -1.0f;
+    for (int k = 0; k <= 100; ++k) {
+      const float w = static_cast<float>(k) * 3.14159265358979323846f / 100.0f;
+      const float num = std::sin(w) * (1.0f - lam * lam);
+      const float den = std::cos(w) * (1.0f + lam * lam) - 2.0f * lam;
+      float theta = std::atan2(num, den);
+      if (theta < 0.0f) theta += 2.0f * 3.14159265358979323846f;
+      if (k == 0) {
+        CHECK(std::fabs(theta) < 1e-5f);
+      } else if (k == 100) {
+        CHECK(std::fabs(theta - 3.14159265358979323846f) < 1e-5f);
+      } else {
+        CHECK(theta > prev_theta);
+      }
+      prev_theta = theta;
+    }
+  }
+
   return failures?1:0;
 }
+

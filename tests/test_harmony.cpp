@@ -1,4 +1,5 @@
 #include "harmony_engine.h"
+#include "harmony_articulation_envelope.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -21,5 +22,30 @@ int main(){
  assert(e.update(hz(60.84f), true, chord)[0].source_note == 60);
  e.set_mode(HarmonyMode::FixedInterval);v.interval=4;e.set_voice(0,v);auto fixed=e.update(220,true,chord)[0];near(fixed.target_frequency_hz,277.183f,.03f);v.interval=7;e.set_voice(1,v);auto two=e.update(220,true,chord);near(two[1].target_frequency_hz,329.628f,.03f);
  chord.note_on(48,100);chord.note_on(52,100);chord.note_on(55,100);e.set_mode(HarmonyMode::MidiChord);auto mt=e.update(hz(52),true,chord);assert(mt[0].valid&&mt[1].valid);near(midi(mt[0].target_frequency_hz),48);near(midi(mt[1].target_frequency_hz),55);const auto before_clear=chord.generation();assert((before_clear&1U)==0);chord.all_notes_off();assert(chord.generation()==before_clear+2);mt=e.update(hz(52),true,chord);assert(!mt[0].valid&&!mt[1].valid);
+ HarmonyArticulationEnvelope articulation;
+ HarmonyArticulationConfig articulation_config{};
+ articulation.init(1000.0f, articulation_config);
+ articulation.begin_block(true, true);
+ assert(!articulation.enabled());
+ assert(!articulation.keep_target_active());
+ articulation_config.enabled=true;
+ articulation_config.pitch_loss_grace_ms=40;
+ articulation_config.unvoiced_hold_ms=20;
+ articulation_config.attack_ms=10;
+ articulation_config.release_ms=40;
+ articulation_config.onset_min_gain=.2f;
+ articulation_config.unvoiced_min_gain=.1f;
+ articulation.init(1000.0f,articulation_config);
+ articulation.begin_block(true,true);
+ for(int i=0;i<10;++i) articulation.process_sample(true,true,false);
+ near(articulation.gain(),1.0f,.001f);
+ articulation.begin_block(false,false);
+ assert(articulation.keep_target_active());
+ for(int i=0;i<20;++i) articulation.process_sample(false,false,false);
+ assert(articulation.gain()>.99f);
+ for(int i=0;i<20;++i) articulation.process_sample(false,false,false);
+ for(int i=0;i<40;++i) articulation.process_sample(false,false,false);
+ near(articulation.gain(),.1f,.001f);
+ articulation.reset();near(articulation.gain(),0,.001f);
  std::cout<<"harmony tests passed\n";
 }

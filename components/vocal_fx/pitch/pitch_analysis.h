@@ -69,7 +69,7 @@ private:
   std::atomic<uint32_t> mark_metadata_{0};
   mutable std::atomic<uint32_t> mark_generation_{0};
   uint64_t previous_mark_ = 0;
-  uint8_t coherent_marks_ = 0, mark_failures_ = 0;
+  uint8_t coherent_marks_ = 0, mark_failures_ = 0, coasting_hops_ = 0;
   std::atomic<uint8_t> mark_state_{
       static_cast<uint8_t>(PitchTrackState::Unlocked)};
   mutable std::atomic<uint32_t> state_seq_{0};

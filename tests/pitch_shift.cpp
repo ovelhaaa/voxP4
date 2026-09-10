@@ -22,7 +22,7 @@ static void put32(std::ofstream &f, uint32_t v) {
 }
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--history-offset-ms 24|32|40|48|64] [--debug-csv file]\n");
+    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
     return 2;
   }
   std::ifstream f(argv[1], std::ios::binary);
@@ -65,6 +65,7 @@ int main(int argc, char **argv) {
   c.isolate_pitch_shift_output = true;
   FormantMode formants=FormantMode::Off; float amount=1.0f;
   std::string debug_path;
+  std::string sample_telemetry_path;
   for(int i=4;i<argc;++i){
     const std::string option=argv[i];
     if(option=="--formants" && i+1<argc){const std::string value=argv[++i];if(value=="lpc")formants=FormantMode::Lpc;else if(value!="off"){std::fprintf(stderr,"invalid formant mode\n");return 2;}}
@@ -72,6 +73,10 @@ int main(int argc, char **argv) {
     else if(option=="--lpc-order"&&i+1<argc)c.lpc.order=static_cast<uint16_t>(std::stoi(argv[++i]));
     else if(option=="--history-offset-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.history_offset_samples=static_cast<uint32_t>(std::lround(ms*48.0f));}
     else if(option=="--debug-csv"&&i+1<argc)debug_path=argv[++i];
+    else if(option=="--sample-telemetry"&&i+1<argc)sample_telemetry_path=argv[++i];
+    else if(option=="--continuity-policy"&&i+1<argc){const std::string val=argv[++i];if(val=="onset")c.pitch_shift.continuity_policy=PsolaContinuityPolicy::OnsetContinuity;else if(val=="coasting")c.pitch_shift.continuity_policy=PsolaContinuityPolicy::Coasting;else if(val=="combined")c.pitch_shift.continuity_policy=PsolaContinuityPolicy::OnsetContinuityCoasting;else if(val!="baseline"){std::fprintf(stderr,"invalid continuity policy: %s\n",val.c_str());return 2;}}
+    else if(option=="--coast-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.coast_ms=ms;c.psola_coast_ms=ms;}
+    else if(option=="--fallback-policy"&&i+1<argc){const std::string val=argv[++i];if(val=="muted")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::Muted;else if(val=="dry")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::CurrentDry;else if(val=="unvoiced")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::UnvoicedOnly;else if(val=="highpass")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::HighpassUnvoiced;else{std::fprintf(stderr,"invalid fallback policy: %s\n",val.c_str());return 2;}}
     else {std::fprintf(stderr,"unknown option: %s\n",option.c_str());return 2;}
   }
   if (!vocal_fx_init(c)) {
@@ -82,7 +87,21 @@ int main(int argc, char **argv) {
   std::ofstream debug;
   if(!debug_path.empty()){
     debug.open(debug_path);
-    debug << "time,input_absolute_sample,pitch_timestamp,selected_source_mark,source_grain_timestamp,output_synthesis_timestamp,history_offset,analysis_age,requested_semitones,target_ratio,current_smoothed_ratio,source_f0,target_f0,actual_synthesis_period,voice_state\n";
+    debug << "time,input_absolute_sample,pitch_timestamp,selected_source_mark,source_grain_timestamp,output_synthesis_timestamp,history_offset,analysis_age,requested_semitones,target_ratio,current_smoothed_ratio,source_f0,target_f0,actual_synthesis_period,voice_state,pitch_tracker_state,pitch_voiced,pitch_confidence,grains_total,usable,psola_gain\n";
+  }
+  std::ofstream telem_file;
+  if (!sample_telemetry_path.empty()) {
+    telem_file.open(sample_telemetry_path, std::ios::binary);
+    if (telem_file.is_open()) {
+      vocal_fx_set_sample_telemetry_callback([](const SampleTelemetryRecord *records, size_t count, void *user_data) {
+        auto *out = static_cast<std::ofstream*>(user_data);
+        if (out && out->is_open() && records && count > 0) {
+          out->write(reinterpret_cast<const char*>(records), count * sizeof(SampleTelemetryRecord));
+        }
+      }, &telem_file);
+    } else {
+      std::fprintf(stderr, "warning: could not open sample telemetry file: %s\n", sample_telemetry_path.c_str());
+    }
   }
   const size_t stride = ch * bits / 8, frames = bytes / stride;
   std::vector<float> mono(frames), out(frames), right(64);
@@ -105,7 +124,11 @@ int main(int argc, char **argv) {
     vocal_fx_process(mono.data() + i, out.data() + i, right.data(), n);
     while (vocal_fx_run_pitch_analysis(8)) {
     }
-    if(debug){const auto d=vocal_fx_pitch_shift_debug();debug << static_cast<double>(i+n)/rate << ',' << d.input_absolute_sample << ',' << d.pitch_timestamp << ',' << d.selected_source_mark << ',' << d.source_grain_timestamp << ',' << d.output_synthesis_timestamp << ',' << d.history_offset << ',' << d.analysis_age << ',' << d.requested_semitones << ',' << d.target_ratio << ',' << d.current_smoothed_ratio << ',' << d.source_f0 << ',' << d.target_f0 << ',' << d.actual_synthesis_period << ',' << static_cast<unsigned>(d.voice_state) << '\n';}
+    if(debug){const auto d=vocal_fx_pitch_shift_debug();debug << static_cast<double>(i+n)/rate << ',' << d.input_absolute_sample << ',' << d.pitch_timestamp << ',' << d.selected_source_mark << ',' << d.source_grain_timestamp << ',' << d.output_synthesis_timestamp << ',' << d.history_offset << ',' << d.analysis_age << ',' << d.requested_semitones << ',' << d.target_ratio << ',' << d.current_smoothed_ratio << ',' << d.source_f0 << ',' << d.target_f0 << ',' << d.actual_synthesis_period << ',' << static_cast<unsigned>(d.voice_state) << ',' << static_cast<unsigned>(d.pitch_tracker_state) << ',' << (d.pitch_voiced ? 1 : 0) << ',' << d.pitch_confidence << ',' << d.grains_total << ',' << (d.usable ? 1 : 0) << ',' << d.psola_gain << '\n';}
+  }
+  if (telem_file.is_open()) {
+    vocal_fx_set_sample_telemetry_callback(nullptr, nullptr);
+    telem_file.close();
   }
   std::ofstream w(argv[2], std::ios::binary);
   if (!w.is_open()) {

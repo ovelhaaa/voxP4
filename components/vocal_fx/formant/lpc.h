@@ -37,6 +37,10 @@ struct LpcTelemetry {
   float max_prediction_error = 0.0f;
   uint64_t voice1_formant_frames = 0;
   uint64_t voice2_formant_frames = 0;
+  uint64_t voice1_formant_resets = 0;
+  uint64_t voice2_formant_resets = 0;
+  float voice1_max_restored = 0.0f;
+  float voice2_max_restored = 0.0f;
 };
 
 class SharedLpcAnalysis {
@@ -54,6 +58,12 @@ public:
   // Public for deterministic host tests of the numerical core.
   static bool solve(const float *frame, size_t count, uint16_t order,
                     float preemphasis, SharedLpcModel *model);
+  static bool warp_polynomial(const float *a_in, uint16_t order, float lambda,
+                              float gamma, float *a_out);
+  static float lambda_from_semitones(float semitones);
+  static float compute_gain_normalization(const float *a_orig, const float *a_warped,
+                                          uint16_t order, FormantNormalizationStrategy strategy,
+                                          float sample_rate = 48000.0f);
 private:
   struct LpcSample { float value; uint32_t input_position; };
   struct PublishedModel {

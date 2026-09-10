@@ -59,7 +59,7 @@ void PitchAnalysis::reset() {
   mark_metadata_.store(0, std::memory_order_relaxed);
   mark_generation_.store(0, std::memory_order_relaxed);
   previous_mark_ = 0;
-  coherent_marks_ = mark_failures_ = 0;
+  coherent_marks_ = mark_failures_ = coasting_hops_ = 0;
   mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked));
   publish({});
 }
@@ -194,6 +194,7 @@ size_t PitchAnalysis::run(size_t max_hops) {
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchSmoother),
                    0);
     update_marks(result);
+    result.coherent_marks = coherent_marks_;
     publish(result);
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Total),
                    static_cast<uint64_t>(1000000.0 * config_.hop_size /
@@ -266,15 +267,43 @@ void PitchAnalysis::add_mark(PitchMark mark) {
 }
 void PitchAnalysis::update_marks(const PitchResult &p) {
   VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch));
-  if (!p.voiced || p.confidence < config_.voiced_exit_confidence || p.onset) {
-    previous_mark_ = 0;
-    coherent_marks_ = 0;
-    mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
-                      std::memory_order_release);
+  const uint8_t cur_state = mark_state_.load(std::memory_order_relaxed);
+  const bool can_coast =
+      (config_.continuity_policy == PsolaContinuityPolicy::Coasting ||
+       config_.continuity_policy == PsolaContinuityPolicy::OnsetContinuityCoasting) &&
+      (cur_state == static_cast<uint8_t>(PitchTrackState::Locked) ||
+       cur_state == static_cast<uint8_t>(PitchTrackState::Coasting));
+  const float effective_coast_ms = config_.coast_ms > 0.0f ? config_.coast_ms : 15.0f;
+  const uint32_t max_coast_hops = std::max<uint32_t>(
+      1, static_cast<uint32_t>(std::lround(
+             effective_coast_ms * config_.analysis_sample_rate /
+             (config_.hop_size * 1000.0f))));
+
+  if (!p.voiced || p.confidence < config_.voiced_exit_confidence) {
+    if (can_coast && coasting_hops_ < max_coast_hops) {
+      ++coasting_hops_;
+      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Coasting),
+                        std::memory_order_release);
+      const uint64_t boundary = p.analysis_timestamp_samples;
+      const size_t period = static_cast<size_t>(std::lround(p.period_samples));
+      if (previous_mark_ > 0 && period >= 24 && period <= 800) {
+        while (previous_mark_ + period <= boundary) {
+          previous_mark_ += period;
+          add_mark({previous_mark_, 0.5f, true /* predicted */});
+        }
+      }
+    } else {
+      previous_mark_ = 0;
+      coherent_marks_ = 0;
+      coasting_hops_ = 0;
+      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
+                        std::memory_order_release);
+    }
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
                    0);
     return;
   }
+  coasting_hops_ = 0;
   const uint64_t available = audio_end();
   const size_t period = static_cast<size_t>(std::lround(p.period_samples));
   if (period < 8 || period * 3 >= kAudioHistory) {
@@ -282,14 +311,14 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
                    0);
     return;
   }
+  const uint64_t boundary = p.analysis_timestamp_samples;
   if (!previous_mark_) {
-    previous_mark_ = p.analysis_timestamp_samples;
+    previous_mark_ = boundary;
     add_mark({previous_mark_, p.confidence * .5f});
     coherent_marks_ = 1;
     mark_state_.store(static_cast<uint8_t>(PitchTrackState::Acquiring),
                       std::memory_order_release);
   } else {
-    const uint64_t boundary = p.analysis_timestamp_samples;
     if (previous_mark_ + period + kAudioHistory <= available) {
       previous_mark_ = boundary;
       coherent_marks_ = 1;
@@ -298,9 +327,10 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
       mark_state_.store(static_cast<uint8_t>(PitchTrackState::Acquiring),
                         std::memory_order_release);
     }
-    const int radius = std::max<int>(2, period / 5),
-              window = std::max<int>(4, period / 2);
-    while (previous_mark_ + period <= boundary) {
+  }
+  const int radius = std::max<int>(2, period / 5),
+            window = std::max<int>(4, period / 2);
+  while (previous_mark_ + period <= boundary) {
       const uint64_t predicted = previous_mark_ + period;
       if (predicted + period / 2 >= available)
         break;
@@ -343,15 +373,21 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
                             std::memory_order_release);
       } else {
         if (++mark_failures_ >= 3) {
-          previous_mark_ = 0;
-          coherent_marks_ = mark_failures_ = 0;
-          mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
-                            std::memory_order_release);
+          if (can_coast && coasting_hops_ < max_coast_hops) {
+            ++coasting_hops_;
+            mark_state_.store(static_cast<uint8_t>(PitchTrackState::Coasting),
+                              std::memory_order_release);
+          } else {
+            previous_mark_ = 0;
+            coherent_marks_ = mark_failures_ = 0;
+            coasting_hops_ = 0;
+            mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
+                              std::memory_order_release);
+          }
         }
         break;
       }
     }
-  }
   VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
                  0);
 }

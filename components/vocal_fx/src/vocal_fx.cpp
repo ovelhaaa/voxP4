@@ -15,6 +15,11 @@
 #include <atomic>
 #include <cmath>
 
+#ifndef ESP_PLATFORM
+static VocalFxSampleTelemetryCallback s_sample_telemetry_cb = nullptr;
+static void *s_sample_telemetry_user_data = nullptr;
+#endif
+
 namespace {
 struct Engine {
   VocalFxConfig cfg;
@@ -106,6 +111,12 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   if (c.enable_pitch_analysis) {
     PitchAnalysisConfig pitch_config{};
     pitch_config.input_sample_rate = c.sample_rate;
+    pitch_config.continuity_policy = (c.pitch_shift.continuity_policy != PsolaContinuityPolicy::Baseline)
+                                         ? c.pitch_shift.continuity_policy
+                                         : c.psola_continuity_policy;
+    pitch_config.coast_ms = c.pitch_shift.coast_ms > 0.0f
+                                ? c.pitch_shift.coast_ms
+                                : (c.psola_coast_ms > 0.0f ? c.psola_coast_ms : 15.0f);
     if (!e.pitch_analysis.init(pitch_config))
       return false;
   }
@@ -210,8 +221,15 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     e.pitch_resources.push(e.work,n);
     const auto targets=e.harmony.update(current_pitch.frequency_hz,
                                          current_pitch.voiced,e.midi);
+#ifndef ESP_PLATFORM
+    SampleTelemetryRecord telem_records[64];
+    const size_t iso_v = (e.cfg.isolated_pitch_shift_voice < 2) ? e.cfg.isolated_pitch_shift_voice : 0;
+    if (s_sample_telemetry_cb) {
+      e.pitch_shift[iso_v].set_sample_telemetry_buffer(telem_records);
+    }
+#endif
     for(size_t v=0;v<2;++v){
-      e.pitch_shift[v].set_enabled(targets[v].valid);
+      e.pitch_shift[v].set_enabled(e.harmony.voice(v).enabled);
       if(targets[v].valid) e.pitch_shift[v].set_ratio(targets[v].target_frequency_hz/current_pitch.frequency_hz);
       e.pitch_shift[v].process_shared(e.work,e.shifted[v],n,current_pitch,
           vocal_fx_pitch_track_state(),e.pitch_shift_marks,e.pitch_shift_mark_count);
@@ -221,19 +239,40 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     for(size_t i=0;i<n;++i){
       float l=e.work[i],r=e.work[i];
       for(size_t v=0;v<2;++v){const auto &c=e.harmony.voice(v);const float p=std::clamp(c.pan,-1.0f,1.0f);
-        const float wanted = targets[v].valid &&
+        const float wanted = (targets[v].valid || e.pitch_shift[v].is_releasing()) &&
                                      e.pitch_shift[v].has_usable_output()
-                                 ? 1.0f
-                                 : 0.0f;
+                                  ? 1.0f
+                                  : 0.0f;
         const float step=1.0f/std::max(1.0f,e.cfg.sample_rate*.020f);
         e.harmony_mix[v]+=std::clamp(wanted-e.harmony_mix[v],-step,step);
         l+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1-p));r+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1+p));}
-      if (e.cfg.isolate_pitch_shift_output)
-        e.left[i] = e.right[i] = e.shifted[0][i];
-      else {
+      if (e.cfg.isolate_pitch_shift_output) {
+        const size_t iso_v_out = e.cfg.isolated_pitch_shift_voice < 2 ? e.cfg.isolated_pitch_shift_voice : 0;
+        e.left[i] = e.right[i] = e.shifted[iso_v_out][i];
+      } else {
         e.left[i]=.5f*l;e.right[i]=.5f*r;
       }
     }
+#ifndef ESP_PLATFORM
+    if (s_sample_telemetry_cb) {
+      e.pitch_shift[iso_v].set_sample_telemetry_buffer(nullptr);
+      static float s_in_env = 0.0f;
+      const float env_alpha = 1.0f - std::exp(-1.0f / (e.cfg.sample_rate * 0.010f));
+      for (size_t i = 0; i < n; ++i) {
+        const float in_abs = std::fabs(e.work[i]);
+        s_in_env += env_alpha * (in_abs - s_in_env);
+        telem_records[i].input_envelope = s_in_env;
+        telem_records[i].active_mix = e.harmony_mix[iso_v];
+        telem_records[i].final_harmony_rms = std::fabs(e.shifted[iso_v][i]);
+        if (s_in_env > 1e-4f) {
+          telem_records[i].effective_total_gain = std::fabs(e.shifted[iso_v][i]) / s_in_env;
+        } else {
+          telem_records[i].effective_total_gain = telem_records[i].psola_gain * e.harmony_mix[iso_v];
+        }
+      }
+      s_sample_telemetry_cb(telem_records, n, s_sample_telemetry_user_data);
+    }
+#endif
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
     for (size_t i = 0; i < n; i++) {
       if (e.cfg.enable_delay) {
@@ -536,3 +575,21 @@ VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {
   const auto stats = e.profiler.stats(static_cast<ProfileSection>(section));
   return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
 }
+
+PitchShiftDebug vocal_fx_harmony_debug(size_t voice) {
+  if (voice < 2)
+    return e.pitch_shift[voice].debug();
+  return {};
+}
+
+PitchAnalysisDebug vocal_fx_pitch_analysis_debug() {
+  return {};
+}
+
+#ifndef ESP_PLATFORM
+void vocal_fx_set_sample_telemetry_callback(VocalFxSampleTelemetryCallback cb, void *user_data) {
+  s_sample_telemetry_cb = cb;
+  s_sample_telemetry_user_data = user_data;
+}
+#endif
+

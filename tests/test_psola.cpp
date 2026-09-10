@@ -119,6 +119,197 @@ void isolated_engine_output() {
   require(shifted > dry * 10,
           "isolated host path must not contain dominant dry pitch");
 }
+double stationary_energy_ratio(float semitones, int signal_kind) {
+  constexpr size_t total = 48000 * 3, block = 64, measure_begin = 48000 * 2;
+  SharedPitchShiftResources shared;
+  shared.init();
+  TdPsola psola;
+  PitchShiftConfig config{true, semitones, 1, 1};
+  config.ola_normalization = OlaNormalizationMode::ColaEnergyHybrid;
+  require(psola.init(kRate, config, &shared), "energy normalization init");
+  psola.set_onset_unvoiced_attenuation(false);
+  std::vector<float> input(total), output(total);
+  const float period = kRate / 220.0f;
+  for (size_t i = 0; i < total; ++i) {
+    const float phase = 2 * kPi * 220 * i / kRate;
+    if (signal_kind == 0)
+      input[i] = 1.0f;
+    else if (signal_kind == 1)
+      input[i] = .25f * std::sin(phase);
+    else
+      for (int harmonic = 1; harmonic <= 5; ++harmonic)
+        input[i] += .12f / harmonic * std::sin(harmonic * phase);
+  }
+  for (size_t position = 0; position < total; position += block) {
+    std::array<PitchMark, 64> marks{};
+    const uint64_t analyzed = position > 1100 ? position - 1100 : 0;
+    const size_t count = marks_for(analyzed, period, marks);
+    PitchResult pitch{};
+    pitch.voiced = true;
+    pitch.confidence = 1;
+    pitch.frequency_hz = 220;
+    pitch.period_samples = period;
+    pitch.analysis_timestamp_samples = analyzed;
+    psola.process(input.data() + position, output.data() + position,
+                  std::min(block, total - position), pitch,
+                  count >= 3 ? PitchTrackState::Locked
+                             : PitchTrackState::Acquiring,
+                  marks.data(), count);
+  }
+  double input_power = 0, output_power = 0;
+  for (size_t i = measure_begin; i < total; ++i) {
+    input_power += static_cast<double>(input[i]) * input[i];
+    output_power += static_cast<double>(output[i]) * output[i];
+  }
+  require(std::all_of(output.begin(), output.end(), [](float value) {
+            return std::isfinite(value) && std::fabs(value) < 4.0f;
+          }),
+          "energy normalization finite and bounded");
+  return std::sqrt(output_power / input_power);
+}
+void energy_normalization_regression() {
+  for (int signal_kind = 0; signal_kind < 3; ++signal_kind)
+    for (float semitones : {-7.0f, -4.0f, 0.0f, 4.0f, 7.0f}) {
+      const double ratio = stationary_energy_ratio(semitones, signal_kind);
+      if (ratio < .95 || ratio > 1.05)
+        std::fprintf(stderr, "energy signal=%d shift=%+.0f ratio=%.6f\n",
+                     signal_kind, semitones, ratio);
+      require(ratio >= .95 && ratio <= 1.05,
+              "stationary OLA energy must remain within five percent");
+    }
+}
+void ola_ring_wrap_regression() {
+  SharedPitchShiftResources shared;
+  shared.init();
+  TdPsola psola;
+  PitchShiftConfig config{true, 7, 1, 1};
+  config.ola_normalization = OlaNormalizationMode::ColaEnergyHybrid;
+  require(psola.init(kRate, config, &shared), "OLA wrap regression init");
+  psola.set_onset_unvoiced_attenuation(false);
+  constexpr size_t block = 64;
+  std::array<float, block> input{}, output{};
+  const float period = kRate / 220.0f;
+  for (size_t position = 0; position < 48000 * 2; position += block) {
+    for (size_t i = 0; i < block; ++i)
+      input[i] = .25f * std::sin(2 * kPi * 220 * (position + i) / kRate);
+    std::array<PitchMark, 64> marks{};
+    const uint64_t analyzed = position > 1100 ? position - 1100 : 0;
+    const size_t count = marks_for(analyzed, period, marks);
+    PitchResult pitch{};
+    pitch.voiced = true;
+    pitch.confidence = 1;
+    pitch.frequency_hz = 220;
+    pitch.period_samples = period;
+    pitch.analysis_timestamp_samples = analyzed;
+    psola.process(input.data(), output.data(), block, pitch,
+                  count >= 3 ? PitchTrackState::Locked
+                             : PitchTrackState::Acquiring,
+                  marks.data(), count);
+  }
+  psola.reset();
+  shared.reset();
+  input.fill(0);
+  PitchResult no_pitch{};
+  for (int wrap = 0; wrap < 100; ++wrap) {
+    psola.process(input.data(), output.data(), block, no_pitch,
+                  PitchTrackState::Unlocked, nullptr, 0);
+    require(std::all_of(output.begin(), output.end(),
+                        [](float value) { return value == 0.0f; }),
+            "reset OLA rings cannot leak across wrap");
+  }
+}
+void component_stem_regression() {
+  SharedPitchShiftResources shared;
+  shared.init();
+  TdPsola psola;
+  PitchShiftConfig config{true, 7, 1, 1};
+  require(psola.init(kRate, config, &shared), "component stem init");
+  psola.set_onset_unvoiced_attenuation(false);
+  constexpr size_t block = 64;
+  std::array<float, block> input{}, output{}, psola_part{}, fallback_part{};
+  const float period = kRate / 220.0f;
+  for (size_t position = 0; position < 48000 * 2; position += block) {
+    for (size_t i = 0; i < block; ++i) {
+      const float phase = 2 * kPi * 220 * (position + i) / kRate;
+      input[i] = .2f * std::sin(phase) + .08f * std::sin(2 * phase);
+    }
+    shared.push(input.data(), block);
+    std::array<PitchMark, 64> marks{};
+    const uint64_t analyzed = position > 1100 ? position - 1100 : 0;
+    const size_t count = marks_for(analyzed, period, marks);
+    PitchResult pitch{};
+    pitch.voiced = true;
+    pitch.confidence = 1;
+    pitch.frequency_hz = 220;
+    pitch.period_samples = period;
+    pitch.analysis_timestamp_samples = analyzed;
+    psola.process_shared(input.data(), output.data(), block, pitch,
+                         count >= 3 ? PitchTrackState::Locked
+                                    : PitchTrackState::Acquiring,
+                         marks.data(), count, psola_part.data(),
+                         fallback_part.data());
+    for (size_t i = 0; i < block; ++i)
+      require(std::fabs(output[i] - psola_part[i] - fallback_part[i]) < 1e-6f,
+              "PSOLA plus fallback stems reconstruct final output");
+  }
+}
+void isolated_second_voice_output() {
+  VocalFxConfig c{};
+  c.enable_gate = c.enable_compressor = c.enable_delay = c.enable_reverb = false;
+  c.isolate_pitch_shift_output = true;
+  c.isolated_pitch_shift_voice = 1;
+  c.pitch_shift = {false, 0, 1, 1};
+  require(vocal_fx_init(c), "isolated voice-2 engine init");
+  vocal_fx_set_harmony_enabled(1, true);
+  vocal_fx_set_harmony_interval(1, 7);
+  vocal_fx_set_harmony_gain(1, 1);
+  constexpr size_t total = 48000 * 3, block = 64;
+  std::vector<float> in(total), out(total);
+  std::array<float, block> right{};
+  for (size_t i = 0; i < total; ++i)
+    for (int h = 1; h <= 5; ++h)
+      in[i] += .12f / h * std::sin(2 * kPi * 220 * h * i / kRate);
+  for (size_t i = 0; i < total; i += block) {
+    vocal_fx_process(in.data() + i, out.data() + i, right.data(),
+                     std::min(block, total - i));
+    while (vocal_fx_run_pitch_analysis(8)) {
+    }
+  }
+  const double shifted =
+      tone_power(out, total - 24000, 220 * std::exp2(7.0 / 12));
+  const double dry = tone_power(out, total - 24000, 220);
+  require(shifted > dry * 10,
+          "isolated voice-2 path must contain its configured pitch");
+  const auto debug = vocal_fx_harmony_debug(1);
+  require(std::fabs(debug.requested_semitones - 7.0f) < .01f,
+          "voice-2 debug selects voice 2");
+}
+void attenuation_bypass_debug() {
+  SharedPitchShiftResources normal_shared, bypass_shared;
+  normal_shared.init();
+  bypass_shared.init();
+  TdPsola normal, bypass;
+  PitchShiftConfig c{true, 7, 1, 30};
+  require(normal.init(kRate, c, &normal_shared), "normal attenuation init");
+  require(bypass.init(kRate, c, &bypass_shared), "bypass attenuation init");
+  bypass.set_onset_unvoiced_attenuation(false);
+  std::array<float, 64> input{}, normal_output{}, bypass_output{};
+  PitchResult unvoiced{};
+  normal.process(input.data(), normal_output.data(), input.size(), unvoiced,
+                 PitchTrackState::Unlocked, nullptr, 0);
+  bypass.process(input.data(), bypass_output.data(), input.size(), unvoiced,
+                 PitchTrackState::Unlocked, nullptr, 0);
+  const auto normal_debug = normal.debug();
+  const auto bypass_debug = bypass.debug();
+  require(normal_debug.onset_unvoiced_attenuation_enabled,
+          "transition attenuation defaults on");
+  require(normal_debug.psola_gain == 0.0f,
+          "unvoiced default keeps acquisition envelope down");
+  require(!bypass_debug.onset_unvoiced_attenuation_enabled,
+          "diagnostic transition attenuation bypass is reported");
+  require(bypass_debug.psola_gain == 1.0f && bypass_debug.active_mix == 1.0f,
+          "diagnostic bypass keeps transition envelopes open");
+}
 void transition_safety() {
   constexpr size_t total = 72000, block = 64;
   std::vector<float> in(total), out(total);
@@ -173,7 +364,12 @@ void transition_safety() {
 }
 } // namespace
 int main() {
+  energy_normalization_regression();
+  ola_ring_wrap_regression();
+  component_stem_regression();
   isolated_engine_output();
+  isolated_second_voice_output();
+  attenuation_bypass_debug();
   for (int field = 0; field < 3; ++field) {
     SharedPitchShiftResources invalid_shared; invalid_shared.init();
     TdPsola invalid;

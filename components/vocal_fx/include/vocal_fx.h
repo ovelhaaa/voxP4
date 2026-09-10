@@ -25,6 +25,7 @@ void vocal_fx_set_harmony_pan(size_t voice, float pan);
 void vocal_fx_set_harmony_smoothing(size_t voice, float milliseconds);
 void vocal_fx_set_formant_mode(size_t voice, FormantMode mode);
 void vocal_fx_set_formant_amount(size_t voice, float amount);
+void vocal_fx_set_formant_shift(size_t voice, float shift_semitones);
 void vocal_fx_midi_note_on(uint8_t note, uint8_t velocity);
 void vocal_fx_midi_note_off(uint8_t note);
 void vocal_fx_midi_all_notes_off();
@@ -32,6 +33,21 @@ PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t voice);
 uint32_t vocal_fx_pitch_shift_latency_samples();
 PitchShiftTelemetry vocal_fx_pitch_shift_telemetry();
 PitchShiftDebug vocal_fx_pitch_shift_debug();
+PitchShiftDebug vocal_fx_harmony_debug(size_t voice);
+#ifndef ESP_PLATFORM
+bool vocal_fx_harmony_fallback_sample(size_t voice, size_t frame,
+                                      PitchShiftFallbackReason *reason,
+                                      bool *active);
+bool vocal_fx_harmony_continuity_sample(size_t voice, size_t frame,
+                                        bool *measured, bool *coasted);
+bool vocal_fx_harmony_articulation_sample(size_t voice, size_t frame,
+                                          bool *active, float *component,
+                                          uint8_t *acoustic_class);
+bool vocal_fx_harmony_plosive_bridge_sample(size_t voice, size_t frame,
+                                            bool *active, float *component,
+                                            float *gain, float *score,
+                                            bool *phrase_start);
+#endif
 VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection section);
 void vocal_fx_publish_pitch(const PitchResult &result);
@@ -48,6 +64,7 @@ bool vocal_fx_try_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
                                   PitchMark *destination, size_t capacity,
                                   size_t *written);
 PitchTrackState vocal_fx_pitch_track_state();
+PitchAnalysisDebug vocal_fx_pitch_analysis_debug();
 uint64_t vocal_fx_analysis_latency_samples();
 VocalFxProfileStats
 vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section);
@@ -55,3 +72,8 @@ size_t vocal_fx_dsp_memory_bytes();
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section);
 LpcTelemetry vocal_fx_lpc_telemetry();
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection section);
+
+#ifndef ESP_PLATFORM
+typedef void (*VocalFxSampleTelemetryCallback)(const SampleTelemetryRecord *records, size_t count, void *user_data);
+void vocal_fx_set_sample_telemetry_callback(VocalFxSampleTelemetryCallback cb, void *user_data);
+#endif

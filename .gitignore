@@ -1,13 +1,57 @@
-/build-host/
-/build-tsan/
+# Build directories and CMake outputs
+/build/
+/build-*/
+/cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# ESP-IDF configuration and generated files
 /sdkconfig
 /sdkconfig.old
-/build/
+/sdkconfig.ci
+/sdkconfig.defaults.old
+managed_components/
+dependencies.lock
 
-/build-asan/
-
-/build-noexcept/
-
+# Test and benchmark outputs
 /tests/output/
-/artifacts/formant_eval/
-/artifacts/pitch_debug/
+
+# Evaluation artifacts and scratch runs
+/artifacts/
+/scratch/
+debug_*.csv
+debug_crash.csv
+*.log
+
+# Audio renders and telemetry binaries
+/*.wav
+test_*.wav
+*.bin
+!/samples/*.wav
+
+# DAW peak files and caches
+*.reapeaks
+*.pk
+*.asd
+*.peak
+samples/peaks/
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Editor and OS files
+.vscode/
+.idea/
+.vs/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
