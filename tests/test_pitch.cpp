@@ -33,6 +33,333 @@ static PitchDetectorMeasurement detect(float frequency,
                                       c.analysis_sample_rate);
   return yin.analyze(x.data(), x.size(), 0);
 }
+
+static bool test_voicing_hysteresis() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  cfg.voiced_enter_confidence = 0.80f;
+  cfg.voiced_stay_confidence = 0.45f;
+  cfg.voiced_attack_frames = 2;
+  cfg.voiced_release_frames = 3;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  // 1. Weak signal with confidence around 0.60
+  for (int b = 0; b < 20; ++b) {
+    for (float &s : block) {
+      s = 0.2f * std::sin(2 * pi * 220 * pos / 48000.0f) + 0.08f * std::sin(2 * pi * 573 * pos / 48000.0f);
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(!analyzer.latest().voiced_stateful);
+
+  // 2. Strong clean signal (confidence > 0.90) -> enters voiced
+  for (int b = 0; b < 30; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos / 48000.0f);
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+
+  // 3. Signal drops back to confidence ~0.60 (above stay_confidence) -> remains voiced!
+  for (int b = 0; b < 20; ++b) {
+    for (float &s : block) {
+      s = 0.2f * std::sin(2 * pi * 220 * pos / 48000.0f) + 0.08f * std::sin(2 * pi * 573 * pos / 48000.0f);
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+  return true;
+}
+
+static bool test_single_bad_hop() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  cfg.voiced_release_frames = 3;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  for (int b = 0; b < 40; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+
+  // Inject 1 bad hop (240 samples of HF noise)
+  for (int b = 0; b < 4; ++b) {
+    for (float &s : block) {
+      s = ((pos % 2 == 0) ? 0.3f : -0.3f);
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  // Stateful voiced must bridge the isolated bad hop!
+  CHECK(analyzer.latest().voiced_stateful);
+
+  for (int b = 0; b < 40; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+  return true;
+}
+
+static bool test_double_bad_hop() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  cfg.voiced_release_frames = 3;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  for (int b = 0; b < 40; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+
+  // Inject 2 bad hops (480 input samples = 7.5 blocks)
+  for (int b = 0; b < 7; ++b) {
+    for (float &s : block) {
+      s = ((pos % 2 == 0) ? 0.3f : -0.3f);
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+
+  for (int b = 0; b < 30; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+  return true;
+}
+
+static bool test_vibrato_continuity() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  float phase = 0.0f;
+  int unvoiced_toggles = 0;
+  bool was_voiced = false;
+  for (int b = 0; b < 750; ++b) {
+    for (float &s : block) {
+      float t = pos / 48000.0f;
+      float f_inst = 220.0f * std::exp2((150.0f * std::sin(2 * pi * 6.0f * t)) / 1200.0f);
+      phase += 2.0f * pi * f_inst / 48000.0f;
+      s = 0.5f * std::sin(phase);
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    while (analyzer.run(1)) {
+      auto r = analyzer.latest();
+      if (r.voiced_stateful) was_voiced = true;
+      else if (was_voiced && b > 50) {
+        ++unvoiced_toggles;
+      }
+    }
+  }
+  CHECK(was_voiced);
+  CHECK(unvoiced_toggles == 0);
+  return true;
+}
+
+static bool test_vocal_fry_continuity() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  const int T0 = 48000 / 90;
+  int unvoiced_count = 0;
+  bool reached_voiced = false;
+  for (int b = 0; b < 750; ++b) {
+    for (float &s : block) {
+      int phase_in_period = pos % T0;
+      int pulse_idx = pos / T0;
+      float amp = (pulse_idx % 2 == 0) ? 0.7f : 0.35f;
+      s = (phase_in_period < 40) ? amp * std::sin(pi * phase_in_period / 40.0f) : 0.0f;
+      ++pos;
+    }
+    analyzer.tap(block.data(), block.size());
+    while (analyzer.run(1)) {
+      auto r = analyzer.latest();
+      if (r.voiced_stateful) reached_voiced = true;
+      else if (reached_voiced && b > 60) {
+        ++unvoiced_count;
+      }
+    }
+  }
+  CHECK(reached_voiced);
+  CHECK(unvoiced_count == 0);
+  return true;
+}
+
+static bool test_low_energy_vowel_tail() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  cfg.min_input_db = -55.0f;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  bool voiced_at_minus_30db = false;
+  for (int b = 0; b < 600; ++b) {
+    float gain = 0.7f * std::pow(10.0f, (-30.0f * (b / 600.0f)) / 20.0f);
+    for (float &s : block) {
+      s = gain * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+    if (b > 500 && analyzer.latest().voiced_stateful) {
+      voiced_at_minus_30db = true;
+    }
+  }
+  CHECK(voiced_at_minus_30db);
+
+  for (int b = 0; b < 50; ++b) {
+    std::fill(block.begin(), block.end(), 0.0f);
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(!analyzer.latest().voiced_stateful);
+  return true;
+}
+
+static bool test_fricative_rejection() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
+  int voiced_hops = 0;
+  for (int b = 0; b < 200; ++b) {
+    for (float &s : block) {
+      s = dist(rng) * std::sin(2 * pi * 6000.0f * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    while (analyzer.run(1)) {
+      if (analyzer.latest().voiced_stateful) {
+        ++voiced_hops;
+      }
+    }
+  }
+  CHECK(voiced_hops == 0);
+  return true;
+}
+
+static bool test_plosive_rejection() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  cfg.voiced_release_frames = 3;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  for (int b = 0; b < 50; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+
+  std::fill(block.begin(), block.end(), 0.0f);
+  int hops_until_unvoiced = 0;
+  for (int b = 0; b < 40; ++b) {
+    analyzer.tap(block.data(), block.size());
+    while (analyzer.run(1)) {
+      if (analyzer.latest().voiced_stateful) {
+        ++hops_until_unvoiced;
+      }
+    }
+  }
+  std::printf("plosive hops_until_unvoiced: %d, final voiced: %d\n", hops_until_unvoiced, analyzer.latest().voiced_stateful ? 1 : 0);
+  CHECK(hops_until_unvoiced <= 10);
+  CHECK(!analyzer.latest().voiced_stateful);
+  return true;
+}
+
+static bool test_legato_note_change() {
+  PitchAnalysis analyzer;
+  PitchAnalysisConfig cfg{};
+  cfg.stateful_voicing_enabled = true;
+  CHECK(analyzer.init(cfg));
+
+  std::vector<float> block(64);
+  uint64_t pos = 0;
+  for (int b = 0; b < 375; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 220 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    analyzer.run(4);
+  }
+  CHECK(analyzer.latest().voiced_stateful);
+  CHECK(std::fabs(analyzer.latest().frequency_hz - 220.0f) < 5.0f);
+
+  int hops_to_acquire = 0;
+  bool reached_target = false;
+  for (int b = 0; b < 100; ++b) {
+    for (float &s : block) {
+      s = 0.5f * std::sin(2 * pi * 330 * pos++ / 48000.0f);
+    }
+    analyzer.tap(block.data(), block.size());
+    while (analyzer.run(1)) {
+      ++hops_to_acquire;
+      if (std::fabs(analyzer.latest().frequency_hz - 330.0f) < 10.0f) {
+        reached_target = true;
+        break;
+      }
+    }
+    if (reached_target) break;
+  }
+  std::printf("legato reached_target: %d, hops_to_acquire: %d, latest_hz: %.2f\n", reached_target ? 1 : 0, hops_to_acquire, analyzer.latest().frequency_hz);
+  CHECK(reached_target);
+  CHECK(hops_to_acquire <= 25);
+  return true;
+}
+
 int main() {
   {
     YinDetector uninitialized;
@@ -296,5 +623,16 @@ int main() {
       "octave_errors=%d voiced_FP=0 voiced_FN=0 fixed_latency=%llu samples\n",
       mean_cents, clean_errors.back(), octave_errors,
       (unsigned long long)a.latency_samples());
+  CHECK(test_voicing_hysteresis());
+  CHECK(test_single_bad_hop());
+  CHECK(test_double_bad_hop());
+  CHECK(test_vibrato_continuity());
+  CHECK(test_vocal_fry_continuity());
+  CHECK(test_low_energy_vowel_tail());
+  CHECK(test_fricative_rejection());
+  CHECK(test_plosive_rejection());
+  CHECK(test_legato_note_change());
+
   std::puts("all pitch tests passed");
+  return 0;
 }

@@ -45,6 +45,16 @@ struct VocalFxConfig {
   HarmonyArticulationConfig voice2_articulation{};
   PitchShiftConfig pitch_shift{};
   LpcConfig lpc{};
+  // Milestone 5.11.3 — Dry Alignment, Fast Harmony Attack & Light Harmony Limiter
+  bool align_dry_to_harmony = false;
+  float dry_alignment_ms = 32.0f;
+  float harmony_attack_ms = 4.0f;
+  float harmony_release_ms = 20.0f;
+  bool enable_harmony_limiter = true;
+  float harmony_limiter_threshold_db = -3.0f;
+  float harmony_limiter_attack_ms = 0.5f;
+  float harmony_limiter_release_ms = 40.0f;
+  float harmony_limiter_max_reduction_db = 6.0f;
 };
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };
@@ -73,4 +83,14 @@ struct PitchAnalysisConfig {
   float warm_reacquire_window_ms = 120.0f;
   float warm_confidence_margin = 0.0f;
   bool warm_mark_seed_enabled = false;
+  // Milestone 5.11.2 Stateful Voicing Configuration
+  bool stateful_voicing_enabled = true;
+  float voiced_stay_confidence = 0.45f;
+  float f0_continuity_tolerance_cents = 150.0f;
+  float max_unvoiced_zcr = 0.35f;
+  float min_unvoiced_r1 = 0.30f;
+  float voicing_weight_periodicity = 0.40f;
+  float voicing_weight_energy = 0.20f;
+  float voicing_weight_f0_continuity = 0.25f;
+  float voicing_weight_spectral = 0.15f;
 };

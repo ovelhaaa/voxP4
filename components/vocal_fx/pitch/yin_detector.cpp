@@ -97,6 +97,8 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
   float offset = std::fabs(denom) > 1e-12f ? .5f * (y0 - y2) / denom : 0;
   offset = std::clamp(offset, -.5f, .5f);
   const float period = candidate + offset;
+  out.yin_min = cmnd_[candidate];
+  out.yin_tau = static_cast<float>(candidate);
   out.confidence = std::clamp(1.0f - cmnd_[candidate], 0.0f, 1.0f);
   if (period > 0 && std::isfinite(period)) {
     out.period_samples = period;

@@ -39,7 +39,10 @@ enum class VocalFxParameter : uint16_t {
   HarmonyVoice1Smoothing, HarmonyVoice2Smoothing
   ,FormantVoice1Mode, FormantVoice2Mode,
   FormantVoice1Amount, FormantVoice2Amount,
-  FormantVoice1ShiftSemitones, FormantVoice2ShiftSemitones
+  FormantVoice1ShiftSemitones, FormantVoice2ShiftSemitones,
+  DryAlignmentEnabled, DryAlignmentMs,
+  HarmonyAttackMs, HarmonyReleaseMs,
+  HarmonyLimiterEnabled, HarmonyLimiterThresholdDb
 };
 
 enum class PitchShiftMode : uint8_t { Bypass, FixedInterval };
@@ -238,6 +241,15 @@ struct PitchShiftConfig {
   float formant_shift_semitones = 0.0f;
   float formant_bandwidth_expansion = 0.985f;
   FormantNormalizationStrategy formant_normalization_strategy = FormantNormalizationStrategy::StrategyC_IntegratedSpectral;
+  bool stateful_voicing_enabled = true;
+  float voiced_enter_confidence = 0.80f;
+  float voiced_stay_confidence = 0.45f;
+  float voiced_exit_confidence = 0.60f;
+  uint8_t voiced_attack_frames = 2;
+  uint8_t voiced_release_frames = 3;
+  float f0_continuity_tolerance_cents = 150.0f;
+  float max_unvoiced_zcr = 0.35f;
+  float min_unvoiced_r1 = 0.30f;
 };
 
 struct PitchShiftDebug {
@@ -343,9 +355,20 @@ struct PitchResult {
   float period_samples = 0.0f;
   float confidence = 0.0f;
   bool voiced = false;
+  bool voiced_raw = false;
+  bool voiced_stateful = false;
   bool onset = false;
   bool pitch_changed = false;
   uint8_t coherent_marks = 0;
+  float yin_min = 1.0f;
+  float yin_tau = 0.0f;
+  float input_rms = 0.0f;
+  float input_peak = 0.0f;
+  float spectral_centroid = 0.0f;
+  float high_frequency_ratio = 0.0f;
+  float zero_crossing_rate = 0.0f;
+  uint8_t pitch_track_state = 0;
+  uint32_t coast_remaining = 0;
   // Centre of the analysis window in original input sample positions.
   uint64_t analysis_timestamp_samples = 0;
   // Compatibility alias retained for Milestone-1 callers.
@@ -437,6 +460,17 @@ struct SampleTelemetryRecord {
   float active_mix;
   float final_harmony_rms;
   float effective_total_gain;
+  uint8_t pitch_voiced_raw;
+  float yin_min;
+  float spectral_centroid;
+  float high_frequency_ratio;
+  float zero_crossing_rate;
+  float limiter_gain;
+  float limiter_reduction_db;
+  float limiter_peak;
+  uint16_t dry_delay_samples;
+  uint8_t dry_alignment_active;
+  float wanted_mix;
 };
 #pragma pack(pop)
 

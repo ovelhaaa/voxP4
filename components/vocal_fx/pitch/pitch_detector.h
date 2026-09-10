@@ -9,6 +9,8 @@ struct PitchDetectorMeasurement {
   float period_samples = 0.0f;
   float confidence = 0.0f;
   float rms_db = -160.0f;
+  float yin_min = 1.0f;
+  float yin_tau = 0.0f;
 };
 
 class PitchDetector {

@@ -59,8 +59,11 @@ private:
   uint64_t input_position_ = 0, latest_analysis_position_ = 0;
   uint64_t latency_samples_ = 0;
   bool voiced_ = false;
+  bool voiced_raw_ = false;
   uint8_t good_frames_ = 0, bad_frames_ = 0, change_frames_ = 0;
   float smoothed_cents_ = 0, previous_energy_ = 0;
+  float last_stable_f0_hz_ = 0.0f, last_stable_period_ = 0.0f;
+  float last_zcr_ = 0.0f, last_r1_ = 0.0f, last_spectral_centroid_ = 0.0f;
   bool have_smoothed_ = false;
   std::array<float, 8> pitch_history_{};
   size_t history_count_ = 0, history_write_ = 0;

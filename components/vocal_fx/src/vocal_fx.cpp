@@ -5,6 +5,8 @@
 #include "fdn_reverb.h"
 #include "gate.h"
 #include "limiter.h"
+#include "dry_delay_buffer.h"
+#include "harmony_limiter.h"
 #include "parameter_queue.h"
 #include "pitch_analysis.h"
 #include "profiling.h"
@@ -29,6 +31,8 @@ struct Engine {
   StereoDelay delay;
   FdnReverb reverb;
   Limiter limiter;
+  DryDelayBuffer dry_delay;
+  LightHarmonyLimiter harmony_limiter;
   Profiler profiler;
   PitchAnalysis pitch_analysis;
   SharedLpcAnalysis lpc_analysis;
@@ -41,6 +45,7 @@ struct Engine {
       right[VOCAL_FX_MAX_BLOCK_SIZE];
   float shifted[2][VOCAL_FX_MAX_BLOCK_SIZE];
   float harmony_mix[2]{};
+  float last_wanted_mix[2]{};
   PitchMark pitch_shift_marks[TdPsola::kMaxMarks];
   PitchMark pitch_shift_candidate_marks[TdPsola::kMaxMarks];
   size_t pitch_shift_mark_count = 0;
@@ -60,6 +65,12 @@ struct PitchMailbox {
   std::atomic<bool> voiced{false};
   std::atomic<bool> onset{false}, changed{false};
   std::atomic<uint64_t> timestamp{0};
+  std::atomic<bool> voiced_raw{false}, voiced_stateful{false};
+  std::atomic<float> yin_min{1.0f}, yin_tau{0.0f};
+  std::atomic<float> input_rms{0.0f}, input_peak{0.0f};
+  std::atomic<float> spectral_centroid{0.0f}, high_frequency_ratio{0.0f}, zero_crossing_rate{0.0f};
+  std::atomic<uint8_t> pitch_track_state{0};
+  std::atomic<uint32_t> coast_remaining{0};
 } pitch;
 constexpr uint32_t kPitchResetting = 1U << 31U;
 std::atomic<uint32_t> pitch_users{0};
@@ -108,6 +119,12 @@ bool vocal_fx_init(const VocalFxConfig &c) {
       !e.reverb.init(c.sample_rate))
     return false;
   e.limiter.init(c.sample_rate);
+  e.dry_delay.init(c.sample_rate, c.dry_alignment_ms, c.align_dry_to_harmony);
+  e.harmony_limiter.init(c.sample_rate, c.harmony_limiter_threshold_db,
+                         c.harmony_limiter_attack_ms, c.harmony_limiter_release_ms,
+                         c.harmony_limiter_max_reduction_db);
+  e.harmony_mix[0] = e.harmony_mix[1] = 0.0f;
+  e.last_wanted_mix[0] = e.last_wanted_mix[1] = 0.0f;
   if (c.enable_pitch_analysis) {
     PitchAnalysisConfig pitch_config{};
     pitch_config.input_sample_rate = c.sample_rate;
@@ -117,6 +134,15 @@ bool vocal_fx_init(const VocalFxConfig &c) {
     pitch_config.coast_ms = c.pitch_shift.coast_ms > 0.0f
                                 ? c.pitch_shift.coast_ms
                                 : (c.psola_coast_ms > 0.0f ? c.psola_coast_ms : 15.0f);
+    pitch_config.stateful_voicing_enabled = c.pitch_shift.stateful_voicing_enabled;
+    pitch_config.voiced_enter_confidence = c.pitch_shift.voiced_enter_confidence;
+    pitch_config.voiced_stay_confidence = c.pitch_shift.voiced_stay_confidence;
+    pitch_config.voiced_exit_confidence = c.pitch_shift.voiced_exit_confidence;
+    pitch_config.voiced_attack_frames = c.pitch_shift.voiced_attack_frames;
+    pitch_config.voiced_release_frames = c.pitch_shift.voiced_release_frames;
+    pitch_config.f0_continuity_tolerance_cents = c.pitch_shift.f0_continuity_tolerance_cents;
+    pitch_config.max_unvoiced_zcr = c.pitch_shift.max_unvoiced_zcr;
+    pitch_config.min_unvoiced_r1 = c.pitch_shift.min_unvoiced_r1;
     if (!e.pitch_analysis.init(pitch_config))
       return false;
   }
@@ -163,6 +189,10 @@ void vocal_fx_reset() {
   e.delay.reset();
   e.reverb.reset();
   e.limiter.reset();
+  e.dry_delay.reset();
+  e.harmony_limiter.reset();
+  e.harmony_mix[0] = e.harmony_mix[1] = 0.0f;
+  e.last_wanted_mix[0] = e.last_wanted_mix[1] = 0.0f;
   e.pitch_resources.reset();
   e.lpc_analysis.reset();
   for (auto &voice : e.pitch_shift) voice.reset();
@@ -236,21 +266,61 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
     // -6 dB headroom, centred dry, equal-power harmony pan. Unvoiced/onset
     // attenuation is performed by each PSOLA voice's acquisition fade.
+    // Milestone 5.11.3: Asymmetric slew (fast attack, smooth release)
+    const float attack_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_attack_ms * 0.001f);
+    const float release_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_release_ms * 0.001f);
+    const float attack_step = 1.0f / attack_samples;
+    const float release_step = 1.0f / release_samples;
+
     for(size_t i=0;i<n;++i){
-      float l=e.work[i],r=e.work[i];
-      for(size_t v=0;v<2;++v){const auto &c=e.harmony.voice(v);const float p=std::clamp(c.pan,-1.0f,1.0f);
+      const float dry_sample = e.dry_delay.process(e.work[i]);
+      float harm_bus_l = 0.0f;
+      float harm_bus_r = 0.0f;
+
+      for(size_t v=0;v<2;++v){
+        const auto &c = e.harmony.voice(v);
+        const float p = std::clamp(c.pan, -1.0f, 1.0f);
         const float wanted = (targets[v].valid || e.pitch_shift[v].is_releasing()) &&
-                                     e.pitch_shift[v].has_usable_output()
-                                  ? 1.0f
-                                  : 0.0f;
-        const float step=1.0f/std::max(1.0f,e.cfg.sample_rate*.020f);
-        e.harmony_mix[v]+=std::clamp(wanted-e.harmony_mix[v],-step,step);
-        l+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1-p));r+=e.shifted[v][i]*c.gain*e.harmony_mix[v]*std::sqrt(.5f*(1+p));}
+                             e.pitch_shift[v].has_usable_output()
+                                 ? 1.0f
+                                 : 0.0f;
+        e.last_wanted_mix[v] = wanted;
+        const float diff = wanted - e.harmony_mix[v];
+        if (diff > 0.0f) {
+          e.harmony_mix[v] += std::min(diff, attack_step);
+        } else {
+          e.harmony_mix[v] += std::max(diff, -release_step);
+        }
+        const float voice_sig = e.shifted[v][i] * c.gain * e.harmony_mix[v];
+        harm_bus_l += voice_sig * std::sqrt(0.5f * (1.0f - p));
+        harm_bus_r += voice_sig * std::sqrt(0.5f * (1.0f + p));
+      }
+
+      if (e.cfg.enable_harmony_limiter) {
+        e.harmony_limiter.process(harm_bus_l, harm_bus_r);
+      }
+#ifndef ESP_PLATFORM
+      if (s_sample_telemetry_cb) {
+        telem_records[i].limiter_gain = e.harmony_limiter.current_gain();
+        telem_records[i].limiter_reduction_db = e.harmony_limiter.reduction_db();
+        telem_records[i].limiter_peak = e.harmony_limiter.last_peak();
+        telem_records[i].dry_delay_samples = static_cast<uint16_t>(e.dry_delay.delay_samples());
+        telem_records[i].dry_alignment_active = e.dry_delay.enabled() ? 1 : 0;
+        telem_records[i].wanted_mix = e.last_wanted_mix[iso_v];
+      }
+#endif
+
       if (e.cfg.isolate_pitch_shift_output) {
-        const size_t iso_v_out = e.cfg.isolated_pitch_shift_voice < 2 ? e.cfg.isolated_pitch_shift_voice : 0;
-        e.left[i] = e.right[i] = e.shifted[iso_v_out][i];
+        if (e.cfg.apply_isolated_voice_envelope) {
+          e.left[i] = harm_bus_l;
+          e.right[i] = harm_bus_r;
+        } else {
+          const size_t iso_v_out = e.cfg.isolated_pitch_shift_voice < 2 ? e.cfg.isolated_pitch_shift_voice : 0;
+          e.left[i] = e.right[i] = e.shifted[iso_v_out][i];
+        }
       } else {
-        e.left[i]=.5f*l;e.right[i]=.5f*r;
+        e.left[i] = 0.5f * (dry_sample + harm_bus_l);
+        e.right[i] = 0.5f * (dry_sample + harm_bus_r);
       }
     }
 #ifndef ESP_PLATFORM
@@ -429,6 +499,27 @@ void apply_parameter(VocalFxParameter p, float v) {
     e.pitch_shift[voice].set_formants(e.pitch_shift[voice].formant_mode(),v);
     break;
   }
+  case VocalFxParameter::DryAlignmentEnabled:
+    e.cfg.align_dry_to_harmony = (v >= 0.5f);
+    e.dry_delay.set_enabled(e.cfg.align_dry_to_harmony);
+    break;
+  case VocalFxParameter::DryAlignmentMs:
+    e.cfg.dry_alignment_ms = v;
+    e.dry_delay.set_delay_ms(v);
+    break;
+  case VocalFxParameter::HarmonyAttackMs:
+    e.cfg.harmony_attack_ms = std::clamp(v, 0.1f, 100.0f);
+    break;
+  case VocalFxParameter::HarmonyReleaseMs:
+    e.cfg.harmony_release_ms = std::clamp(v, 1.0f, 500.0f);
+    break;
+  case VocalFxParameter::HarmonyLimiterEnabled:
+    e.cfg.enable_harmony_limiter = (v >= 0.5f);
+    break;
+  case VocalFxParameter::HarmonyLimiterThresholdDb:
+    e.cfg.harmony_limiter_threshold_db = v;
+    e.harmony_limiter.set_threshold_db(v);
+    break;
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
@@ -465,6 +556,20 @@ void vocal_fx_set_harmony_pan(size_t v,float x){if(v<2)vocal_fx_set_parameter(vo
 void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
 void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Mode),mode==FormantMode::Lpc?1.0f:0.0f);}
 void vocal_fx_set_formant_amount(size_t v,float amount){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Amount),amount);}
+void vocal_fx_set_dry_alignment(bool enabled, float delay_ms) {
+  vocal_fx_set_parameter(VocalFxParameter::DryAlignmentEnabled, enabled ? 1.0f : 0.0f);
+  vocal_fx_set_parameter(VocalFxParameter::DryAlignmentMs, delay_ms);
+}
+void vocal_fx_set_harmony_attack_ms(float milliseconds) {
+  vocal_fx_set_parameter(VocalFxParameter::HarmonyAttackMs, milliseconds);
+}
+void vocal_fx_set_harmony_release_ms(float milliseconds) {
+  vocal_fx_set_parameter(VocalFxParameter::HarmonyReleaseMs, milliseconds);
+}
+void vocal_fx_set_harmony_limiter(bool enabled, float threshold_db) {
+  vocal_fx_set_parameter(VocalFxParameter::HarmonyLimiterEnabled, enabled ? 1.0f : 0.0f);
+  vocal_fx_set_parameter(VocalFxParameter::HarmonyLimiterThresholdDb, threshold_db);
+}
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
 void vocal_fx_midi_all_notes_off(){e.midi.all_notes_off();}
@@ -495,6 +600,17 @@ void vocal_fx_publish_pitch(const PitchResult &r) {
                             ? r.analysis_timestamp_samples
                             : r.timestamp_samples,
                         std::memory_order_relaxed);
+  pitch.voiced_raw.store(r.voiced_raw, std::memory_order_relaxed);
+  pitch.voiced_stateful.store(r.voiced_stateful, std::memory_order_relaxed);
+  pitch.yin_min.store(r.yin_min, std::memory_order_relaxed);
+  pitch.yin_tau.store(r.yin_tau, std::memory_order_relaxed);
+  pitch.input_rms.store(r.input_rms, std::memory_order_relaxed);
+  pitch.input_peak.store(r.input_peak, std::memory_order_relaxed);
+  pitch.spectral_centroid.store(r.spectral_centroid, std::memory_order_relaxed);
+  pitch.high_frequency_ratio.store(r.high_frequency_ratio, std::memory_order_relaxed);
+  pitch.zero_crossing_rate.store(r.zero_crossing_rate, std::memory_order_relaxed);
+  pitch.pitch_track_state.store(static_cast<uint8_t>(r.pitch_track_state), std::memory_order_relaxed);
+  pitch.coast_remaining.store(r.coast_remaining, std::memory_order_relaxed);
   pitch.seq.fetch_add(1, std::memory_order_release);
   pitch.publisher_lock.clear(std::memory_order_release);
 }
@@ -522,6 +638,17 @@ bool vocal_fx_try_latest_pitch(PitchResult *result) {
   candidate.analysis_timestamp_samples =
       pitch.timestamp.load(std::memory_order_relaxed);
   candidate.timestamp_samples = candidate.analysis_timestamp_samples;
+  candidate.voiced_raw = pitch.voiced_raw.load(std::memory_order_relaxed);
+  candidate.voiced_stateful = pitch.voiced_stateful.load(std::memory_order_relaxed);
+  candidate.yin_min = pitch.yin_min.load(std::memory_order_relaxed);
+  candidate.yin_tau = pitch.yin_tau.load(std::memory_order_relaxed);
+  candidate.input_rms = pitch.input_rms.load(std::memory_order_relaxed);
+  candidate.input_peak = pitch.input_peak.load(std::memory_order_relaxed);
+  candidate.spectral_centroid = pitch.spectral_centroid.load(std::memory_order_relaxed);
+  candidate.high_frequency_ratio = pitch.high_frequency_ratio.load(std::memory_order_relaxed);
+  candidate.zero_crossing_rate = pitch.zero_crossing_rate.load(std::memory_order_relaxed);
+  candidate.pitch_track_state = pitch.pitch_track_state.load(std::memory_order_relaxed);
+  candidate.coast_remaining = pitch.coast_remaining.load(std::memory_order_relaxed);
 
   const uint32_t after = pitch.seq.load(std::memory_order_acquire);
   if (before != after || (after & 1U))

@@ -517,6 +517,11 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
         rec.active_mix = active_mix_;
         rec.final_harmony_rms = std::fabs(output[i]);
         rec.effective_total_gain = 0.0f;
+        rec.pitch_voiced_raw = pitch.voiced_raw ? 1 : 0;
+        rec.yin_min = pitch.yin_min;
+        rec.spectral_centroid = pitch.spectral_centroid;
+        rec.high_frequency_ratio = pitch.high_frequency_ratio;
+        rec.zero_crossing_rate = pitch.zero_crossing_rate;
       }
 #endif
     }
@@ -1117,6 +1122,11 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
       rec.active_mix = active_mix_;
       rec.final_harmony_rms = std::fabs(output[i]);
       rec.effective_total_gain = psola_gain_ * active_mix_;
+      rec.pitch_voiced_raw = pitch.voiced_raw ? 1 : 0;
+      rec.yin_min = pitch.yin_min;
+      rec.spectral_centroid = pitch.spectral_centroid;
+      rec.high_frequency_ratio = pitch.high_frequency_ratio;
+      rec.zero_crossing_rate = pitch.zero_crossing_rate;
     }
 #endif
     ola_[oi] = lpc_ola_[oi] = norm_[oi] = 0;

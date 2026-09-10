@@ -52,9 +52,11 @@ void PitchAnalysis::reset() {
   audio_end_sequence_.store(0, std::memory_order_relaxed);
   audio_end_low_.store(0, std::memory_order_relaxed);
   audio_end_high_.store(0, std::memory_order_relaxed);
-  voiced_ = have_smoothed_ = false;
+  voiced_ = voiced_raw_ = have_smoothed_ = false;
   good_frames_ = bad_frames_ = change_frames_ = 0;
   smoothed_cents_ = previous_energy_ = 0;
+  last_stable_f0_hz_ = last_stable_period_ = 0.0f;
+  last_zcr_ = last_r1_ = last_spectral_centroid_ = 0.0f;
   history_count_ = history_write_ = 0;
   mark_metadata_.store(0, std::memory_order_relaxed);
   mark_generation_.store(0, std::memory_order_relaxed);
@@ -110,20 +112,132 @@ size_t PitchAnalysis::run(size_t max_hops) {
     auto measurement = yin_.analyze(linear_.data(), config_.window_size, 0);
     VF_PROFILE_BEGIN(profiler_,
                      ps(PitchAnalysisProfileSection::VoicedClassifier));
-    const bool level_ok = measurement.rms_db > config_.min_input_db;
-    const float threshold = voiced_ ? config_.voiced_exit_confidence
-                                    : config_.voiced_enter_confidence;
-    if (level_ok && measurement.confidence >= threshold) {
-      good_frames_ = static_cast<uint8_t>(std::min<int>(255, good_frames_ + 1));
-      bad_frames_ = 0;
-      if (!voiced_ && good_frames_ >= config_.voiced_attack_frames)
-        voiced_ = true;
-    } else {
-      bad_frames_ = static_cast<uint8_t>(std::min<int>(255, bad_frames_ + 1));
-      good_frames_ = 0;
-      if (voiced_ && bad_frames_ >= config_.voiced_release_frames)
-        voiced_ = false;
+
+    // Time-domain feature extraction (scalar, fixed-cost, ESP32-P4 friendly)
+    float peak = 0.0f;
+    float sum_sq = 0.0f;
+    float sum_cross = 0.0f;
+    size_t zcr_count = 0;
+    const size_t N = config_.window_size;
+    for (size_t i = 0; i < N; ++i) {
+      const float x = linear_[i];
+      const float ax = std::fabs(x);
+      if (ax > peak) peak = ax;
+      sum_sq += x * x;
+      if (i > 0) {
+        sum_cross += x * linear_[i - 1];
+        if ((x >= 0.0f && linear_[i - 1] < 0.0f) || (x < 0.0f && linear_[i - 1] >= 0.0f))
+          ++zcr_count;
+      }
     }
+    const float zcr = N > 1 ? static_cast<float>(zcr_count) / static_cast<float>(N - 1) : 0.0f;
+    const float r1 = sum_sq > 1e-12f ? std::clamp(sum_cross / sum_sq, -1.0f, 1.0f) : 0.0f;
+    const float hfr = std::clamp(1.0f - r1, 0.0f, 2.0f);
+    const float spectral_centroid = (config_.analysis_sample_rate / (2.0f * 3.14159265358979323846f)) * std::acos(r1);
+    last_zcr_ = zcr;
+    last_r1_ = r1;
+    last_spectral_centroid_ = spectral_centroid;
+
+    const bool level_ok = measurement.rms_db > config_.min_input_db;
+    const bool raw_spectral_ok = (zcr <= config_.max_unvoiced_zcr) && (r1 >= config_.min_unvoiced_r1);
+    const bool raw_freq_ok = measurement.frequency_hz >= config_.min_frequency &&
+                             measurement.frequency_hz <= config_.max_frequency;
+    const bool voiced_raw = level_ok && (measurement.confidence >= config_.voiced_enter_confidence) &&
+                            raw_spectral_ok && raw_freq_ok;
+    voiced_raw_ = voiced_raw;
+
+    if (!config_.stateful_voicing_enabled) {
+      const float threshold = voiced_ ? config_.voiced_exit_confidence
+                                      : config_.voiced_enter_confidence;
+      if (level_ok && measurement.confidence >= threshold) {
+        good_frames_ = static_cast<uint8_t>(std::min<int>(255, good_frames_ + 1));
+        bad_frames_ = 0;
+        if (!voiced_ && good_frames_ >= config_.voiced_attack_frames)
+          voiced_ = true;
+      } else {
+        bad_frames_ = static_cast<uint8_t>(std::min<int>(255, bad_frames_ + 1));
+        good_frames_ = 0;
+        if (voiced_ && bad_frames_ >= config_.voiced_release_frames)
+          voiced_ = false;
+      }
+    } else {
+      if (!voiced_) {
+        // UNVOICED -> VOICED transition: strict criterion + attack debounce
+        const bool enter_candidate = level_ok &&
+                                     (measurement.confidence >= config_.voiced_enter_confidence) &&
+                                     raw_spectral_ok && raw_freq_ok;
+        if (enter_candidate) {
+          good_frames_ = static_cast<uint8_t>(std::min<int>(255, good_frames_ + 1));
+          bad_frames_ = 0;
+          if (good_frames_ >= config_.voiced_attack_frames) {
+            voiced_ = true;
+            last_stable_f0_hz_ = measurement.frequency_hz;
+            last_stable_period_ = measurement.period_samples;
+          }
+        } else {
+          good_frames_ = 0;
+          bad_frames_ = static_cast<uint8_t>(std::min<int>(255, bad_frames_ + 1));
+        }
+      } else {
+        // VOICED -> remain VOICED / exit VOICED
+        if (!level_ok) {
+          // True silence: exit rapidly (2 hops)
+          bad_frames_ = static_cast<uint8_t>(std::min<int>(255, bad_frames_ + 1));
+          good_frames_ = 0;
+          if (bad_frames_ >= 2) {
+            voiced_ = false;
+            last_stable_f0_hz_ = 0.0f;
+            last_stable_period_ = 0.0f;
+          }
+        } else {
+          // Check for fricative characteristics (high ZCR and low r1)
+          const bool is_fricative = (zcr > config_.max_unvoiced_zcr) && (r1 < config_.min_unvoiced_r1);
+
+          // Path A: Confidence above stay threshold
+          const bool stay_confidence_ok = measurement.confidence >= config_.voiced_stay_confidence;
+
+          // Path B: F0 continuity support when confidence dips
+          bool continuity_ok = false;
+          if (last_stable_f0_hz_ > 0.0f && measurement.frequency_hz > 0.0f) {
+            const float delta_cents = std::fabs(1200.0f * std::log2(measurement.frequency_hz / last_stable_f0_hz_));
+            if (delta_cents <= config_.f0_continuity_tolerance_cents ||
+                std::fabs(delta_cents - 1200.0f) <= 100.0f) {
+              continuity_ok = true;
+            }
+          }
+
+          // Decide whether current hop is acceptable to remain voiced
+          bool accept_hop = false;
+          if (!is_fricative) {
+            if (stay_confidence_ok && raw_freq_ok) {
+              accept_hop = true;
+            } else if (continuity_ok && measurement.confidence >= 0.25f && raw_freq_ok) {
+              // Continuity bridge: confidence dipped (e.g. vocal fry / vibrato trough), but F0 is continuous
+              accept_hop = true;
+            }
+          }
+
+          if (accept_hop) {
+            good_frames_ = static_cast<uint8_t>(std::min<int>(255, good_frames_ + 1));
+            bad_frames_ = 0;
+            if (measurement.confidence >= config_.voiced_stay_confidence && raw_freq_ok) {
+              last_stable_f0_hz_ = measurement.frequency_hz;
+              last_stable_period_ = measurement.period_samples;
+            }
+          } else {
+            // Bad hop: debounce with release persistence
+            bad_frames_ = static_cast<uint8_t>(std::min<int>(255, bad_frames_ + 1));
+            good_frames_ = 0;
+            if (bad_frames_ >= config_.voiced_release_frames) {
+              voiced_ = false;
+              last_stable_f0_hz_ = 0.0f;
+              last_stable_period_ = 0.0f;
+            }
+          }
+        }
+      }
+    }
+
     const float energy = std::pow(10.0f, measurement.rms_db / 10.0f);
     const bool onset = energy > 1e-12f && previous_energy_ > 1e-12f &&
                        energy > previous_energy_ * config_.onset_ratio;
@@ -134,14 +248,28 @@ size_t PitchAnalysis::run(size_t max_hops) {
     PitchResult result{};
     result.confidence = measurement.confidence;
     result.voiced = voiced_;
+    result.voiced_raw = voiced_raw_;
+    result.voiced_stateful = voiced_;
     result.onset = onset;
+    result.yin_min = measurement.yin_min;
+    result.yin_tau = measurement.yin_tau;
+    result.input_rms = static_cast<float>(std::sqrt(std::max(0.0, static_cast<double>(energy))));
+    result.input_peak = peak;
+    result.spectral_centroid = spectral_centroid;
+    result.high_frequency_ratio = hfr;
+    result.zero_crossing_rate = zcr;
+
     const bool reliable_measurement =
-        level_ok && measurement.confidence >= config_.voiced_exit_confidence &&
+        level_ok &&
+        (measurement.confidence >= (config_.stateful_voicing_enabled ? config_.voiced_stay_confidence : config_.voiced_exit_confidence) ||
+         (voiced_ && last_stable_f0_hz_ > 0.0f && measurement.confidence >= 0.25f)) &&
         measurement.frequency_hz > 0 && std::isfinite(measurement.frequency_hz);
     if (!voiced_) {
       have_smoothed_ = false;
       history_count_ = history_write_ = 0;
       change_frames_ = 0;
+      last_stable_f0_hz_ = 0.0f;
+      last_stable_period_ = 0.0f;
     }
     if (reliable_measurement) {
       float cents = hz_to_cents(measurement.frequency_hz);
@@ -180,6 +308,9 @@ size_t PitchAnalysis::run(size_t max_hops) {
     if (have_smoothed_) {
       result.frequency_hz = cents_to_hz(smoothed_cents_);
       result.period_samples = config_.input_sample_rate / result.frequency_hz;
+    } else if (voiced_ && last_stable_f0_hz_ > 0.0f) {
+      result.frequency_hz = last_stable_f0_hz_;
+      result.period_samples = config_.input_sample_rate / result.frequency_hz;
     }
     const double center_back = decimator_.group_delay_input_samples() +
                                .5 * config_.window_size *
@@ -195,6 +326,16 @@ size_t PitchAnalysis::run(size_t max_hops) {
                    0);
     update_marks(result);
     result.coherent_marks = coherent_marks_;
+    const uint8_t track_st = mark_state_.load(std::memory_order_relaxed);
+    result.pitch_track_state = track_st;
+    const float eff_coast_ms = config_.coast_ms > 0.0f ? config_.coast_ms : 15.0f;
+    const uint32_t max_c_hops = std::max<uint32_t>(
+        1, static_cast<uint32_t>(std::lround(
+               eff_coast_ms * config_.analysis_sample_rate /
+               (config_.hop_size * 1000.0f))));
+    result.coast_remaining = (track_st == static_cast<uint8_t>(PitchTrackState::Coasting))
+                                 ? (max_c_hops > coasting_hops_ ? max_c_hops - coasting_hops_ : 0)
+                                 : (track_st == static_cast<uint8_t>(PitchTrackState::Locked) ? max_c_hops : 0);
     publish(result);
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Total),
                    static_cast<uint64_t>(1000000.0 * config_.hop_size /
@@ -279,7 +420,10 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
              effective_coast_ms * config_.analysis_sample_rate /
              (config_.hop_size * 1000.0f))));
 
-  if (!p.voiced || p.confidence < config_.voiced_exit_confidence) {
+  const bool should_unvoice = config_.stateful_voicing_enabled
+                                  ? (!p.voiced)
+                                  : (!p.voiced || p.confidence < config_.voiced_exit_confidence);
+  if (should_unvoice) {
     if (can_coast && coasting_hops_ < max_coast_hops) {
       ++coasting_hops_;
       mark_state_.store(static_cast<uint8_t>(PitchTrackState::Coasting),

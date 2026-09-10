@@ -50,13 +50,43 @@ int main(int argc, char **argv) {
   PitchAnalysisConfig c{};
   c.input_sample_rate = (float)rate;
   c.analysis_sample_rate = rate % 12000 == 0 ? 12000.0f : rate / 4.0f;
+  std::string marks_path;
+  for (int i = 3; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--stateful" && i + 1 < argc) {
+      c.stateful_voicing_enabled = (std::stoi(argv[++i]) != 0);
+    } else if (arg == "--enter-confidence" && i + 1 < argc) {
+      c.voiced_enter_confidence = std::stof(argv[++i]);
+    } else if (arg == "--stay-confidence" && i + 1 < argc) {
+      c.voiced_stay_confidence = std::stof(argv[++i]);
+    } else if (arg == "--exit-confidence" && i + 1 < argc) {
+      c.voiced_exit_confidence = std::stof(argv[++i]);
+    } else if (arg == "--release-frames" && i + 1 < argc) {
+      c.voiced_release_frames = static_cast<uint8_t>(std::stoi(argv[++i]));
+    } else if (arg == "--attack-frames" && i + 1 < argc) {
+      c.voiced_attack_frames = static_cast<uint8_t>(std::stoi(argv[++i]));
+    } else if (arg == "--continuity-cents" && i + 1 < argc) {
+      c.f0_continuity_tolerance_cents = std::stof(argv[++i]);
+    } else if (arg == "--coast-ms" && i + 1 < argc) {
+      c.coast_ms = std::stof(argv[++i]);
+    } else if (arg == "--continuity-policy" && i + 1 < argc) {
+      const std::string pol = argv[++i];
+      if (pol == "onset") c.continuity_policy = PsolaContinuityPolicy::OnsetContinuity;
+      else if (pol == "coasting") c.continuity_policy = PsolaContinuityPolicy::Coasting;
+      else if (pol == "combined") c.continuity_policy = PsolaContinuityPolicy::OnsetContinuityCoasting;
+      else c.continuity_policy = PsolaContinuityPolicy::Baseline;
+    } else if (arg.rfind("--", 0) != 0 && marks_path.empty()) {
+      marks_path = arg;
+    }
+  }
+
   PitchAnalysis a;
   if (!a.init(c)) {
     std::fprintf(stderr, "unsupported sample rate/configuration\n");
     return 2;
   }
   std::ofstream csv(argv[2]);
-  csv << "time_seconds,frequency_hz,confidence,voiced,onset,pitch_changed\n";
+  csv << "sample_index,time_seconds,f0_hz,period_samples,yin_min,yin_tau,confidence,voiced_raw,voiced_stateful,input_rms,input_peak,spectral_centroid,high_frequency_ratio,zero_crossing_rate,PitchTrackState,coast_remaining\n";
   const size_t stride = ch * (bits / 8), frames = bytes / stride;
   uint64_t last = ~uint64_t(0);
   for (size_t i = 0; i < frames;) {
@@ -81,15 +111,28 @@ int main(int argc, char **argv) {
     while (a.run(1)) {
       auto r = a.latest();
       if (r.analysis_timestamp_samples != last) {
-        csv << (double)r.analysis_timestamp_samples / rate << ','
-            << r.frequency_hz << ',' << r.confidence << ',' << r.voiced << ','
-            << r.onset << ',' << r.pitch_changed << '\n';
+        csv << r.analysis_timestamp_samples << ','
+            << (double)r.analysis_timestamp_samples / rate << ','
+            << r.frequency_hz << ','
+            << r.period_samples << ','
+            << r.yin_min << ','
+            << r.yin_tau << ','
+            << r.confidence << ','
+            << (r.voiced_raw ? 1 : 0) << ','
+            << (r.voiced_stateful ? 1 : 0) << ','
+            << r.input_rms << ','
+            << r.input_peak << ','
+            << r.spectral_centroid << ','
+            << r.high_frequency_ratio << ','
+            << r.zero_crossing_rate << ','
+            << static_cast<uint32_t>(r.pitch_track_state) << ','
+            << r.coast_remaining << '\n';
         last = r.analysis_timestamp_samples;
       }
     }
   }
-  if (argc > 3) {
-    std::ofstream marks(argv[3]);
+  if (!marks_path.empty()) {
+    std::ofstream marks(marks_path);
     marks << "sample_position,time_seconds,confidence\n";
     PitchMark m[64];
     size_t n = a.marks(0, frames, m, 64);
@@ -98,4 +141,5 @@ int main(int argc, char **argv) {
             << (double)m[i].sample_position / rate << ',' << m[i].confidence
             << '\n';
   }
+  return 0;
 }

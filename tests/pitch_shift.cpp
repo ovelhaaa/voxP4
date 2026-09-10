@@ -77,6 +77,26 @@ int main(int argc, char **argv) {
     else if(option=="--continuity-policy"&&i+1<argc){const std::string val=argv[++i];if(val=="onset")c.pitch_shift.continuity_policy=PsolaContinuityPolicy::OnsetContinuity;else if(val=="coasting")c.pitch_shift.continuity_policy=PsolaContinuityPolicy::Coasting;else if(val=="combined")c.pitch_shift.continuity_policy=PsolaContinuityPolicy::OnsetContinuityCoasting;else if(val!="baseline"){std::fprintf(stderr,"invalid continuity policy: %s\n",val.c_str());return 2;}}
     else if(option=="--coast-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.coast_ms=ms;c.psola_coast_ms=ms;}
     else if(option=="--fallback-policy"&&i+1<argc){const std::string val=argv[++i];if(val=="muted")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::Muted;else if(val=="dry")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::CurrentDry;else if(val=="unvoiced")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::UnvoicedOnly;else if(val=="highpass")c.pitch_shift.fallback_policy=HarmonyFallbackPolicy::HighpassUnvoiced;else{std::fprintf(stderr,"invalid fallback policy: %s\n",val.c_str());return 2;}}
+    else if(option=="--stateful"&&i+1<argc)c.pitch_shift.stateful_voicing_enabled=(std::stoi(argv[++i])!=0);
+    else if(option=="--enter-confidence"&&i+1<argc)c.pitch_shift.voiced_enter_confidence=std::stof(argv[++i]);
+    else if(option=="--stay-confidence"&&i+1<argc)c.pitch_shift.voiced_stay_confidence=std::stof(argv[++i]);
+    else if(option=="--exit-confidence"&&i+1<argc)c.pitch_shift.voiced_exit_confidence=std::stof(argv[++i]);
+    else if(option=="--release-frames"&&i+1<argc)c.pitch_shift.voiced_release_frames=static_cast<uint8_t>(std::stoi(argv[++i]));
+    else if(option=="--attack-frames"&&i+1<argc)c.pitch_shift.voiced_attack_frames=static_cast<uint8_t>(std::stoi(argv[++i]));
+    else if(option=="--continuity-cents"&&i+1<argc)c.pitch_shift.f0_continuity_tolerance_cents=std::stof(argv[++i]);
+    else if(option=="--align-dry"&&i+1<argc)c.align_dry_to_harmony=(std::stoi(argv[++i])!=0);
+    else if(option=="--dry-delay-ms"&&i+1<argc)c.dry_alignment_ms=std::stof(argv[++i]);
+    else if(option=="--harmony-attack-ms"&&i+1<argc)c.harmony_attack_ms=std::stof(argv[++i]);
+    else if(option=="--harmony-release-ms"&&i+1<argc)c.harmony_release_ms=std::stof(argv[++i]);
+    else if(option=="--harmony-limiter"&&i+1<argc)c.enable_harmony_limiter=(std::stoi(argv[++i])!=0);
+    else if(option=="--limiter-thresh-db"&&i+1<argc)c.harmony_limiter_threshold_db=std::stof(argv[++i]);
+    else if(option=="--render-mode"&&i+1<argc){
+      const std::string m=argv[++i];
+      if(m=="solo"){c.isolate_pitch_shift_output=true;c.apply_isolated_voice_envelope=true;}
+      else if(m=="mix"){c.isolate_pitch_shift_output=false;}
+      else if(m=="raw"){c.isolate_pitch_shift_output=true;c.apply_isolated_voice_envelope=false;}
+      else{std::fprintf(stderr,"invalid render mode: %s\n",m.c_str());return 2;}
+    }
     else {std::fprintf(stderr,"unknown option: %s\n",option.c_str());return 2;}
   }
   if (!vocal_fx_init(c)) {
