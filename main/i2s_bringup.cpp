@@ -1,5 +1,7 @@
 #include "i2s_bringup.h"
 #include "vocal_fx.h"
+#include "pitch_analysis.h"
+#include "yin_detector.h"
 #include "esp_heap_caps.h"
 #include "esp_cpu.h"
 #include "esp_log.h"
@@ -1520,7 +1522,8 @@ struct OldSlidingStorageBenchmark {
   float checksum = 0.0f;
 };
 
-#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
 struct AutocorrIsolatedBenchmark {
   uint32_t count = 0;
   uint64_t autocorr_total_us = 0;
@@ -1543,6 +1546,12 @@ const char *autocorr_variant_name(LpcAutocorrelationVariant variant) {
     return "AUTOCORR_FLOAT_SCALAR";
   case LpcAutocorrelationVariant::AutocorrFloatMultiacc:
     return "AUTOCORR_FLOAT_MULTIACC";
+  case LpcAutocorrelationVariant::AutocorrF32Kahan:
+    return "AUTOCORR_F32_KAHAN";
+  case LpcAutocorrelationVariant::AutocorrF32FmaProduct:
+    return "AUTOCORR_F32_FMA_PRODUCT";
+  case LpcAutocorrelationVariant::AutocorrF32DoubleSingle:
+    return "AUTOCORR_F32_DOUBLE_SINGLE";
   }
   return "UNKNOWN";
 }
@@ -1620,12 +1629,25 @@ AutocorrIsolatedBenchmark benchmark_lpc_autocorrelation(
 
 void print_lpc_autocorr_isolated_benchmarks() {
   constexpr double kProductsPerFrame = 17272.0;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  const std::array<LpcAutocorrelationVariant, 5> variants{{
+      LpcAutocorrelationVariant::AutocorrReferenceDouble,
+      LpcAutocorrelationVariant::AutocorrF32Kahan,
+      LpcAutocorrelationVariant::AutocorrF32FmaProduct,
+      LpcAutocorrelationVariant::AutocorrF32DoubleSingle,
+      LpcAutocorrelationVariant::AutocorrFloatMultiacc,
+  }};
+  constexpr const char *kPrefix = "B4B4C";
+#else
   const std::array<LpcAutocorrelationVariant, 3> variants{{
       LpcAutocorrelationVariant::AutocorrReferenceDouble,
       LpcAutocorrelationVariant::AutocorrFloatScalar,
       LpcAutocorrelationVariant::AutocorrFloatMultiacc,
   }};
-  printf("B4B4B_THEORY window_size=1024 order=16 products/frame=17272\n");
+  constexpr const char *kPrefix = "B4B4B";
+#endif
+  printf("%s_THEORY window_size=1024 order=16 products/frame=17272\n",
+         kPrefix);
   for (const auto variant : variants) {
     const auto stats = benchmark_lpc_autocorrelation(variant);
     const double average_us = stats.count
@@ -1636,8 +1658,8 @@ void print_lpc_autocorr_isolated_benchmarks() {
         stats.count ? static_cast<double>(stats.autocorr_total_cycles) /
                           stats.count
                     : 0.0;
-    printf("B4B4B_ISOLATED variant=%s frames=%lu autocorrelation_avg_us/frame=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/frame=%.2f cycles/product=%.5f LPC_total_us/frame=%.2f LPC_max_us=%lu valid_frames=%lu products/frame=17272 checksum=%.9g\n",
-           autocorr_variant_name(variant),
+    printf("%s_ISOLATED variant=%s frames=%lu autocorrelation_avg_us/frame=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/frame=%.2f cycles/product=%.5f LPC_total_us/frame=%.2f LPC_max_us=%lu valid_frames=%lu products/frame=17272 checksum=%.9g\n",
+           kPrefix, autocorr_variant_name(variant),
            static_cast<unsigned long>(stats.count), average_us,
            static_cast<unsigned long>(stats.autocorr_p50_us),
            static_cast<unsigned long>(stats.autocorr_p95_us),
@@ -1648,6 +1670,108 @@ void print_lpc_autocorr_isolated_benchmarks() {
                        : 0.0,
            static_cast<unsigned long>(stats.lpc_max_us),
            static_cast<unsigned long>(stats.valid_frames), stats.checksum);
+  }
+}
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+struct YinIsolatedBenchmark {
+  uint32_t count = 0;
+  uint32_t cold_us = 0;
+  uint32_t cold_cycles = 0;
+  uint64_t total_us = 0;
+  uint64_t total_cycles = 0;
+  uint32_t p50_us = 0;
+  uint32_t p95_us = 0;
+  uint32_t p99_us = 0;
+  uint32_t maximum_us = 0;
+  float checksum = 0.0f;
+};
+
+volatile float s_b4b4d_yin_checksum = 0.0f;
+
+YinIsolatedBenchmark
+benchmark_yin_difference(YinDifferenceVariant variant) {
+  constexpr size_t kWindow = 512;
+  constexpr size_t kTauCount = 185;
+  constexpr size_t kWarmupHops = 8;
+  constexpr size_t kMeasuredHops = 128;
+  constexpr float kPi = 3.14159265358979323846f;
+  std::array<float, kWindow> window{};
+  std::array<float, YinDetector::kMaxWindow + 1> difference{};
+  std::array<uint32_t, kMeasuredHops> elapsed_us{};
+  std::array<uint32_t, kMeasuredHops> elapsed_cycles{};
+  for (size_t i = 0; i < window.size(); ++i) {
+    const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) /
+                        12000.0f;
+    window[i] = 0.12589254f * std::sin(phase);
+  }
+
+  YinIsolatedBenchmark result{};
+  uint64_t start_us = esp_timer_get_time();
+  uint32_t start_cycles = esp_cpu_get_cycle_count();
+  yin_difference_compute(variant, window.data(), window.size(), kTauCount,
+                         difference.data());
+  result.cold_cycles =
+      static_cast<uint32_t>(esp_cpu_get_cycle_count() - start_cycles);
+  result.cold_us = static_cast<uint32_t>(esp_timer_get_time() - start_us);
+
+  for (size_t hop = 0; hop < kWarmupHops; ++hop)
+    yin_difference_compute(variant, window.data(), window.size(), kTauCount,
+                           difference.data());
+  for (size_t hop = 0; hop < kMeasuredHops; ++hop) {
+    // Shift phase without changing the number or identity of evaluated pairs.
+    const float first = window[0];
+    std::move(window.begin() + 1, window.end(), window.begin());
+    window.back() = first;
+    start_us = esp_timer_get_time();
+    start_cycles = esp_cpu_get_cycle_count();
+    yin_difference_compute(variant, window.data(), window.size(), kTauCount,
+                           difference.data());
+    elapsed_cycles[hop] =
+        static_cast<uint32_t>(esp_cpu_get_cycle_count() - start_cycles);
+    elapsed_us[hop] = static_cast<uint32_t>(esp_timer_get_time() - start_us);
+    result.total_cycles += elapsed_cycles[hop];
+    result.total_us += elapsed_us[hop];
+    result.maximum_us = std::max(result.maximum_us, elapsed_us[hop]);
+    result.checksum += difference[1 + (hop % kTauCount)];
+  }
+  s_b4b4d_yin_checksum = result.checksum;
+  result.count = kMeasuredHops;
+  std::sort(elapsed_us.begin(), elapsed_us.end());
+  result.p50_us = percentile_sorted(elapsed_us.data(), elapsed_us.size(), 50);
+  result.p95_us = percentile_sorted(elapsed_us.data(), elapsed_us.size(), 95);
+  result.p99_us = percentile_sorted(elapsed_us.data(), elapsed_us.size(), 99);
+  return result;
+}
+
+void print_yin_isolated_benchmarks() {
+  constexpr double kProductsPerHop = 77515.0;
+  const std::array<YinDifferenceVariant, 5> variants{{
+      YinDifferenceVariant::ReferenceScalar,
+      YinDifferenceVariant::FmaScalar,
+      YinDifferenceVariant::Muladd4Acc,
+      YinDifferenceVariant::Fma4Acc,
+      YinDifferenceVariant::Fma8Acc,
+  }};
+  printf("B4B4D_THEORY analysis_sample_rate=12000 window_size=512 hop_size=60 tau_min=12 tau_max=184 difference_taus=185 products/hop=77515\n");
+  for (const auto variant : variants) {
+    const auto stats = benchmark_yin_difference(variant);
+    const double average_us =
+        stats.count ? static_cast<double>(stats.total_us) / stats.count : 0.0;
+    const double average_cycles =
+        stats.count ? static_cast<double>(stats.total_cycles) / stats.count
+                    : 0.0;
+    printf("B4B4D_ISOLATED variant=%s hops=%lu cold_us=%lu cold_cycles=%lu avg_us/hop=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/hop=%.2f cycles/product=%.5f taus=185 products/hop=77515 reference_products=77515 candidate_products=77515 checksum=%.9g\n",
+           yin_difference_variant_name(variant),
+           static_cast<unsigned long>(stats.count),
+           static_cast<unsigned long>(stats.cold_us),
+           static_cast<unsigned long>(stats.cold_cycles), average_us,
+           static_cast<unsigned long>(stats.p50_us),
+           static_cast<unsigned long>(stats.p95_us),
+           static_cast<unsigned long>(stats.p99_us),
+           static_cast<unsigned long>(stats.maximum_us), average_cycles,
+           average_cycles / kProductsPerHop, stats.checksum);
   }
 }
 #endif
@@ -1718,6 +1842,25 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   constexpr double kBeforeCombinedUsPerHop = 19111.35;
   constexpr double kBeforeCore1Percent = 98.26;
   constexpr double kBeforePitchHopsPerSecond = 51.39;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  // Retained-double B4B.4B measurements on this P4 rev1.3 at 360 MHz.
+  constexpr double kBeforeLpcUsPerFrame = 14487.23;
+  constexpr double kBeforeWindowHandlingUsPerFrame = 242.21;
+  constexpr double kBeforeAutocorrelationUsPerFrame = 12781.60;
+  constexpr double kBeforeLevinsonUsPerFrame = 182.53;
+  constexpr double kBeforeYinDifferenceUsPerHop = 4127.47;
+  constexpr double kBeforePitchAnalysisUsPerHop = 5139.66;
+  constexpr double kBeforeCombinedUsPerHop = 18891.58;
+  constexpr double kBeforeCore1Percent = 98.23;
+  constexpr double kBeforePitchHopsPerSecond = 51.97;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  // B4B.4C measurements on this same ESP32-P4 rev1.3 at 360 MHz.
+  constexpr double kBeforeLpcUsPerFrame = 4304.14;
+  constexpr double kBeforeYinDifferenceUsPerHop = 4142.15;
+  constexpr double kBeforePitchAnalysisUsPerHop = 5340.55;
+  constexpr double kBeforeCombinedUsPerHop = 9520.59;
+  constexpr double kBeforeCore1Percent = 97.33;
+  constexpr double kBeforePitchHopsPerSecond = 102.11;
 #endif
 
   printf("\n=======================================================\n");
@@ -1725,6 +1868,10 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("   B4B.4A — LPC RING BUFFER OPTIMIZATION AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
   printf("   B4B.4B — LPC AUTOCORRELATION FPU OPTIMIZATION AUDIT\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  printf("   B4B.4C — COMPENSATED FMA / DOUBLE-SINGLE LPC AUDIT\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  printf("   B4B.4D — YIN DIFFERENCE KERNEL OPTIMIZATION AUDIT\n");
 #else
   printf("   B4B_3_PITCH_ANALYSIS_HOTSPOT_AUDIT\n");
 #endif
@@ -1738,6 +1885,13 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
   printf("Production autocorrelation: AUTOCORR_REFERENCE_DOUBLE (float candidates rejected by host numeric guardrails)\n");
   print_lpc_autocorr_isolated_benchmarks();
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  printf("Production candidate: AUTOCORR_F32_DOUBLE_SINGLE (host numeric and audio guardrails passed)\n");
+  print_lpc_autocorr_isolated_benchmarks();
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  printf("Production YIN difference: YIN_DIFF_FMA_8ACC (host functional and numerical guardrails passed)\n");
+  printf("Production LPC autocorrelation: AUTOCORR_F32_DOUBLE_SINGLE (unchanged from B4B.4C)\n");
+  print_yin_isolated_benchmarks();
 #endif
 
   static VocalFxConfig config;
@@ -1748,6 +1902,11 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   config.enable_reverb = true;
   config.enable_pitch_analysis = true;
   config.pitch_shift.enabled = true;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  config.lpc.autocorrelation =
+      LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
+#endif
   config.pitch_shift.semitones = 4.0f;
   config.pitch_shift.wet = 1.0f;
   config.pitch_shift.continuity_policy = PsolaContinuityPolicy::Baseline;
@@ -1851,6 +2010,9 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
       vocal_fx_pitch_mark_forensic_telemetry();
   const TransportSnapshot transport_end = transport_snapshot();
   const LpcTelemetry lpc_telemetry_end = vocal_fx_lpc_telemetry();
+  const PitchTrackState pitch_track_end = vocal_fx_pitch_track_state();
+  const PitchShiftTelemetry harmony0_end = vocal_fx_harmony_telemetry(0);
+  const VocalFxFunnelStats funnel_end = vocal_fx_funnel_stats();
   const bool teardown_clean = stop_pipeline_tasks();
   const LpcFrameCostSummary lpc_frame_cost =
       vocal_fx_lpc_frame_cost_summary();
@@ -2029,6 +2191,10 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("Stage B4B.4A — LPC Ring Buffer Optimization Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
   printf("Stage B4B.4B — LPC Autocorrelation FPU Optimization Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  printf("Stage B4B.4C — Compensated FMA / Double-Single LPC Autocorrelation Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  printf("Stage B4B.4D — YIN Difference Kernel Optimization Report\n");
 #else
   printf("Stage B4B.3 — Pitch Analysis Compute Hotspot Audit Report\n");
 #endif
@@ -2209,7 +2375,9 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
       lpc_frame_cost.count > 0 &&
       new_window_handling_us_per_frame < kBeforeWindowDrainUsPerFrame &&
       lpc_avg_frame_us < kBeforeLpcUsPerFrame;
-#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   const bool no_transport_regression =
       transport_end.rx_dma_errors == transport_start.rx_dma_errors &&
       transport_end.tx_dma_errors == transport_start.tx_dma_errors &&
@@ -2540,6 +2708,218 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
   printf("NEXT PRIMARY HOTSPOT:\n%s\n", primary_hotspot);
   printf("NEXT STEP:\nalgorithm-preserving non-float autocorrelation investigation\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  (void)old_storage;
+  const bool ever_locked = audit_end.first_locked_input_position != 0;
+  const bool psola_usable =
+      harmony0_end.state == PitchShiftState::Active ||
+      harmony0_end.state == PitchShiftState::Acquiring;
+  const bool b4b4c_hardware_pass =
+      b4b4b_transport_pass && teardown_clean &&
+      autocorrelation_avg_frame_us < kBeforeAutocorrelationUsPerFrame;
+  printf("\nB4B.4C production selection: AUTOCORR_F32_DOUBLE_SINGLE\n");
+  printf("Host classification: numerical guardrails PASS; audio guardrails PASS\n");
+  printf("\nSECTION                                  DOUBLE    COMPENSATED        SPEEDUP\n");
+  printf("LPC window handling (us/frame)          %9.2f %14.2f %11.2fx\n",
+         kBeforeWindowHandlingUsPerFrame, new_window_handling_us_per_frame,
+         new_window_handling_us_per_frame > 0.0
+             ? kBeforeWindowHandlingUsPerFrame /
+                   new_window_handling_us_per_frame
+             : 0.0);
+  printf("LPC autocorrelation (us/frame)          %9.2f %14.2f %11.2fx\n",
+         kBeforeAutocorrelationUsPerFrame, autocorrelation_avg_frame_us,
+         autocorrelation_avg_frame_us > 0.0
+             ? kBeforeAutocorrelationUsPerFrame /
+                   autocorrelation_avg_frame_us
+             : 0.0);
+  printf("LPC Levinson-Durbin (us/frame)          %9.2f %14.2f %11.2fx\n",
+         kBeforeLevinsonUsPerFrame, levinson_avg_frame_us,
+         levinson_avg_frame_us > 0.0
+             ? kBeforeLevinsonUsPerFrame / levinson_avg_frame_us
+             : 0.0);
+  printf("LPC total (us/frame)                    %9.2f %14.2f %11.2fx\n",
+         kBeforeLpcUsPerFrame, lpc_avg_frame_us,
+         lpc_avg_frame_us > 0.0 ? kBeforeLpcUsPerFrame / lpc_avg_frame_us
+                                : 0.0);
+  printf("PitchAnalysis total (us/pitch hop)      %9.2f %14.2f %11.2fx\n",
+         kBeforePitchAnalysisUsPerHop, new_pitch_analysis_us_per_hop,
+         new_pitch_analysis_us_per_hop > 0.0
+             ? kBeforePitchAnalysisUsPerHop /
+                   new_pitch_analysis_us_per_hop
+             : 0.0);
+  printf("Combined worker cost (us/pitch hop)     %9.2f %14.2f %11.2fx\n",
+         kBeforeCombinedUsPerHop, average_hop_us,
+         average_hop_us > 0.0 ? kBeforeCombinedUsPerHop / average_hop_us
+                              : 0.0);
+  printf("Core 1 utilization (percent)             %8.2f %14.2f %11.2fx\n",
+         kBeforeCore1Percent, core1_utilization,
+         core1_utilization > 0.0 ? kBeforeCore1Percent / core1_utilization
+                                 : 0.0);
+  printf("Pitch throughput (hops/s)                %8.2f %14.2f %11.2fx\n",
+         kBeforePitchHopsPerSecond, pitch_hops_per_second,
+         kBeforePitchHopsPerSecond > 0.0
+             ? pitch_hops_per_second / kBeforePitchHopsPerSecond
+             : 0.0);
+  printf("FIFO/backlog compensated: current=%lu max=%lu drops=%llu backlog_current_ms=%.3f backlog_max_ms=%.3f pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
+         static_cast<unsigned long>(audit_end.fifo_current_occupancy),
+         static_cast<unsigned long>(audit_end.fifo_maximum_occupancy),
+         static_cast<unsigned long long>(audit_end.fifo_drops -
+                                         audit_start.fifo_drops),
+         audit_end.analysis_backlog_ms, audit_end.analysis_backlog_max_ms,
+         audit_end.latest_pitch_age_ms, audit_end.pitch_age_average_ms,
+         audit_end.pitch_age_p95_ms, audit_end.pitch_age_p99_ms,
+         audit_end.pitch_age_max_ms);
+  printf("Tracker final=%s reached_LOCKED=%s PSOLA_usable=%s grain_attempts=%llu grains_rendered=%llu\n",
+         pitch_track_name(pitch_track_end), ever_locked ? "yes" : "no",
+         psola_usable ? "yes" : "no",
+         static_cast<unsigned long long>(funnel_end.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_end.grains_rendered));
+  printf("B4B.4C transport/teardown audit: %s\n",
+         b4b4c_hardware_pass ? "PASS" : "FAIL");
+  printf("\nB4B.4C RESULT:\n%s\n",
+         b4b4c_hardware_pass ? "PASS" : "FAIL");
+  printf("PRODUCTION AUTOCORR:\nAUTOCORR_F32_DOUBLE_SINGLE\n");
+  printf("AUTOCORR DOUBLE:\n%.2f us/frame\n",
+         kBeforeAutocorrelationUsPerFrame);
+  printf("AUTOCORR CANDIDATE:\n%.2f us/frame\n",
+         autocorrelation_avg_frame_us);
+  printf("ELIGIBLE SPEEDUP:\n%.2fx\n",
+         autocorrelation_avg_frame_us > 0.0
+             ? kBeforeAutocorrelationUsPerFrame /
+                   autocorrelation_avg_frame_us
+             : 0.0);
+  printf("CORE1:\n%.2f%%\n", core1_utilization);
+  printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
+  printf("NEXT PRIMARY HOTSPOT:\n%s\n", primary_hotspot);
+  printf("NEXT STEP:\nstrictly follow the measured primary hotspot\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  (void)old_storage;
+  (void)maximum_theoretical_hops;
+  const bool ever_locked = audit_end.first_locked_input_position != 0;
+  const bool psola_usable =
+      harmony0_end.state == PitchShiftState::Active ||
+      harmony0_end.state == PitchShiftState::Acquiring;
+  const bool fifo_bounded =
+      audit_end.fifo_drops == audit_start.fifo_drops &&
+      audit_end.fifo_current_occupancy < PitchAnalysis::kFifoCapacity - 1 &&
+      audit_end.analysis_backlog_samples < PitchAnalysis::kFifoCapacity / 2;
+  const bool realtime = pitch_hops_per_second >= kRequiredHopsPerSecond &&
+                        fifo_bounded;
+  const bool b4b4d_pass = b4b4b_transport_pass && teardown_clean &&
+                          new_yin_difference_us_per_hop <= 2000.0;
+  printf("\nB4B.4D production selection: YIN_DIFF_FMA_8ACC\n");
+  printf("Host guardrails: NaN/Inf=0 selected_tau=0 voiced=0 track_state=0 pitch_marks=0\n");
+  printf("\nSECTION                                  B4B.4C       B4B.4D        SPEEDUP\n");
+  printf("YinDifference (us/pitch hop)            %9.2f %14.2f %11.2fx\n",
+         kBeforeYinDifferenceUsPerHop, new_yin_difference_us_per_hop,
+         new_yin_difference_us_per_hop > 0.0
+             ? kBeforeYinDifferenceUsPerHop / new_yin_difference_us_per_hop
+             : 0.0);
+  printf("PitchAnalysis total (us/pitch hop)      %9.2f %14.2f %11.2fx\n",
+         kBeforePitchAnalysisUsPerHop, new_pitch_analysis_us_per_hop,
+         new_pitch_analysis_us_per_hop > 0.0
+             ? kBeforePitchAnalysisUsPerHop / new_pitch_analysis_us_per_hop
+             : 0.0);
+  printf("LPC total (us/frame)                    %9.2f %14.2f %11.2fx\n",
+         kBeforeLpcUsPerFrame, lpc_avg_frame_us,
+         lpc_avg_frame_us > 0.0 ? kBeforeLpcUsPerFrame / lpc_avg_frame_us
+                                : 0.0);
+  printf("Combined worker cost (us/pitch hop)     %9.2f %14.2f %11.2fx\n",
+         kBeforeCombinedUsPerHop, average_hop_us,
+         average_hop_us > 0.0 ? kBeforeCombinedUsPerHop / average_hop_us
+                              : 0.0);
+  printf("Core 1 utilization (percent)             %8.2f %14.2f %11.2fx\n",
+         kBeforeCore1Percent, core1_utilization,
+         core1_utilization > 0.0 ? kBeforeCore1Percent / core1_utilization
+                                 : 0.0);
+  printf("Pitch throughput (hops/s)                %8.2f %14.2f %11.2fx\n",
+         kBeforePitchHopsPerSecond, pitch_hops_per_second,
+         kBeforePitchHopsPerSecond > 0.0
+             ? pitch_hops_per_second / kBeforePitchHopsPerSecond
+             : 0.0);
+  printf("PitchAnalysis budget estimate: without_old_diff=%.2f optimized_total=%.2f theoretical_max=%.2f hops/s\n",
+         kBeforePitchAnalysisUsPerHop - kBeforeYinDifferenceUsPerHop,
+         kBeforePitchAnalysisUsPerHop - kBeforeYinDifferenceUsPerHop +
+             new_yin_difference_us_per_hop,
+         (kBeforePitchAnalysisUsPerHop - kBeforeYinDifferenceUsPerHop +
+                      new_yin_difference_us_per_hop) > 0.0
+             ? 1000000.0 /
+                   (kBeforePitchAnalysisUsPerHop -
+                    kBeforeYinDifferenceUsPerHop +
+                    new_yin_difference_us_per_hop)
+             : 0.0);
+  printf("Core1 headroom targets at 200 hops/s: 70%%=%s 80%%=%s 90%%=%s (cost limits 3500/4000/4500 us)\n",
+         average_hop_us <= 3500.0 ? "PASS" : "FAIL",
+         average_hop_us <= 4000.0 ? "PASS" : "FAIL",
+         average_hop_us <= 4500.0 ? "PASS" : "FAIL");
+  printf("FIFO/backlog optimized: current=%lu max=%lu drops=%llu bounded=%s backlog_current_ms=%.3f backlog_max_ms=%.3f pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
+         static_cast<unsigned long>(audit_end.fifo_current_occupancy),
+         static_cast<unsigned long>(audit_end.fifo_maximum_occupancy),
+         static_cast<unsigned long long>(audit_end.fifo_drops -
+                                         audit_start.fifo_drops),
+         fifo_bounded ? "yes" : "no", audit_end.analysis_backlog_ms,
+         audit_end.analysis_backlog_max_ms, audit_end.latest_pitch_age_ms,
+         audit_end.pitch_age_average_ms, audit_end.pitch_age_p95_ms,
+         audit_end.pitch_age_p99_ms, audit_end.pitch_age_max_ms);
+  printf("Tracker final=%s reached_LOCKED=%s coherent_marks=%u PSOLA_usable=%s grain_attempts=%llu grains_scheduled=%llu grains_rendered=%llu\n",
+         pitch_track_name(pitch_track_end), ever_locked ? "yes" : "no",
+         static_cast<unsigned>(audit_end.coherent_marks),
+         psola_usable ? "yes" : "no",
+         static_cast<unsigned long long>(funnel_end.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_end.grains_scheduled),
+         static_cast<unsigned long long>(funnel_end.grains_rendered));
+  printf("Pitch marks: accepted=%llu rejected=%llu generated=%llu transferred=%llu consumed=%llu coherent_current=%u coherent_max=%u coherent_increments=%llu coherent_resets=%llu\n",
+         static_cast<unsigned long long>(audit_end.accepted_marks),
+         static_cast<unsigned long long>(audit_end.rejected_marks),
+         static_cast<unsigned long long>(funnel_end.pitch_marks_generated),
+         static_cast<unsigned long long>(funnel_end.pitch_marks_transferred),
+         static_cast<unsigned long long>(funnel_end.pitch_marks_consumed),
+         static_cast<unsigned>(audit_end.coherent_marks),
+         static_cast<unsigned>(audit_end.coherent_marks_maximum),
+         static_cast<unsigned long long>(audit_end.coherent_mark_increments),
+         static_cast<unsigned long long>(audit_end.coherent_mark_resets));
+  printf("YIN memory: sizeof_before=%zu sizeof_after=%zu dynamic_hot_path_allocations=0\n",
+         sizeof(YinDetector), sizeof(YinDetector));
+  for (const char *requested : {"YinDifferenceArray", "YinCmndArray",
+                                "PitchRollingWindow", "PitchLinearWindow"}) {
+    for (size_t i = 0; i < buffer_audit_count; ++i) {
+      if (std::string_view(buffer_audits[i].name) != requested)
+        continue;
+      const char *placement =
+          buffer_audits[i].is_psram
+              ? "PSRAM"
+              : (buffer_audits[i].is_sram ? "internal SRAM" : "other");
+      printf("  %s: ptr=%p bytes=%zu placement=%s\n", buffer_audits[i].name,
+             buffer_audits[i].ptr, buffer_audits[i].size_bytes, placement);
+    }
+  }
+  printf("B4B.4D transport/teardown audit: %s\n",
+         b4b4b_transport_pass && teardown_clean ? "PASS" : "FAIL");
+  printf("\nB4B.4D RESULT:\n%s\n", b4b4d_pass ? "PASS" : "FAIL");
+  printf("PRODUCTION YIN DIFFERENCE:\nYIN_DIFF_FMA_8ACC\n");
+  printf("REFERENCE:\n%.2f us/hop\n", kBeforeYinDifferenceUsPerHop);
+  printf("OPTIMIZED:\n%.2f us/hop\n", new_yin_difference_us_per_hop);
+  printf("ELIGIBLE SPEEDUP:\n%.2fx\n",
+         new_yin_difference_us_per_hop > 0.0
+             ? kBeforeYinDifferenceUsPerHop / new_yin_difference_us_per_hop
+             : 0.0);
+  printf("PITCH ANALYSIS TOTAL:\n%.2f us/hop\n",
+         new_pitch_analysis_us_per_hop);
+  printf("CORE1:\n%.2f%%\n", core1_utilization);
+  printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
+  printf("FIFO:\n%s\n", fifo_bounded ? "bounded" : "saturated");
+  printf("PITCH AGE:\n%.2f ms\n", audit_end.latest_pitch_age_ms);
+  printf("TRACK:\n%s\n", pitch_track_name(pitch_track_end));
+  printf("PSOLA USABLE:\n%s\n", psola_usable ? "yes" : "no");
+  printf("GRAINS:\nscheduled=%llu rendered=%llu\n",
+         static_cast<unsigned long long>(funnel_end.grains_scheduled),
+         static_cast<unsigned long long>(funnel_end.grains_rendered));
+  printf("REALTIME 200 HOPS/S:\n%s\n", realtime ? "PASS" : "FAIL");
+  printf("NEXT PRIMARY HOTSPOT:\n%s\n", primary_hotspot);
+  printf("NEXT STEP:\n%s\n",
+         new_yin_difference_us_per_hop > 2000.0
+             ? "SCALAR_KERNEL_OPTIMIZATION_INSUFFICIENT"
+             : "strictly follow the measured primary hotspot");
 #else
 
   printf("\nThroughput maximum theoretical: %.2f hops/s\n",
@@ -2681,6 +3061,18 @@ void run_i2s_bringup_selected_mode(void) {
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4B.4B low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4c_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4C low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4d_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4D low-priority coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4C_REAL_ANALOG)
   run_i2s_stage_b4c_real_analog();

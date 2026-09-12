@@ -13,12 +13,15 @@ enum class LpcAutocorrelationVariant : uint8_t {
   AutocorrReferenceDouble,
   AutocorrFloatScalar,
   AutocorrFloatMultiacc,
+  AutocorrF32Kahan,
+  AutocorrF32FmaProduct,
+  AutocorrF32DoubleSingle,
 };
 
 struct LpcConfig {
   bool enabled = true;
   LpcAutocorrelationVariant autocorrelation =
-      LpcAutocorrelationVariant::AutocorrReferenceDouble;
+      LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
   uint16_t order = 16;
   uint16_t window_size = 1024;
   uint16_t hop_size = 384;

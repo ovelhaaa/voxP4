@@ -63,6 +63,17 @@ struct VocalFxConfig {
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };
 
+// Stage B4B.4D keeps the original scalar implementation available as the
+// numerical oracle while allowing the exact same YIN difference pairs to be
+// evaluated by dependency-chain variants.
+enum class YinDifferenceVariant : uint8_t {
+  ReferenceScalar,
+  FmaScalar,
+  Muladd4Acc,
+  Fma4Acc,
+  Fma8Acc,
+};
+
 struct PitchAnalysisConfig {
   float input_sample_rate = 48000.0f;
   float analysis_sample_rate = 12000.0f;
@@ -80,6 +91,9 @@ struct PitchAnalysisConfig {
   float pitch_change_cents = 75.0f;
   float onset_ratio = 2.5f;
   PitchDetectorAlgorithm algorithm = PitchDetectorAlgorithm::Yin;
+  // Occupies existing selector padding; does not grow PitchAnalysisConfig or
+  // YinDetector.
+  YinDifferenceVariant yin_difference = YinDifferenceVariant::Fma8Acc;
   PsolaContinuityPolicy continuity_policy = PsolaContinuityPolicy::Baseline;
   float coast_ms = 0.0f;
   bool warm_reacquire_enabled = false;

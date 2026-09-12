@@ -42,6 +42,15 @@ public:
   size_t audio_history_bytes() const { return sizeof(audio_); }
   const void* fifo_ptr() const { return &fifo_; }
   size_t fifo_bytes() const { return sizeof(fifo_); }
+  const void *rolling_window_ptr() const { return rolling_.data(); }
+  size_t rolling_window_bytes() const { return sizeof(rolling_); }
+  const void *linear_window_ptr() const { return linear_.data(); }
+  size_t linear_window_bytes() const { return sizeof(linear_); }
+  const void *yin_difference_ptr() const { return yin_.difference_ptr(); }
+  size_t yin_difference_bytes() const { return yin_.difference_bytes(); }
+  const void *yin_cmnd_ptr() const { return yin_.cmnd_ptr(); }
+  size_t yin_cmnd_bytes() const { return yin_.cmnd_bytes(); }
+  size_t yin_detector_bytes() const { return sizeof(yin_); }
 
 private:
   struct AtomicPitchMark {

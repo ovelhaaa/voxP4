@@ -51,6 +51,74 @@ VF_LPC_NOINLINE void autocorr_float_multiacc(const float *y, size_t n,
     r[k] = static_cast<double>(sum);
   }
 }
+
+VF_LPC_NOINLINE void autocorr_f32_kahan(const float *y, size_t n,
+                                        uint16_t order, double *r) {
+  for (size_t k = 0; k <= order; ++k) {
+    float sum = 0.0f;
+    float compensation = 0.0f;
+    for (size_t i = k; i < n; ++i) {
+      const float product = y[i] * y[i - k];
+      const float corrected = product - compensation;
+      const float next = sum + corrected;
+      compensation = (next - sum) - corrected;
+      sum = next;
+    }
+    r[k] = static_cast<double>(sum);
+  }
+}
+
+VF_LPC_NOINLINE void autocorr_f32_fma_product(const float *y, size_t n,
+                                              uint16_t order, double *r) {
+  for (size_t k = 0; k <= order; ++k) {
+    float sum = 0.0f;
+    float product_residual = 0.0f;
+    for (size_t i = k; i < n; ++i) {
+      const float a = y[i];
+      const float b = y[i - k];
+      const float product = a * b;
+      const float residual = std::fma(a, b, -product);
+      sum += product;
+      product_residual += residual;
+    }
+    r[k] = static_cast<double>(sum) +
+           static_cast<double>(product_residual);
+  }
+}
+
+// Error-free transforms for binary32 arithmetic. These functions deliberately
+// remain inline so the target disassembly exposes only single-precision FPU
+// operations in the autocorrelation inner loop.
+inline void two_sum_f32(float a, float b, float *sum, float *error) {
+  const float s = a + b;
+  const float bb = s - a;
+  *error = (a - (s - bb)) + (b - bb);
+  *sum = s;
+}
+
+VF_LPC_NOINLINE void autocorr_f32_double_single(const float *y, size_t n,
+                                                uint16_t order, double *r) {
+  for (size_t k = 0; k <= order; ++k) {
+    float hi = 0.0f;
+    float lo = 0.0f;
+    for (size_t i = k; i < n; ++i) {
+      const float a = y[i];
+      const float b = y[i - k];
+      const float product_hi = a * b;
+      const float product_lo = std::fma(a, b, -product_hi);
+
+      float sum = 0.0f;
+      float sum_error = 0.0f;
+      two_sum_f32(hi, product_hi, &sum, &sum_error);
+
+      // Use full TwoSum for the final renormalization as autocorrelation terms
+      // can cancel; unlike FastTwoSum it needs no magnitude ordering assumption.
+      const float tail = (lo + sum_error) + product_lo;
+      two_sum_f32(sum, tail, &hi, &lo);
+    }
+    r[k] = static_cast<double>(hi) + static_cast<double>(lo);
+  }
+}
 }
 
 bool SharedLpcAnalysis::init(float rate, const LpcConfig &c) {
@@ -100,6 +168,15 @@ bool SharedLpcAnalysis::autocorrelate(
     break;
   case LpcAutocorrelationVariant::AutocorrFloatMultiacc:
     autocorr_float_multiacc(y, n, order, r);
+    break;
+  case LpcAutocorrelationVariant::AutocorrF32Kahan:
+    autocorr_f32_kahan(y, n, order, r);
+    break;
+  case LpcAutocorrelationVariant::AutocorrF32FmaProduct:
+    autocorr_f32_fma_product(y, n, order, r);
+    break;
+  case LpcAutocorrelationVariant::AutocorrF32DoubleSingle:
+    autocorr_f32_double_single(y, n, order, r);
     break;
   default:
     return false;

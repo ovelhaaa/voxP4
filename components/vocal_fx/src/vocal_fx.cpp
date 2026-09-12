@@ -1013,6 +1013,10 @@ size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count) {
   record("PitchResourcesHann", e.pitch_resources.hann_ptr(), e.pitch_resources.hann_bytes());
   record("PitchAudioHistory", e.pitch_analysis.audio_history_ptr(), e.pitch_analysis.audio_history_bytes());
   record("PitchAnalysisFifo", e.pitch_analysis.fifo_ptr(), e.pitch_analysis.fifo_bytes());
+  record("PitchRollingWindow", e.pitch_analysis.rolling_window_ptr(), e.pitch_analysis.rolling_window_bytes());
+  record("PitchLinearWindow", e.pitch_analysis.linear_window_ptr(), e.pitch_analysis.linear_window_bytes());
+  record("YinDifferenceArray", e.pitch_analysis.yin_difference_ptr(), e.pitch_analysis.yin_difference_bytes());
+  record("YinCmndArray", e.pitch_analysis.yin_cmnd_ptr(), e.pitch_analysis.yin_cmnd_bytes());
   record("LpcFifo", e.lpc_analysis.fifo_ptr(), e.lpc_analysis.fifo_bytes());
   record("LpcCircularFrame", e.lpc_analysis.frame_ptr(), e.lpc_analysis.frame_bytes());
   record("LpcLinearFrame", e.lpc_analysis.linear_frame_ptr(), e.lpc_analysis.linear_frame_bytes());

@@ -114,6 +114,10 @@ void compare_model(const SharedLpcModel &reference,
 void run_equivalence_case(const char *name, const std::vector<float> &samples,
                           ComparisonTotals *totals) {
   LpcConfig config{};
+  // B4B.4A isolates circular-vs-sliding storage. Keep its arithmetic oracle
+  // explicit now that production uses the B4B.4C double-single candidate.
+  config.autocorrelation =
+      LpcAutocorrelationVariant::AutocorrReferenceDouble;
   SharedLpcAnalysis ring;
   CHECK(ring.init(48000.0f, config));
   SlidingLpcReference reference(config);

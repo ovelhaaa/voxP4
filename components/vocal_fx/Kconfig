@@ -75,6 +75,20 @@ config VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT
         autocorrelation on identical frames, then repeats the 10-second B4B.4A
         full-worker audit without changing LPC cadence or scheduling.
 
+config VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT
+    bool "Stage B4B.4C: Compensated FMA / Double-Single LPC Audit"
+    help
+        Benchmarks double-reference, float-multiacc, Kahan, FMA-product, and
+        double-single LPC autocorrelation on identical frames. The full worker
+        uses double-single only after host numerical and audio guardrails pass.
+
+config VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT
+    bool "Stage B4B.4D: YIN Difference Kernel Optimization Audit"
+    help
+        Benchmarks the preserved scalar oracle and scalar/multi-accumulator
+        FMA candidates on identical YIN windows, then runs the approved kernel
+        in the unchanged 10-second full-worker hardware audit.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

@@ -22,7 +22,7 @@ static void put32(std::ofstream &f, uint32_t v) {
 }
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--autocorr reference|float-scalar|float-multiacc] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
+    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--autocorr reference|float-scalar|float-multiacc|f32-kahan|f32-fma-product|f32-double-single] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
     return 2;
   }
   std::ifstream f(argv[1], std::ios::binary);
@@ -76,6 +76,9 @@ int main(int argc, char **argv) {
       if(value=="reference")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrReferenceDouble;
       else if(value=="float-scalar")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrFloatScalar;
       else if(value=="float-multiacc")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrFloatMultiacc;
+      else if(value=="f32-kahan")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrF32Kahan;
+      else if(value=="f32-fma-product")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrF32FmaProduct;
+      else if(value=="f32-double-single")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
       else{std::fprintf(stderr,"invalid autocorrelation variant: %s\n",value.c_str());return 2;}
     }
     else if(option=="--history-offset-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.history_offset_samples=static_cast<uint32_t>(std::lround(ms*48.0f));}
