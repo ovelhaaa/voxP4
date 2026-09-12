@@ -11,8 +11,10 @@
 #include <functional>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -88,6 +90,9 @@ struct DirectStats {
   float max_period_error = 0.0f;
   float max_f0_error = 0.0f;
   float max_confidence_error = 0.0f;
+  uint64_t candidate_operations = 0;
+  uint64_t rebases = 0;
+  uint64_t periodic_rebases = 0;
 };
 
 struct TrackerRun {
@@ -296,7 +301,8 @@ void period_result(const std::array<float, kWindow + 1> &difference,
   confidence = std::clamp(1.0f - cmnd[tau], 0.0f, 1.0f);
 }
 
-DirectStats direct_audit(const Fixture &fixture, YinDifferenceVariant variant) {
+DirectStats direct_audit(const Fixture &fixture, YinDifferenceVariant variant,
+                         uint32_t rebase_hops = 0) {
   DirectStats stats{};
   const auto analysis = resample_linear(fixture.input_48k, 48000.0, 12000.0);
   if (analysis.size() < kWindow)
@@ -305,12 +311,25 @@ DirectStats direct_audit(const Fixture &fixture, YinDifferenceVariant variant) {
   const size_t hops = std::min<size_t>(available, 32);
   std::array<float, kWindow + 1> reference{}, candidate{};
   std::array<float, kWindow + 1> reference_cmnd{}, candidate_cmnd{};
+  YinIncrementalDifference incremental;
+  const bool is_incremental =
+      variant == YinDifferenceVariant::IncrementalF32 ||
+      variant == YinDifferenceVariant::IncrementalDoubleSingle;
+  if (is_incremental &&
+      !incremental.init(variant, kWindow, kHop, kTauCount, rebase_hops))
+    return stats;
   for (size_t hop = 0; hop < hops; ++hop) {
     const float *window = analysis.data() + hop * kHop;
-    yin_difference_compute(YinDifferenceVariant::ReferenceScalar, window,
+    yin_difference_compute(is_incremental ? YinDifferenceVariant::Fma8Acc
+                                          : YinDifferenceVariant::ReferenceScalar,
+                           window,
                            kWindow, kTauCount, reference.data());
-    yin_difference_compute(variant, window, kWindow, kTauCount,
-                           candidate.data());
+    stats.candidate_operations +=
+        is_incremental
+            ? incremental.compute(window, candidate.data())
+            : (yin_difference_compute(variant, window, kWindow, kTauCount,
+                                      candidate.data()),
+               yin_difference_product_count(kWindow, kTauCount));
     calculate_cmnd(reference, reference_cmnd);
     calculate_cmnd(candidate, candidate_cmnd);
     for (size_t tau = 0; tau <= kTauCount; ++tau) {
@@ -331,12 +350,18 @@ DirectStats direct_audit(const Fixture &fixture, YinDifferenceVariant variant) {
     ++stats.hops;
     stats.products += yin_difference_product_count(kWindow, kTauCount);
   }
+  if (is_incremental) {
+    stats.rebases = incremental.incremental_rebases();
+    stats.periodic_rebases = incremental.periodic_rebases();
+  }
   return stats;
 }
 
-TrackerRun tracker_run(const Fixture &fixture, YinDifferenceVariant variant) {
+TrackerRun tracker_run(const Fixture &fixture, YinDifferenceVariant variant,
+                       uint32_t rebase_hops = 0) {
   PitchAnalysisConfig config{};
   config.yin_difference = variant;
+  config.yin_incremental_rebase_hops = static_cast<uint8_t>(rebase_hops);
   PitchAnalysis tracker;
   TrackerRun run;
   if (!tracker.init(config))
@@ -352,6 +377,74 @@ TrackerRun tracker_run(const Fixture &fixture, YinDifferenceVariant variant) {
                                      marks.data(), marks.size());
   run.marks.assign(marks.begin(), marks.begin() + count);
   return run;
+}
+
+void write_long_drift(std::ofstream &output, YinDifferenceVariant variant,
+                      uint32_t rebase_hops) {
+  static std::mutex output_mutex;
+  constexpr size_t kSeconds = 600;
+  constexpr size_t kSamples = kSeconds * 12000 + kWindow;
+  std::vector<float> stream(kSamples);
+  uint32_t rng = 0x42344245U;
+  for (size_t i = 0; i < stream.size(); ++i) {
+    rng = rng * 1664525U + 1013904223U;
+    const float noise = static_cast<int32_t>(rng) * (1.0f / 2147483648.0f);
+    const float seconds = static_cast<float>(i) / 12000.0f;
+    const float f0 = seconds < 300.0f ? 147.0f : 220.0f;
+    const float phase = 2.0f * kPi * f0 * seconds;
+    stream[i] = 0.30f * std::sin(phase) + 0.11f * std::sin(2.0f * phase) +
+                0.02f * noise;
+  }
+  const std::array<uint32_t, 6> checkpoints{{1, 10, 30, 60, 300, 600}};
+  size_t checkpoint_index = 0;
+  YinIncrementalDifference incremental;
+  if (!incremental.init(variant, kWindow, kHop, kTauCount, rebase_hops))
+    return;
+  std::array<float, kWindow + 1> oracle{}, candidate{}, oracle_cmnd{},
+      candidate_cmnd{};
+  const size_t hops = 1 + (stream.size() - kWindow) / kHop;
+  for (size_t hop = 0; hop < hops; ++hop) {
+    const float *window = stream.data() + hop * kHop;
+    incremental.compute(window, candidate.data());
+    const double elapsed_seconds =
+        static_cast<double>(kWindow + hop * kHop) / 12000.0;
+    if (checkpoint_index >= checkpoints.size() ||
+        elapsed_seconds + 1e-9 < checkpoints[checkpoint_index])
+      continue;
+    yin_difference_fma_8acc(window, kWindow, kTauCount, oracle.data());
+    calculate_cmnd(oracle, oracle_cmnd);
+    calculate_cmnd(candidate, candidate_cmnd);
+    ErrorStats difference, cmnd;
+    for (size_t tau = 0; tau <= kTauCount; ++tau) {
+      difference.add(oracle[tau], candidate[tau]);
+      cmnd.add(oracle_cmnd[tau], candidate_cmnd[tau]);
+    }
+    const size_t oracle_tau = select_tau(oracle_cmnd);
+    const size_t candidate_tau = select_tau(candidate_cmnd);
+    float op = 0, of = 0, oc = 0, cp = 0, cf = 0, cc = 0;
+    period_result(oracle, oracle_cmnd, oracle_tau, op, of, oc);
+    period_result(candidate, candidate_cmnd, candidate_tau, cp, cf, cc);
+    const uint64_t operations = incremental.full_rebase_products() +
+                                incremental.update_terms();
+    std::lock_guard<std::mutex> lock(output_mutex);
+    output << "long,synthetic_mixed_10min,"
+           << yin_difference_variant_name(variant) << ',' << rebase_hops << ','
+           << checkpoints[checkpoint_index] << ',' << hop + 1 << ','
+           << operations << ','
+           << static_cast<double>(operations) / (hop + 1) << ','
+           << difference.max_abs << ',' << difference.max_rel << ','
+           << difference.rms() << ',' << difference.percentile(50) << ','
+           << difference.percentile(95) << ',' << difference.percentile(99)
+           << ',' << difference.max_ulp << ',' << cmnd.max_abs << ','
+           << cmnd.max_rel << ',' << cmnd.rms() << ','
+           << (oracle_tau != candidate_tau) << ','
+           << (oracle_tau != candidate_tau) << ',' << std::fabs(cp - op) << ','
+           << std::fabs(cf - of) << ',' << std::fabs(cc - oc) << ','
+           << difference.nonfinite + cmnd.nonfinite << ','
+           << incremental.incremental_rebases() << ','
+           << incremental.periodic_rebases() << ",checkpoint\n";
+    ++checkpoint_index;
+  }
 }
 
 PitchStats compare_tracker(const TrackerRun &reference,
@@ -400,7 +493,10 @@ bool eligible(const DirectStats &direct, const PitchStats &pitch) {
          pitch.selected_tau_mismatches == 0 &&
          pitch.voiced_raw_mismatches == 0 &&
          pitch.voiced_stateful_mismatches == 0 &&
-         pitch.voiced_mismatches == 0 && pitch.track_state_mismatches == 0 &&
+         pitch.voiced_mismatches == 0 && pitch.onset_mismatches == 0 &&
+         pitch.pitch_changed_mismatches == 0 &&
+         pitch.track_state_mismatches == 0 && pitch.coast_mismatches == 0 &&
+         pitch.coherent_mark_mismatches == 0 &&
          pitch.mark_count_mismatches == 0 &&
          pitch.mark_position_mismatches == 0;
 }
@@ -410,9 +506,15 @@ int main(int argc, char **argv) {
   const std::filesystem::path root = VOXP4_SOURCE_DIR;
   std::filesystem::path artifact_dir = root / "artifacts" / "alpha01b";
   bool verify_only = false;
+  bool b4b4e = false;
+  bool long_drift = false;
   for (int i = 1; i < argc; ++i) {
     if (std::string(argv[i]) == "--verify")
       verify_only = true;
+    else if (std::string(argv[i]) == "--b4b4e")
+      b4b4e = true;
+    else if (std::string(argv[i]) == "--long")
+      long_drift = true;
     else if (std::string(argv[i]) == "--artifacts" && i + 1 < argc)
       artifact_dir = argv[++i];
   }
@@ -423,6 +525,99 @@ int main(int argc, char **argv) {
     return 1;
   }
   std::filesystem::create_directories(artifact_dir);
+  if (b4b4e) {
+    std::ofstream drift(artifact_dir / "b4b4e_yin_drift.csv");
+    std::ofstream pitch_csv(artifact_dir / "b4b4e_pitch_equivalence.csv");
+    drift << "scope,fixture,variant,rebase_hops,seconds,hops,"
+             "candidate_operations,amortized_operations_per_hop,"
+             "difference_max_abs,difference_max_rel,difference_rms,"
+             "ulp_median,ulp_p95,ulp_p99,ulp_max,cmnd_max_abs,cmnd_max_rel,"
+             "cmnd_rms,selected_tau_mismatches,candidate_valley_mismatches,"
+             "max_period_error_samples,max_f0_error_hz,max_confidence_error,"
+             "nonfinite_regressions,incremental_rebases,periodic_rebases,eligible\n";
+    pitch_csv << "fixture,variant,rebase_hops,reference_hops,candidate_hops,"
+                 "selected_tau_mismatches,voiced_raw_mismatches,"
+                 "voiced_stateful_mismatches,voiced_mismatches,onset_mismatches,"
+                 "pitch_changed_mismatches,track_state_mismatches,coast_mismatches,"
+                 "coherent_mark_mismatches,pitch_mark_count_mismatches,"
+                 "pitch_mark_position_mismatches,nonfinite_regressions,"
+                 "max_period_error_samples,max_f0_error_hz,"
+                 "max_confidence_error,max_yin_min_error,eligible\n";
+    drift << std::setprecision(12);
+    pitch_csv << std::setprecision(12);
+    const std::array<YinDifferenceVariant, 2> candidates{{
+        YinDifferenceVariant::IncrementalF32,
+        YinDifferenceVariant::IncrementalDoubleSingle,
+    }};
+    const std::array<uint32_t, 6> intervals{{4, 8, 16, 32, 64, 0}};
+    bool any_eligible = false;
+    for (const auto &fixture : fixtures) {
+      const auto reference_tracker =
+          tracker_run(fixture, YinDifferenceVariant::Fma8Acc);
+      for (const auto variant : candidates) {
+        for (const uint32_t interval : intervals) {
+          auto direct = direct_audit(fixture, variant, interval);
+          const auto candidate_tracker = tracker_run(fixture, variant, interval);
+          const auto pitch = compare_tracker(reference_tracker, candidate_tracker);
+          const bool pass = eligible(direct, pitch);
+          any_eligible = any_eligible || pass;
+          drift << "fixture," << fixture.name << ','
+                << yin_difference_variant_name(variant) << ',' << interval
+                << ",," << direct.hops << ',' << direct.candidate_operations
+                << ','
+                << (direct.hops ? static_cast<double>(direct.candidate_operations) /
+                                      direct.hops
+                                : 0.0)
+                << ',' << direct.difference.max_abs << ','
+                << direct.difference.max_rel << ',' << direct.difference.rms()
+                << ',' << direct.difference.percentile(50) << ','
+                << direct.difference.percentile(95) << ','
+                << direct.difference.percentile(99) << ','
+                << direct.difference.max_ulp << ',' << direct.cmnd.max_abs << ','
+                << direct.cmnd.max_rel << ',' << direct.cmnd.rms() << ','
+                << direct.selected_tau_mismatches << ','
+                << direct.candidate_valley_mismatches << ','
+                << direct.max_period_error << ',' << direct.max_f0_error << ','
+                << direct.max_confidence_error << ','
+                << direct.difference.nonfinite + direct.cmnd.nonfinite << ','
+                << direct.rebases << ',' << direct.periodic_rebases << ','
+                << (pass ? "yes" : "no") << '\n';
+          pitch_csv << fixture.name << ',' << yin_difference_variant_name(variant)
+                    << ',' << interval << ',' << pitch.reference_hops << ','
+                    << pitch.candidate_hops << ','
+                    << pitch.selected_tau_mismatches << ','
+                    << pitch.voiced_raw_mismatches << ','
+                    << pitch.voiced_stateful_mismatches << ','
+                    << pitch.voiced_mismatches << ',' << pitch.onset_mismatches
+                    << ',' << pitch.pitch_changed_mismatches << ','
+                    << pitch.track_state_mismatches << ','
+                    << pitch.coast_mismatches << ','
+                    << pitch.coherent_mark_mismatches << ','
+                    << pitch.mark_count_mismatches << ','
+                    << pitch.mark_position_mismatches << ','
+                    << pitch.nonfinite_regressions << ','
+                    << pitch.max_period_error << ',' << pitch.max_f0_error << ','
+                    << pitch.max_confidence_error << ','
+                    << pitch.max_yin_min_error << ',' << (pass ? "yes" : "no")
+                    << '\n';
+        }
+      }
+    }
+    if (long_drift) {
+      std::vector<std::thread> workers;
+      for (const auto variant : candidates)
+        for (const uint32_t interval : intervals)
+          workers.emplace_back([&drift, variant, interval] {
+            write_long_drift(drift, variant, interval);
+          });
+      for (auto &worker : workers)
+        worker.join();
+    }
+    std::printf("B4B.4E incremental audit: fixtures=%zu long=%s any_eligible=%s\n",
+                fixtures.size(), long_drift ? "yes" : "no",
+                any_eligible ? "yes" : "no");
+    return any_eligible ? 0 : 1;
+  }
   std::ofstream numeric;
   std::ofstream pitch_csv;
   if (!verify_only) {

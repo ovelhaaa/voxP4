@@ -89,6 +89,13 @@ config VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT
         FMA candidates on identical YIN windows, then runs the approved kernel
         in the unchanged 10-second full-worker hardware audit.
 
+config VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT
+    bool "Stage B4B.4E: Incremental / Sliding YIN Difference Audit"
+    help
+        Benchmarks persistent float and compensated binary32 sliding YIN
+        candidates against the preserved FMA_8ACC oracle, then runs the
+        eligible production candidate in the unchanged full-worker audit.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

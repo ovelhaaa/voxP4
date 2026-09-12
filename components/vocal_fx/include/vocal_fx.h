@@ -37,6 +37,7 @@ void vocal_fx_midi_note_on(uint8_t note, uint8_t velocity);
 void vocal_fx_midi_note_off(uint8_t note);
 void vocal_fx_midi_all_notes_off();
 PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t voice);
+GrainRejectionTelemetry vocal_fx_grain_rejection_telemetry(size_t voice);
 uint32_t vocal_fx_pitch_shift_latency_samples();
 PitchShiftTelemetry vocal_fx_pitch_shift_telemetry();
 PitchShiftDebug vocal_fx_pitch_shift_debug();

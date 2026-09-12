@@ -966,6 +966,11 @@ LpcFrameCostSummary vocal_fx_lpc_frame_cost_summary() {
   return e.lpc_analysis.frame_cost_summary();
 }
 
+GrainRejectionTelemetry vocal_fx_grain_rejection_telemetry(size_t voice) {
+  return voice < 2 ? e.pitch_shift[voice].grain_rejection_telemetry()
+                   : GrainRejectionTelemetry{};
+}
+
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {
   const auto stats = e.profiler.stats(static_cast<ProfileSection>(section));
   return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses,

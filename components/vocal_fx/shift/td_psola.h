@@ -143,6 +143,7 @@ public:
   uint32_t latency_samples() const { return history_offset_; }
   size_t memory_bytes() const { return sizeof(*this); }
   PitchShiftTelemetry telemetry() const;
+  GrainRejectionTelemetry grain_rejection_telemetry() const;
   PitchShiftDebug debug() const { return debug_; }
   ProfileStats profile(PitchShiftProfileSection section) const;
 #ifndef ESP_PLATFORM
@@ -167,9 +168,14 @@ private:
   bool history_available(uint64_t first, uint64_t last) const;
   float history_at(uint64_t position) const;
   bool select_mark(double source_position, const PitchMark *marks, size_t count,
-                   size_t &index, float &period) const;
+                   size_t &index, float &period, GrainFailureReason *reason,
+                   double *distance, double *allowed_distance) const;
   bool add_grain(double destination, double source, const PitchMark *marks,
                  size_t count);
+  void record_grain_failure(GrainFailureReason reason, double destination,
+                            double source, uint64_t center = 0,
+                            uint32_t half = 0, double distance = 0.0,
+                            double allowed_distance = 0.0);
   void clear_ola();
   PitchShiftFallbackReason fallback_reason_for_sample(
       const PitchResult &pitch, PitchTrackState track, bool usable,
@@ -223,6 +229,7 @@ private:
 #endif
   PitchShiftState state_ = PitchShiftState::Bypass;
   PitchShiftTelemetry telemetry_{};
+  GrainRejectionTelemetry grain_rejection_{};
   PublishedTelemetry published_telemetry_{};
   Profiler profiler_;
   const SharedLpcAnalysis *lpc_ = nullptr;

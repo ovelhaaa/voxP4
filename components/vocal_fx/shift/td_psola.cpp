@@ -154,6 +154,9 @@ void TdPsola::reset() {
   state_ = target_enabled_ ? PitchShiftState::WaitingForAnalysis
                            : PitchShiftState::Bypass;
   telemetry_ = {};
+  grain_rejection_ = {};
+  grain_rejection_.history_size_samples = kHistorySize;
+  grain_rejection_.history_size_ms = 1000.0f * kHistorySize / sample_rate_;
   unvoiced_articulation_.reset();
   plosive_bridge_.reset();
   synthesis_state_.fill(0);
@@ -203,9 +206,16 @@ bool TdPsola::history_available(uint64_t first, uint64_t last) const {
   return first >= oldest && last < resources_->input_end() && first <= last;
 }
 bool TdPsola::select_mark(double source, const PitchMark *marks, size_t count,
-                          size_t &best, float &period) const {
-  if (!marks || count == 0)
+                          size_t &best, float &period,
+                          GrainFailureReason *reason, double *out_distance,
+                          double *out_allowed_distance) const {
+  if (reason)
+    *reason = GrainFailureReason::None;
+  if (!marks || count == 0) {
+    if (reason)
+      *reason = GrainFailureReason::SelectMarkNoMarks;
     return false;
+  }
   best = 0;
   double distance = std::fabs(source - marks[0].sample_position);
   for (size_t i = 1; i < count; ++i) {
@@ -234,8 +244,91 @@ bool TdPsola::select_mark(double source, const PitchMark *marks, size_t count,
       }
     }
   }
-  return marks[best].confidence > .15f && period >= 24 && period <= 800 &&
-         distance <= std::max(2.0 * period, 256.0);
+  const double allowed = std::max(2.0 * period, 256.0);
+  if (out_distance)
+    *out_distance = distance;
+  if (out_allowed_distance)
+    *out_allowed_distance = allowed;
+  if (!(marks[best].confidence > .15f)) {
+    if (reason)
+      *reason = GrainFailureReason::SelectMarkLowConfidence;
+    return false;
+  }
+  if (!(period >= 24 && period <= 800)) {
+    if (reason)
+      *reason = GrainFailureReason::SelectMarkInvalidPeriod;
+    return false;
+  }
+  if (distance > allowed) {
+    if (reason)
+      *reason = GrainFailureReason::SelectMarkDistanceTooLarge;
+    return false;
+  }
+  return true;
+}
+
+void TdPsola::record_grain_failure(GrainFailureReason reason,
+                                   double destination, double source,
+                                   uint64_t center, uint32_t half,
+                                   double distance, double allowed_distance) {
+  switch (reason) {
+  case GrainFailureReason::AttemptSourceNegative:
+    ++grain_rejection_.attempt_source_negative;
+    break;
+  case GrainFailureReason::SelectMarkNoMarks:
+    ++grain_rejection_.select_mark_failure_total;
+    ++grain_rejection_.select_mark_no_marks;
+    break;
+  case GrainFailureReason::SelectMarkLowConfidence:
+    ++grain_rejection_.select_mark_failure_total;
+    ++grain_rejection_.select_mark_low_confidence;
+    break;
+  case GrainFailureReason::SelectMarkInvalidPeriod:
+    ++grain_rejection_.select_mark_failure_total;
+    ++grain_rejection_.select_mark_invalid_period;
+    break;
+  case GrainFailureReason::SelectMarkDistanceTooLarge:
+    ++grain_rejection_.select_mark_failure_total;
+    ++grain_rejection_.select_mark_distance_too_large;
+    break;
+  case GrainFailureReason::HistoryCenterBeforeHalf:
+    ++grain_rejection_.history_failure_total;
+    ++grain_rejection_.history_center_before_half;
+    break;
+  case GrainFailureReason::HistoryTooOld:
+    ++grain_rejection_.history_failure_total;
+    ++grain_rejection_.history_too_old;
+    break;
+  case GrainFailureReason::HistoryFutureEnd:
+    ++grain_rejection_.history_failure_total;
+    ++grain_rejection_.history_future_end;
+    break;
+  default:
+    break;
+  }
+  const uint64_t input_end = resources_ ? resources_->input_end() : 0;
+  const uint64_t oldest = input_end > kHistorySize ? input_end - kHistorySize : 0;
+  grain_rejection_.input_end = input_end;
+  grain_rejection_.oldest_available = oldest;
+  if (grain_rejection_.diagnostic_count >=
+      GrainRejectionTelemetry::kDiagnosticCapacity)
+    return;
+  auto &record =
+      grain_rejection_.diagnostics[grain_rejection_.diagnostic_count++];
+  record.input_end = input_end;
+  record.history_oldest_sample = oldest;
+  record.pitch_analysis_timestamp = debug_.pitch_timestamp;
+  record.pitch_age_samples = debug_.analysis_age;
+  record.requested_source = source;
+  record.destination = destination;
+  record.selected_mark_center = center;
+  record.mark_age_samples = input_end > center ? input_end - center : 0;
+  record.half_window = half;
+  record.required_first_sample = center >= half ? center - half : 0;
+  record.required_last_sample = center + half;
+  record.source_to_nearest_mark = static_cast<float>(distance);
+  record.allowed_distance = static_cast<float>(allowed_distance);
+  record.reason = reason;
 }
 
 #ifndef ESP_PLATFORM
@@ -300,7 +393,13 @@ bool TdPsola::add_grain(double destination, double source,
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::SourceLookup));
   size_t index;
   float period;
-  if (!select_mark(source, marks, count, index, period)) {
+  GrainFailureReason reason = GrainFailureReason::None;
+  double distance = 0.0, allowed_distance = 0.0;
+  if (!select_mark(source, marks, count, index, period, &reason, &distance,
+                   &allowed_distance)) {
+    const uint64_t center = marks && count ? marks[index].sample_position : 0;
+    record_grain_failure(reason, destination, source, center, 0, distance,
+                         allowed_distance);
     VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::SourceLookup),
                    0);
     ++telemetry_.pitch_mark_underflows;
@@ -316,8 +415,18 @@ bool TdPsola::add_grain(double destination, double source,
   debug_.source_grain_timestamp = static_cast<uint64_t>(std::max(0.0, source));
   debug_.output_synthesis_timestamp =
       static_cast<uint64_t>(std::max(0.0, destination));
-  if (center < static_cast<uint64_t>(half) ||
-      !history_available(center - half, center + half)) {
+  GrainFailureReason history_reason = GrainFailureReason::None;
+  const uint64_t input_end = resources_->input_end();
+  const uint64_t oldest = input_end > kHistorySize ? input_end - kHistorySize : 0;
+  if (center < static_cast<uint64_t>(half))
+    history_reason = GrainFailureReason::HistoryCenterBeforeHalf;
+  else if (center - half < oldest)
+    history_reason = GrainFailureReason::HistoryTooOld;
+  else if (center + half >= input_end)
+    history_reason = GrainFailureReason::HistoryFutureEnd;
+  if (history_reason != GrainFailureReason::None) {
+    record_grain_failure(history_reason, destination, source, center, half,
+                         distance, allowed_distance);
     VF_PROFILE_END(profiler_,
                    section(PitchShiftProfileSection::GrainPreparation), 0);
     ++telemetry_.audio_history_underflows;
@@ -812,8 +921,10 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
           current_synthesis_period_ / std::max(ratio, .5f);
       const double source = next_synthesis_mark_ - history_offset_;
       vocal_fx_funnel_inc_grain_schedule_attempts(1);
-      if (source >= 0 &&
-          add_grain(next_synthesis_mark_, source, marks, mark_count)) {
+      if (source < 0) {
+        record_grain_failure(GrainFailureReason::AttemptSourceNegative,
+                             next_synthesis_mark_, source);
+      } else if (add_grain(next_synthesis_mark_, source, marks, mark_count)) {
         ++grains;
         vocal_fx_funnel_inc_grains_scheduled(1);
       }
@@ -1289,6 +1400,15 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
   publish_telemetry();
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::Total),
                  static_cast<uint64_t>(1000000.0 * frames / sample_rate_));
+}
+
+GrainRejectionTelemetry TdPsola::grain_rejection_telemetry() const {
+  GrainRejectionTelemetry result = grain_rejection_;
+  const uint64_t input_end = resources_ ? resources_->input_end() : 0;
+  result.input_end = input_end;
+  result.oldest_available =
+      input_end > kHistorySize ? input_end - kHistorySize : 0;
+  return result;
 }
 void TdPsola::store_atomic64(Atomic64Parts &destination, uint64_t value) {
   destination.low.store(static_cast<uint32_t>(value),

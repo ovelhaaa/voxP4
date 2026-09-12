@@ -16,7 +16,14 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <new>
 #include <string_view>
+
+// B4B.4E reuses the already-audited B4B.4D transport/coordinator scaffolding.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT 1
+#endif
 
 namespace {
 
@@ -1686,12 +1693,15 @@ struct YinIsolatedBenchmark {
   uint32_t p99_us = 0;
   uint32_t maximum_us = 0;
   float checksum = 0.0f;
+  uint64_t operations = 0;
+  uint64_t rebases = 0;
 };
 
 volatile float s_b4b4d_yin_checksum = 0.0f;
 
 YinIsolatedBenchmark
-benchmark_yin_difference(YinDifferenceVariant variant) {
+benchmark_yin_difference(YinDifferenceVariant variant,
+                         uint32_t rebase_hops = 0) {
   constexpr size_t kWindow = 512;
   constexpr size_t kTauCount = 185;
   constexpr size_t kWarmupHops = 8;
@@ -1701,6 +1711,28 @@ benchmark_yin_difference(YinDifferenceVariant variant) {
   std::array<float, YinDetector::kMaxWindow + 1> difference{};
   std::array<uint32_t, kMeasuredHops> elapsed_us{};
   std::array<uint32_t, kMeasuredHops> elapsed_cycles{};
+  const bool incremental =
+      variant == YinDifferenceVariant::IncrementalF32 ||
+      variant == YinDifferenceVariant::IncrementalDoubleSingle;
+  // The coordinator already owns benchmark arrays on its stack and internal
+  // SRAM is needed later by the audio task. This diagnostic-only state lives
+  // temporarily in PSRAM; production state remains fixed inside Engine.
+  void *incremental_storage =
+      incremental ? heap_caps_malloc(sizeof(YinIncrementalDifference),
+                                     MALLOC_CAP_SPIRAM)
+                  : nullptr;
+  auto *incremental_state = incremental_storage
+                                ? new (incremental_storage)
+                                      YinIncrementalDifference()
+                                : nullptr;
+  if (incremental &&
+      (!incremental_state ||
+       !incremental_state->init(variant, kWindow, 60, kTauCount,
+                                rebase_hops))) {
+    if (incremental_storage)
+      heap_caps_free(incremental_storage);
+    return {};
+  }
   for (size_t i = 0; i < window.size(); ++i) {
     const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) /
                         12000.0f;
@@ -1710,24 +1742,47 @@ benchmark_yin_difference(YinDifferenceVariant variant) {
   YinIsolatedBenchmark result{};
   uint64_t start_us = esp_timer_get_time();
   uint32_t start_cycles = esp_cpu_get_cycle_count();
-  yin_difference_compute(variant, window.data(), window.size(), kTauCount,
-                         difference.data());
+  if (incremental)
+    incremental_state->compute(window.data(), difference.data());
+  else
+    yin_difference_compute(variant, window.data(), window.size(), kTauCount,
+                           difference.data());
   result.cold_cycles =
       static_cast<uint32_t>(esp_cpu_get_cycle_count() - start_cycles);
   result.cold_us = static_cast<uint32_t>(esp_timer_get_time() - start_us);
 
-  for (size_t hop = 0; hop < kWarmupHops; ++hop)
-    yin_difference_compute(variant, window.data(), window.size(), kTauCount,
-                           difference.data());
+  size_t stream_position = kWindow;
+  auto advance_window = [&] {
+    std::move(window.begin() + 60, window.end(), window.begin());
+    for (size_t i = kWindow - 60; i < kWindow; ++i) {
+      const float phase = 2.0f * kPi * 220.0f *
+                          static_cast<float>(stream_position++) / 12000.0f;
+      window[i] = 0.12589254f * std::sin(phase);
+    }
+  };
+  for (size_t hop = 0; hop < kWarmupHops; ++hop) {
+    advance_window();
+    if (incremental)
+      incremental_state->compute(window.data(), difference.data());
+    else
+      yin_difference_compute(variant, window.data(), window.size(), kTauCount,
+                             difference.data());
+  }
+  const uint64_t operations_before =
+      incremental_state ? incremental_state->full_rebase_products() +
+                              incremental_state->update_terms()
+                        : 0;
+  const uint64_t rebases_before =
+      incremental_state ? incremental_state->incremental_rebases() : 0;
   for (size_t hop = 0; hop < kMeasuredHops; ++hop) {
-    // Shift phase without changing the number or identity of evaluated pairs.
-    const float first = window[0];
-    std::move(window.begin() + 1, window.end(), window.begin());
-    window.back() = first;
+    advance_window();
     start_us = esp_timer_get_time();
     start_cycles = esp_cpu_get_cycle_count();
-    yin_difference_compute(variant, window.data(), window.size(), kTauCount,
-                           difference.data());
+    if (incremental)
+      incremental_state->compute(window.data(), difference.data());
+    else
+      yin_difference_compute(variant, window.data(), window.size(), kTauCount,
+                             difference.data());
     elapsed_cycles[hop] =
         static_cast<uint32_t>(esp_cpu_get_cycle_count() - start_cycles);
     elapsed_us[hop] = static_cast<uint32_t>(esp_timer_get_time() - start_us);
@@ -1738,10 +1793,22 @@ benchmark_yin_difference(YinDifferenceVariant variant) {
   }
   s_b4b4d_yin_checksum = result.checksum;
   result.count = kMeasuredHops;
+  result.operations = incremental
+                          ? incremental_state->full_rebase_products() +
+                                incremental_state->update_terms() -
+                                operations_before
+                          : kMeasuredHops * 77515ULL;
+  result.rebases = incremental
+                       ? incremental_state->incremental_rebases() - rebases_before
+                       : kMeasuredHops;
   std::sort(elapsed_us.begin(), elapsed_us.end());
   result.p50_us = percentile_sorted(elapsed_us.data(), elapsed_us.size(), 50);
   result.p95_us = percentile_sorted(elapsed_us.data(), elapsed_us.size(), 95);
   result.p99_us = percentile_sorted(elapsed_us.data(), elapsed_us.size(), 99);
+  if (incremental_state) {
+    incremental_state->~YinIncrementalDifference();
+    heap_caps_free(incremental_storage);
+  }
   return result;
 }
 
@@ -1772,7 +1839,41 @@ void print_yin_isolated_benchmarks() {
            static_cast<unsigned long>(stats.p99_us),
            static_cast<unsigned long>(stats.maximum_us), average_cycles,
            average_cycles / kProductsPerHop, stats.checksum);
+    vTaskDelay(pdMS_TO_TICKS(2));
   }
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  const std::array<YinDifferenceVariant, 2> incremental_variants{{
+      YinDifferenceVariant::IncrementalF32,
+      YinDifferenceVariant::IncrementalDoubleSingle,
+  }};
+  const std::array<uint32_t, 5> rebase_intervals{{4, 8, 16, 32, 64}};
+  for (const auto variant : incremental_variants) {
+    for (const uint32_t interval : rebase_intervals) {
+      const auto stats = benchmark_yin_difference(variant, interval);
+      const double average_us = stats.count
+                                    ? static_cast<double>(stats.total_us) /
+                                          stats.count
+                                    : 0.0;
+      const double average_cycles =
+          stats.count ? static_cast<double>(stats.total_cycles) / stats.count
+                      : 0.0;
+      printf("B4B4E_ISOLATED variant=%s rebase_hops=%lu hops=%lu cold_us=%lu cold_cycles=%lu avg_us/hop=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/hop=%.2f operations/hop=%.2f periodic_rebases=%llu checksum=%.9g\n",
+             yin_difference_variant_name(variant),
+             static_cast<unsigned long>(interval),
+             static_cast<unsigned long>(stats.count),
+             static_cast<unsigned long>(stats.cold_us),
+             static_cast<unsigned long>(stats.cold_cycles), average_us,
+             static_cast<unsigned long>(stats.p50_us),
+             static_cast<unsigned long>(stats.p95_us),
+             static_cast<unsigned long>(stats.p99_us),
+             static_cast<unsigned long>(stats.maximum_us), average_cycles,
+             stats.count ? static_cast<double>(stats.operations) / stats.count
+                         : 0.0,
+             static_cast<unsigned long long>(stats.rebases), stats.checksum);
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
+  }
+#endif
 }
 #endif
 
@@ -1853,6 +1954,14 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   constexpr double kBeforeCombinedUsPerHop = 18891.58;
   constexpr double kBeforeCore1Percent = 98.23;
   constexpr double kBeforePitchHopsPerSecond = 51.97;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  // B4B.4D production measurements on this P4 rev1.3 at 360 MHz.
+  constexpr double kBeforeLpcUsPerFrame = 4101.27;
+  constexpr double kBeforeYinDifferenceUsPerHop = 2598.04;
+  constexpr double kBeforePitchAnalysisUsPerHop = 4947.68;
+  constexpr double kBeforeCombinedUsPerHop = 8835.85;
+  constexpr double kBeforeCore1Percent = 95.52;
+  constexpr double kBeforePitchHopsPerSecond = 107.98;
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   // B4B.4C measurements on this same ESP32-P4 rev1.3 at 360 MHz.
   constexpr double kBeforeLpcUsPerFrame = 4304.14;
@@ -1870,6 +1979,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("   B4B.4B — LPC AUTOCORRELATION FPU OPTIMIZATION AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("   B4B.4C — COMPENSATED FMA / DOUBLE-SINGLE LPC AUDIT\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  printf("   B4B.4E — INCREMENTAL / SLIDING YIN AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   printf("   B4B.4D — YIN DIFFERENCE KERNEL OPTIMIZATION AUDIT\n");
 #else
@@ -1888,6 +1999,11 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("Production candidate: AUTOCORR_F32_DOUBLE_SINGLE (host numeric and audio guardrails passed)\n");
   print_lpc_autocorr_isolated_benchmarks();
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  printf("Oracle YIN difference: YIN_DIFF_FMA_8ACC\n");
+  printf("Host-selected candidate: YIN_DIFF_INCREMENTAL_F32 rebase=64 hops\n");
+  printf("Production LPC autocorrelation: AUTOCORR_F32_DOUBLE_SINGLE (unchanged from B4B.4C)\n");
+  print_yin_isolated_benchmarks();
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   printf("Production YIN difference: YIN_DIFF_FMA_8ACC (host functional and numerical guardrails passed)\n");
   printf("Production LPC autocorrelation: AUTOCORR_F32_DOUBLE_SINGLE (unchanged from B4B.4C)\n");
@@ -1917,6 +2033,16 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
     ESP_LOGE(TAG, "B4B.3 Vocal FX initialization failed");
     return;
   }
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  PitchAnalysisConfig incremental_pitch_config{};
+  incremental_pitch_config.yin_difference =
+      YinDifferenceVariant::IncrementalF32;
+  incremental_pitch_config.yin_incremental_rebase_hops = 64;
+  if (!vocal_fx_init_pitch_analysis(incremental_pitch_config)) {
+    ESP_LOGE(TAG, "B4B.4E incremental pitch initialization failed");
+    return;
+  }
+#endif
   vocal_fx_set_harmony_enabled(0, true);
   vocal_fx_set_harmony_interval(0, 4.0f);
   vocal_fx_set_harmony_gain(0, 1.0f);
@@ -2071,11 +2197,9 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   const double wall_seconds = wall_us / 1000000.0;
   const double average_call_us =
       call_count ? static_cast<double>(call_total_us) / call_count : 0.0;
-  const double average_hop_us =
+  const double average_recorded_hop_us =
       completed_hops ? static_cast<double>(call_total_us) / completed_hops
                      : 0.0;
-  const double maximum_theoretical_hops =
-      average_hop_us > 0.0 ? 1000000.0 / average_hop_us : 0.0;
 
 #if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
   const double worker_runtime_us = static_cast<uint32_t>(
@@ -2089,6 +2213,15 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   const double diagnostic_runtime_us = 0.0;
   const double idle1_runtime_us = 0.0;
 #endif
+  // The bounded call-record ring may drop early records under overload. The
+  // detector execution counter spans the complete measurement window and is
+  // therefore the authoritative per-hop denominator.
+  const uint64_t profiled_hops =
+      yin_end.executions - yin_start.executions;
+  const double average_hop_us =
+      profiled_hops ? worker_runtime_us / profiled_hops : 0.0;
+  const double maximum_theoretical_hops =
+      average_hop_us > 0.0 ? 1000000.0 / average_hop_us : 0.0;
   const double other_core1_us = std::max(
       0.0, wall_us - worker_runtime_us - diagnostic_runtime_us -
                idle1_runtime_us);
@@ -2127,21 +2260,25 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   for (const auto &row : rows)
     accounted_us += row.stats->total_us;
   const uint64_t unaccounted_us =
-      call_total_us > accounted_us ? call_total_us - accounted_us : 0;
+      worker_runtime_us > accounted_us
+          ? static_cast<uint64_t>(worker_runtime_us) - accounted_us
+          : 0;
   const double accounted_percent =
-      call_total_us ? 100.0 * accounted_us / call_total_us : 0.0;
+      worker_runtime_us ? 100.0 * accounted_us / worker_runtime_us : 0.0;
 
   const auto &yin_difference =
       pitch(PitchAnalysisProfileSection::YinDifference);
   const auto &mark_search =
       pitch(PitchAnalysisProfileSection::PitchMarkSearch);
   const double yin_difference_percent =
-      call_total_us ? 100.0 * yin_difference.total_us / call_total_us : 0.0;
+      worker_runtime_us ? 100.0 * yin_difference.total_us / worker_runtime_us
+                        : 0.0;
   const double mark_search_percent =
-      call_total_us ? 100.0 * mark_search.total_us / call_total_us : 0.0;
+      worker_runtime_us ? 100.0 * mark_search.total_us / worker_runtime_us
+                        : 0.0;
   const double lpc_percent =
-      call_total_us ? 100.0 * lpc(LpcProfileSection::Total).total_us /
-                          call_total_us
+      worker_runtime_us ? 100.0 * lpc(LpcProfileSection::Total).total_us /
+                              worker_runtime_us
                     : 0.0;
   const char *primary_hotspot = "UNIDENTIFIED";
   const ProfileRow *largest = nullptr;
@@ -2170,7 +2307,7 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
                      static_cast<double>(expected_fifo_pushes)) /
                 expected_fifo_pushes
           : 0.0;
-  const uint64_t yin_executions = yin_end.executions - yin_start.executions;
+  const uint64_t yin_executions = profiled_hops;
   const uint64_t yin_inner =
       yin_end.actual_inner_iterations - yin_start.actual_inner_iterations;
   const uint64_t yin_expected =
@@ -2193,6 +2330,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("Stage B4B.4B — LPC Autocorrelation FPU Optimization Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("Stage B4B.4C — Compensated FMA / Double-Single LPC Autocorrelation Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  printf("Stage B4B.4E — Incremental / Sliding YIN Difference Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   printf("Stage B4B.4D — YIN Difference Kernel Optimization Report\n");
 #else
@@ -2218,8 +2357,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          call_count ? static_cast<double>(call_total_cycles) / call_count : 0.0,
          completed_hops ? static_cast<double>(call_total_cycles) / completed_hops
                         : 0.0);
-  printf("Completed-hop cost (us): avg=%.2f P50=%lu P95=%lu P99=%lu max=%lu hops=%llu\n",
-         average_hop_us,
+  printf("Recorded completed-hop cost (us): avg=%.2f P50=%lu P95=%lu P99=%lu max=%lu recorded_hops=%llu\n",
+         average_recorded_hop_us,
          static_cast<unsigned long>(percentile_sorted(
              s_b4b3_hop_us_sort.data(), hop_cost_count, 50)),
          static_cast<unsigned long>(percentile_sorted(
@@ -2239,20 +2378,20 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 
   printf("\nSECTION                    AVG US/HOP    %% OF PITCH CPU   TOTAL US    AVG US/CALL   MAX US      TOTAL CYCLES  AVG CYCLES/HOP\n");
   for (const auto &row : rows) {
-    const double avg_hop = completed_hops
+    const double avg_hop = profiled_hops
                                ? static_cast<double>(row.stats->total_us) /
-                                     completed_hops
+                                     profiled_hops
                                : 0.0;
-    const double percent = call_total_us
-                               ? 100.0 * row.stats->total_us / call_total_us
+    const double percent = worker_runtime_us
+                               ? 100.0 * row.stats->total_us / worker_runtime_us
                                : 0.0;
     const double avg_call = row.stats->blocks
                                 ? static_cast<double>(row.stats->total_us) /
                                       row.stats->blocks
                                 : 0.0;
-    const double cycles_hop = completed_hops
+    const double cycles_hop = profiled_hops
                                   ? static_cast<double>(row.stats->total_cycles) /
-                                        completed_hops
+                                        profiled_hops
                                   : 0.0;
     printf("%-26s %11.2f %16.2f %10llu %14.2f %10llu %17llu %15.0f\n",
            row.name, avg_hop, percent,
@@ -2262,13 +2401,13 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
            cycles_hop);
   }
   printf("%-26s %11.2f %16.2f %10llu\n", "Other/unaccounted",
-         completed_hops ? static_cast<double>(unaccounted_us) / completed_hops
+         profiled_hops ? static_cast<double>(unaccounted_us) / profiled_hops
                         : 0.0,
-         call_total_us ? 100.0 * unaccounted_us / call_total_us : 0.0,
+         worker_runtime_us ? 100.0 * unaccounted_us / worker_runtime_us : 0.0,
          static_cast<unsigned long long>(unaccounted_us));
   printf("TOTAL                      %11.2f %16.2f %10llu\n",
          average_hop_us, accounted_percent,
-         static_cast<unsigned long long>(call_total_us));
+         static_cast<unsigned long long>(worker_runtime_us));
   printf("Time reconciliation: %.2f%% accounted (%s)\n", accounted_percent,
          accounted_percent >= 95.0 ? "PASS" : "FAIL");
 
@@ -2280,15 +2419,15 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          pitch_total.blocks
              ? static_cast<double>(pitch_total.total_us) / pitch_total.blocks
              : 0.0,
-         completed_hops
-             ? static_cast<double>(pitch_total.total_us) / completed_hops
+         profiled_hops
+             ? static_cast<double>(pitch_total.total_us) / profiled_hops
              : 0.0,
          static_cast<unsigned long long>(pitch_total.worst_us),
          static_cast<unsigned long long>(pitch_total.total_cycles));
   printf("YIN total: total=%llu us avg/hop=%.2f max=%llu us cycles=%llu\n",
          static_cast<unsigned long long>(yin_total.total_us),
-         completed_hops ? static_cast<double>(yin_total.total_us) /
-                              completed_hops
+         profiled_hops ? static_cast<double>(yin_total.total_us) /
+                              profiled_hops
                         : 0.0,
          static_cast<unsigned long long>(yin_total.worst_us),
          static_cast<unsigned long long>(yin_total.total_cycles));
@@ -2297,8 +2436,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          lpc_total.blocks
              ? static_cast<double>(lpc_total.total_us) / lpc_total.blocks
              : 0.0,
-         completed_hops
-             ? static_cast<double>(lpc_total.total_us) / completed_hops
+         profiled_hops
+             ? static_cast<double>(lpc_total.total_us) / profiled_hops
              : 0.0,
          static_cast<unsigned long long>(lpc_total.worst_us),
          static_cast<unsigned long long>(lpc_total.total_cycles));
@@ -2351,7 +2490,7 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
                 lpc_frames
           : 0.0;
   const double pitch_hops_per_second =
-      wall_seconds > 0.0 ? completed_hops / wall_seconds : 0.0;
+      wall_seconds > 0.0 ? profiled_hops / wall_seconds : 0.0;
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4A_LPC_RING_BUFFER_AUDIT)
   const double window_speedup = new_window_handling_us_per_frame > 0.0
                                     ? kBeforeWindowDrainUsPerFrame /
@@ -2386,12 +2525,12 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
       transport_end.rx_dropped_frames == transport_start.rx_dropped_frames &&
       transport_end.tx_dropped_frames == transport_start.tx_dropped_frames;
   const double new_pitch_analysis_us_per_hop =
-      completed_hops
-          ? static_cast<double>(pitch_total.total_us) / completed_hops
+      profiled_hops
+          ? static_cast<double>(pitch_total.total_us) / profiled_hops
           : 0.0;
   const double new_yin_difference_us_per_hop =
-      completed_hops
-          ? static_cast<double>(yin_difference.total_us) / completed_hops
+      profiled_hops
+          ? static_cast<double>(yin_difference.total_us) / profiled_hops
           : 0.0;
   const bool b4b4b_transport_pass =
       audit_pass && no_transport_regression && lpc_frames > 0 &&
@@ -2446,8 +2585,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          static_cast<unsigned long long>(mark_candidates),
          static_cast<unsigned long long>(mark_samples),
          static_cast<unsigned long long>(mark_macs),
-         completed_hops
-             ? static_cast<double>(mark_correlation.total_us) / completed_hops
+         profiled_hops
+             ? static_cast<double>(mark_correlation.total_us) / profiled_hops
              : 0.0);
 
   printf("\nCore 1 utilization: total=%.2f%% worker=%.2f%% compute_saturated=%s\n",
@@ -2455,7 +2594,7 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          core1_utilization >= 90.0 ? "yes" : "no");
   printf("Core 1 time us: worker=%0.f requested_yield_min=%llu non_worker=%0.f diagnostic=%0.f IDLE1=%0.f other=%0.f\n",
          worker_runtime_us,
-         static_cast<unsigned long long>(call_count * 1000ULL),
+         static_cast<unsigned long long>(pitch_total.blocks * 1000ULL),
          wall_us - worker_runtime_us, diagnostic_runtime_us, idle1_runtime_us,
          other_core1_us);
   printf("Relevant preemption evidence: other Core 1 tasks %.2f%%; pitch task priority unchanged\n",
@@ -2470,8 +2609,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          static_cast<unsigned long long>(expected_fifo_pushes),
          fifo_difference_percent);
   printf("Pitch throughput/backlog: worker_calls/s=%.2f pitch_hops/s=%.2f FIFO_current=%lu FIFO_max=%lu FIFO_drops_delta=%llu FIFO_pops_delta=%llu backlog_current_ms=%.3f backlog_max_ms=%.3f pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
-         wall_seconds > 0.0 ? call_count / wall_seconds : 0.0,
-         wall_seconds > 0.0 ? completed_hops / wall_seconds : 0.0,
+         wall_seconds > 0.0 ? pitch_total.blocks / wall_seconds : 0.0,
+         pitch_hops_per_second,
          static_cast<unsigned long>(audit_end.fifo_current_occupancy),
          static_cast<unsigned long>(audit_end.fifo_maximum_occupancy),
          static_cast<unsigned long long>(audit_end.fifo_drops - audit_start.fifo_drops),
@@ -2792,6 +2931,147 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
   printf("NEXT PRIMARY HOTSPOT:\n%s\n", primary_hotspot);
   printf("NEXT STEP:\nstrictly follow the measured primary hotspot\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  (void)old_storage;
+  (void)maximum_theoretical_hops;
+  (void)buffer_audit_count;
+  const bool ever_locked = audit_end.first_locked_input_position != 0;
+  const bool psola_usable = harmony0_end.state == PitchShiftState::Active ||
+                            harmony0_end.state == PitchShiftState::Acquiring;
+  const bool fifo_bounded =
+      audit_end.fifo_drops == audit_start.fifo_drops &&
+      audit_end.fifo_current_occupancy < PitchAnalysis::kFifoCapacity - 1 &&
+      audit_end.analysis_backlog_samples < PitchAnalysis::kFifoCapacity / 2;
+  const bool realtime = pitch_hops_per_second >= kRequiredHopsPerSecond &&
+                        fifo_bounded;
+  const bool b4b4e_pass = b4b4b_transport_pass && teardown_clean &&
+                          new_yin_difference_us_per_hop <= 1200.0;
+  GrainRejectionTelemetry grain = vocal_fx_grain_rejection_telemetry(0);
+  const GrainRejectionTelemetry grain_voice1 =
+      vocal_fx_grain_rejection_telemetry(1);
+  grain.attempt_source_negative += grain_voice1.attempt_source_negative;
+  grain.select_mark_failure_total += grain_voice1.select_mark_failure_total;
+  grain.select_mark_no_marks += grain_voice1.select_mark_no_marks;
+  grain.select_mark_low_confidence += grain_voice1.select_mark_low_confidence;
+  grain.select_mark_invalid_period += grain_voice1.select_mark_invalid_period;
+  grain.select_mark_distance_too_large +=
+      grain_voice1.select_mark_distance_too_large;
+  grain.history_failure_total += grain_voice1.history_failure_total;
+  grain.history_center_before_half += grain_voice1.history_center_before_half;
+  grain.history_too_old += grain_voice1.history_too_old;
+  grain.history_future_end += grain_voice1.history_future_end;
+  if (grain.diagnostic_count == 0 && grain_voice1.diagnostic_count != 0) {
+    grain.diagnostics[0] = grain_voice1.diagnostics[0];
+    grain.diagnostic_count = 1;
+  }
+  const char *grain_primary = "NONE";
+  if (grain.history_too_old > 0 &&
+      grain.history_too_old >= grain.select_mark_distance_too_large)
+    grain_primary = "GRAIN_FAILURE_DUE_TO_ANALYSIS_BACKLOG";
+  else if (grain.select_mark_distance_too_large > 0)
+    grain_primary = "GRAIN_MARK_ALIGNMENT_FAILURE";
+  else if (realtime && funnel_end.grain_schedule_attempts > 0 &&
+           funnel_end.grains_scheduled == 0)
+    grain_primary = "PSOLA_SCHEDULER_ISSUE";
+  else if (grain.select_mark_no_marks > 0)
+    grain_primary = "SELECT_MARK_NO_MARKS";
+  else if (grain.history_future_end > 0)
+    grain_primary = "HISTORY_FUTURE_END";
+
+  printf("\nB4B.4E production selection: YIN_DIFF_INCREMENTAL_F32 rebase=64\n");
+  printf("Host guardrails: NaN/Inf=0 selected_tau=0 voiced=0 track_state=0 pitch_marks=0\n");
+  printf("YIN update telemetry: executions=%llu update_terms=%llu full_rebase_products=%llu rebases=%llu gap_rebases=%llu periodic_rebases=%llu\n",
+         static_cast<unsigned long long>(yin_end.executions - yin_start.executions),
+         static_cast<unsigned long long>(yin_end.incremental_update_terms - yin_start.incremental_update_terms),
+         static_cast<unsigned long long>(yin_end.full_rebase_products - yin_start.full_rebase_products),
+         static_cast<unsigned long long>(yin_end.incremental_rebases - yin_start.incremental_rebases),
+         static_cast<unsigned long long>(yin_end.incremental_gap_rebases - yin_start.incremental_gap_rebases),
+         static_cast<unsigned long long>(yin_end.periodic_rebases - yin_start.periodic_rebases));
+  printf("YinDifference (us/pitch hop)            %9.2f %14.2f %11.2fx\n",
+         kBeforeYinDifferenceUsPerHop, new_yin_difference_us_per_hop,
+         new_yin_difference_us_per_hop > 0.0 ? kBeforeYinDifferenceUsPerHop / new_yin_difference_us_per_hop : 0.0);
+  printf("PitchAnalysis total (us/pitch hop)      %9.2f %14.2f %11.2fx\n",
+         kBeforePitchAnalysisUsPerHop, new_pitch_analysis_us_per_hop,
+         new_pitch_analysis_us_per_hop > 0.0 ? kBeforePitchAnalysisUsPerHop / new_pitch_analysis_us_per_hop : 0.0);
+  printf("LPC total (us/frame)                    %9.2f %14.2f %11.2fx\n",
+         kBeforeLpcUsPerFrame, lpc_avg_frame_us,
+         lpc_avg_frame_us > 0.0 ? kBeforeLpcUsPerFrame / lpc_avg_frame_us : 0.0);
+  printf("Combined worker cost (us/pitch hop)     %9.2f %14.2f %11.2fx\n",
+         kBeforeCombinedUsPerHop, average_hop_us,
+         average_hop_us > 0.0 ? kBeforeCombinedUsPerHop / average_hop_us : 0.0);
+  printf("Core 1 utilization (percent)             %8.2f %14.2f %11.2fx\n",
+         kBeforeCore1Percent, core1_utilization,
+         core1_utilization > 0.0 ? kBeforeCore1Percent / core1_utilization : 0.0);
+  printf("Pitch throughput (hops/s)                %8.2f %14.2f %11.2fx\n",
+         kBeforePitchHopsPerSecond, pitch_hops_per_second,
+         kBeforePitchHopsPerSecond > 0.0 ? pitch_hops_per_second / kBeforePitchHopsPerSecond : 0.0);
+  printf("Core1 headroom at 200 hops/s: 70%%=%s 80%%=%s 90%%=%s 100%%=%s\n",
+         average_hop_us <= 3500.0 ? "PASS" : "FAIL",
+         average_hop_us <= 4000.0 ? "PASS" : "FAIL",
+         average_hop_us <= 4500.0 ? "PASS" : "FAIL",
+         average_hop_us <= 5000.0 ? "PASS" : "FAIL");
+  printf("FIFO/backlog: current=%lu max=%lu drops=%llu bounded=%s backlog_current_ms=%.3f backlog_max_ms=%.3f pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
+         static_cast<unsigned long>(audit_end.fifo_current_occupancy),
+         static_cast<unsigned long>(audit_end.fifo_maximum_occupancy),
+         static_cast<unsigned long long>(audit_end.fifo_drops - audit_start.fifo_drops),
+         fifo_bounded ? "yes" : "no", audit_end.analysis_backlog_ms,
+         audit_end.analysis_backlog_max_ms, audit_end.latest_pitch_age_ms,
+         audit_end.pitch_age_average_ms, audit_end.pitch_age_p95_ms,
+         audit_end.pitch_age_p99_ms, audit_end.pitch_age_max_ms);
+  printf("Tracker final=%s reached_LOCKED=%s PSOLA_usable=%s grain_attempts=%llu grains_scheduled=%llu grains_rendered=%llu\n",
+         pitch_track_name(pitch_track_end), ever_locked ? "yes" : "no",
+         psola_usable ? "yes" : "no",
+         static_cast<unsigned long long>(funnel_end.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_end.grains_scheduled),
+         static_cast<unsigned long long>(funnel_end.grains_rendered));
+  printf("Grain rejection: source_negative=%llu select_total=%llu no_marks=%llu low_confidence=%llu invalid_period=%llu distance_too_large=%llu history_total=%llu center_before_half=%llu history_too_old=%llu future_end=%llu\n",
+         static_cast<unsigned long long>(grain.attempt_source_negative),
+         static_cast<unsigned long long>(grain.select_mark_failure_total),
+         static_cast<unsigned long long>(grain.select_mark_no_marks),
+         static_cast<unsigned long long>(grain.select_mark_low_confidence),
+         static_cast<unsigned long long>(grain.select_mark_invalid_period),
+         static_cast<unsigned long long>(grain.select_mark_distance_too_large),
+         static_cast<unsigned long long>(grain.history_failure_total),
+         static_cast<unsigned long long>(grain.history_center_before_half),
+         static_cast<unsigned long long>(grain.history_too_old),
+         static_cast<unsigned long long>(grain.history_future_end));
+  printf("PSOLA history: size_samples=%lu size_ms=%.3f input_end=%llu oldest_available=%llu diagnostics=%lu primary=%s\n",
+         static_cast<unsigned long>(grain.history_size_samples), grain.history_size_ms,
+         static_cast<unsigned long long>(grain.input_end),
+         static_cast<unsigned long long>(grain.oldest_available),
+         static_cast<unsigned long>(grain.diagnostic_count), grain_primary);
+  for (uint32_t i = 0; i < grain.diagnostic_count; ++i) {
+    const auto &d = grain.diagnostics[i];
+    printf("B4B4E_GRAIN_FAILURE index=%lu reason=%u input_end=%llu oldest=%llu pitch_timestamp=%llu pitch_age_samples=%llu source=%.3f destination=%.3f center=%llu mark_age=%llu half=%lu required_first=%llu required_last=%llu distance=%.3f allowed=%.3f\n",
+           static_cast<unsigned long>(i), static_cast<unsigned>(d.reason),
+           static_cast<unsigned long long>(d.input_end),
+           static_cast<unsigned long long>(d.history_oldest_sample),
+           static_cast<unsigned long long>(d.pitch_analysis_timestamp),
+           static_cast<unsigned long long>(d.pitch_age_samples), d.requested_source,
+           d.destination, static_cast<unsigned long long>(d.selected_mark_center),
+           static_cast<unsigned long long>(d.mark_age_samples),
+           static_cast<unsigned long>(d.half_window),
+           static_cast<unsigned long long>(d.required_first_sample),
+           static_cast<unsigned long long>(d.required_last_sample),
+           d.source_to_nearest_mark, d.allowed_distance);
+  }
+  printf("B4B.4E transport/teardown audit: %s\n", b4b4b_transport_pass && teardown_clean ? "PASS" : "FAIL");
+  printf("\nB4B.4E RESULT:\n%s\n", b4b4e_pass ? "PASS" : "FAIL");
+  printf("PRODUCTION YIN:\nYIN_DIFF_INCREMENTAL_F32 rebase=64\n");
+  printf("YIN DIFFERENCE:\n%.2f us/hop\n", new_yin_difference_us_per_hop);
+  printf("PITCH ANALYSIS:\n%.2f us/hop\n", new_pitch_analysis_us_per_hop);
+  printf("CORE1:\n%.2f%%\n", core1_utilization);
+  printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
+  printf("FIFO:\n%s\n", fifo_bounded ? "bounded" : "saturated");
+  printf("PITCH AGE:\n%.2f ms\n", audit_end.latest_pitch_age_ms);
+  printf("GRAIN REJECTION PRIMARY:\n%s\n", grain_primary);
+  printf("GRAINS:\nattempted=%llu scheduled=%llu rendered=%llu\n",
+         static_cast<unsigned long long>(funnel_end.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_end.grains_scheduled),
+         static_cast<unsigned long long>(funnel_end.grains_rendered));
+  printf("REALTIME:\n%s\n", realtime ? "PASS" : "FAIL");
+  printf("NEXT HOTSPOT:\n%s\n", primary_hotspot);
+  printf("NEXT STEP:\n%s\n", realtime ? "AUDIT_PSOLA_ONLY_IF_ZERO_GRAINS_PERSISTS" : "OPTIMIZE_THE_MEASURED_FULL_WORKER_HOTSPOT");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   (void)old_storage;
   (void)maximum_theoretical_hops;
@@ -3067,6 +3347,12 @@ void run_i2s_bringup_selected_mode(void) {
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4B.4C low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4e_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4E low-priority coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4d_diag", 24576,

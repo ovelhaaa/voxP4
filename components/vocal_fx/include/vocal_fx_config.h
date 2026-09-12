@@ -72,6 +72,8 @@ enum class YinDifferenceVariant : uint8_t {
   Muladd4Acc,
   Fma4Acc,
   Fma8Acc,
+  IncrementalF32,
+  IncrementalDoubleSingle,
 };
 
 struct PitchAnalysisConfig {
@@ -94,6 +96,9 @@ struct PitchAnalysisConfig {
   // Occupies existing selector padding; does not grow PitchAnalysisConfig or
   // YinDetector.
   YinDifferenceVariant yin_difference = YinDifferenceVariant::Fma8Acc;
+  // Zero disables periodic rebases (drift-study only). Incremental variants
+  // always bootstrap and recover from discontinuities with Fma8Acc.
+  uint8_t yin_incremental_rebase_hops = 8;
   PsolaContinuityPolicy continuity_policy = PsolaContinuityPolicy::Baseline;
   float coast_ms = 0.0f;
   bool warm_reacquire_enabled = false;

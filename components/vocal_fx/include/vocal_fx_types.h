@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -355,6 +356,55 @@ struct PitchShiftTelemetry {
   PitchShiftState state = PitchShiftState::Bypass;
 };
 
+enum class GrainFailureReason : uint8_t {
+  None,
+  AttemptSourceNegative,
+  SelectMarkNoMarks,
+  SelectMarkLowConfidence,
+  SelectMarkInvalidPeriod,
+  SelectMarkDistanceTooLarge,
+  HistoryCenterBeforeHalf,
+  HistoryTooOld,
+  HistoryFutureEnd,
+};
+
+struct GrainFailureDiagnostic {
+  uint64_t input_end = 0;
+  uint64_t history_oldest_sample = 0;
+  uint64_t pitch_analysis_timestamp = 0;
+  uint64_t pitch_age_samples = 0;
+  double requested_source = 0.0;
+  double destination = 0.0;
+  uint64_t selected_mark_center = 0;
+  uint64_t mark_age_samples = 0;
+  uint32_t half_window = 0;
+  uint64_t required_first_sample = 0;
+  uint64_t required_last_sample = 0;
+  float source_to_nearest_mark = 0.0f;
+  float allowed_distance = 0.0f;
+  GrainFailureReason reason = GrainFailureReason::None;
+};
+
+struct GrainRejectionTelemetry {
+  static constexpr size_t kDiagnosticCapacity = 1;
+  uint64_t attempt_source_negative = 0;
+  uint64_t select_mark_failure_total = 0;
+  uint64_t select_mark_no_marks = 0;
+  uint64_t select_mark_low_confidence = 0;
+  uint64_t select_mark_invalid_period = 0;
+  uint64_t select_mark_distance_too_large = 0;
+  uint64_t history_failure_total = 0;
+  uint64_t history_center_before_half = 0;
+  uint64_t history_too_old = 0;
+  uint64_t history_future_end = 0;
+  uint32_t history_size_samples = 0;
+  float history_size_ms = 0.0f;
+  uint64_t input_end = 0;
+  uint64_t oldest_available = 0;
+  uint32_t diagnostic_count = 0;
+  std::array<GrainFailureDiagnostic, kDiagnosticCapacity> diagnostics{};
+};
+
 struct PitchResult {
   PitchResult() = default;
   // Milestone-1 source compatibility.
@@ -483,6 +533,11 @@ struct YinForensicTelemetry {
   uint64_t executions = 0;
   uint64_t actual_inner_iterations = 0;
   uint64_t expected_inner_iterations = 0;
+  uint64_t incremental_rebases = 0;
+  uint64_t incremental_gap_rebases = 0;
+  uint64_t periodic_rebases = 0;
+  uint64_t incremental_update_terms = 0;
+  uint64_t full_rebase_products = 0;
 };
 
 struct PitchMarkForensicTelemetry {

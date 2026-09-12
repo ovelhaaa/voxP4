@@ -81,6 +81,8 @@ private:
   AnalysisFifo<kFifoCapacity> fifo_;
   std::array<float, YinDetector::kMaxWindow> rolling_{}, linear_{};
   size_t rolling_write_ = 0, rolling_count_ = 0, since_hop_ = 0;
+  uint64_t previous_fifo_position_ = 0;
+  bool have_previous_fifo_position_ = false;
   std::array<float, kAudioHistory> audio_{};
   std::atomic<uint32_t> audio_end_sequence_{0}, audio_end_low_{0},
       audio_end_high_{0};

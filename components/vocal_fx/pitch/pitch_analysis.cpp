@@ -49,6 +49,8 @@ void PitchAnalysis::reset() {
     mark.confidence.store(0, std::memory_order_relaxed);
   }
   rolling_write_ = rolling_count_ = since_hop_ = 0;
+  previous_fifo_position_ = 0;
+  have_previous_fifo_position_ = false;
   input_position_ = latest_analysis_position_ = 0;
   audio_end_sequence_.store(0, std::memory_order_relaxed);
   audio_end_low_.store(0, std::memory_order_relaxed);
@@ -172,6 +174,18 @@ size_t PitchAnalysis::run(size_t max_hops) {
     if (!have_sample)
       break;
     cycle_start = Profiler::now_cycles();
+    const uint64_t expected_stride = static_cast<uint64_t>(std::llround(
+        config_.input_sample_rate / config_.analysis_sample_rate));
+    if (have_previous_fifo_position_ &&
+        sample.input_position != previous_fifo_position_ + expected_stride) {
+      // Never carry a recursive difference across a dropped/non-monotonic
+      // analysis sample. Restarting the rolling window also prevents a frame
+      // from spanning the temporal hole.
+      yin_.invalidate_incremental_gap();
+      rolling_write_ = rolling_count_ = since_hop_ = 0;
+    }
+    previous_fifo_position_ = sample.input_position;
+    have_previous_fifo_position_ = true;
     rolling_[rolling_write_] = sample.value;
     rolling_write_ = (rolling_write_ + 1) % config_.window_size;
     rolling_count_ = std::min<size_t>(rolling_count_ + 1, config_.window_size);
@@ -192,7 +206,8 @@ size_t PitchAnalysis::run(size_t max_hops) {
     VF_PROFILE_END(
         profiler_, ps(PitchAnalysisProfileSection::LinearWindowCopy), 0);
     VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::Total));
-    auto measurement = yin_.analyze(linear_.data(), config_.window_size, 0);
+    auto measurement = yin_.analyze(linear_.data(), config_.window_size,
+                                    latest_analysis_position_);
     VF_PROFILE_BEGIN(profiler_,
                      ps(PitchAnalysisProfileSection::VoicedFeatures));
 
