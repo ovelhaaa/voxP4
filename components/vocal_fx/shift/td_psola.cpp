@@ -2,6 +2,12 @@
 #include <algorithm>
 #include <cmath>
 
+extern void vocal_fx_funnel_inc_pitch_marks_consumed(uint64_t count);
+extern void vocal_fx_funnel_inc_psola_process(uint64_t count);
+extern void vocal_fx_funnel_inc_grain_schedule_attempts(uint64_t count);
+extern void vocal_fx_funnel_inc_grains_scheduled(uint64_t count);
+extern void vocal_fx_funnel_inc_grains_rendered(uint64_t count);
+
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
 static_assert(static_cast<size_t>(ProfileSection::PitchShiftLookup) +
@@ -301,6 +307,7 @@ bool TdPsola::add_grain(double destination, double source,
     return false;
   }
   VF_PROFILE_END(profiler_, section(PitchShiftProfileSection::SourceLookup), 0);
+  vocal_fx_funnel_inc_pitch_marks_consumed(1);
   VF_PROFILE_BEGIN(profiler_,
                    section(PitchShiftProfileSection::GrainPreparation));
   const int half = std::clamp(static_cast<int>(std::lround(period)), 24, 800);
@@ -413,6 +420,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
 #endif
                               ) {
   if (!input || !output || !frames) return;
+  vocal_fx_funnel_inc_psola_process(1);
   VF_PROFILE_BEGIN(profiler_, section(PitchShiftProfileSection::Total));
   block_has_psola_ = false;
   new_grain_scheduled_this_block_ = false;
@@ -803,11 +811,15 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
       debug_.actual_synthesis_period =
           current_synthesis_period_ / std::max(ratio, .5f);
       const double source = next_synthesis_mark_ - history_offset_;
+      vocal_fx_funnel_inc_grain_schedule_attempts(1);
       if (source >= 0 &&
-          add_grain(next_synthesis_mark_, source, marks, mark_count))
+          add_grain(next_synthesis_mark_, source, marks, mark_count)) {
         ++grains;
+        vocal_fx_funnel_inc_grains_scheduled(1);
+      }
       next_synthesis_mark_ += current_synthesis_period_ / std::max(ratio, .5f);
     }
+    vocal_fx_funnel_inc_grains_rendered(grains);
     telemetry_.grains += grains;
     telemetry_.max_grains_per_block =
         std::max<uint32_t>(telemetry_.max_grains_per_block, grains);

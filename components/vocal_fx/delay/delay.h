@@ -13,6 +13,9 @@ public:
   void process(float input, float &l, float &r);
   void process_wet(float input, float &l, float &r);
   size_t memory_bytes() const;
+  const void* left_ptr() const { return l_.get(); }
+  const void* right_ptr() const { return r_.get(); }
+  size_t channel_bytes() const { return size_ * sizeof(float); }
 
 private:
   float read(float delay) const;

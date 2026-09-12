@@ -30,6 +30,9 @@ void vocal_fx_set_dry_alignment(bool enabled, float delay_ms = 32.0f);
 void vocal_fx_set_harmony_attack_ms(float milliseconds);
 void vocal_fx_set_harmony_release_ms(float milliseconds);
 void vocal_fx_set_harmony_limiter(bool enabled, float threshold_db = -3.0f);
+void vocal_fx_set_spatial_routing(SpatialFxRouting routing);
+void vocal_fx_set_spatial_source(SpatialFxSource source);
+void vocal_fx_set_mute_dry(bool mute);
 void vocal_fx_midi_note_on(uint8_t note, uint8_t velocity);
 void vocal_fx_midi_note_off(uint8_t note);
 void vocal_fx_midi_all_notes_off();
@@ -73,9 +76,21 @@ uint64_t vocal_fx_analysis_latency_samples();
 VocalFxProfileStats
 vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section);
 size_t vocal_fx_dsp_memory_bytes();
+size_t vocal_fx_delay_memory_bytes();
+size_t vocal_fx_reverb_memory_bytes();
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section);
+void vocal_fx_reset_profiler();
+size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count);
 LpcTelemetry vocal_fx_lpc_telemetry();
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection section);
+
+// Stage funnel & diagnostic telemetry (Req 5, 7, 8)
+VocalFxFunnelStats vocal_fx_funnel_stats();
+void vocal_fx_reset_funnel_stats();
+void vocal_fx_funnel_inc_synthetic_tone_blocks(uint64_t count = 1);
+float vocal_fx_latest_pitch_age_ms();
+float vocal_fx_effective_harmony_mix(size_t voice);
+PitchSyncDiagnostics vocal_fx_pitch_sync_diagnostics();
 
 #ifndef ESP_PLATFORM
 typedef void (*VocalFxSampleTelemetryCallback)(const SampleTelemetryRecord *records, size_t count, void *user_data);

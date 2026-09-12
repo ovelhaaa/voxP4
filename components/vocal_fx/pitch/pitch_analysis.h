@@ -31,6 +31,10 @@ public:
   uint64_t latency_samples() const { return latency_samples_; }
   ProfileStats profile(PitchAnalysisProfileSection) const;
   size_t memory_bytes() const { return sizeof(*this); }
+  const void* audio_history_ptr() const { return audio_.data(); }
+  size_t audio_history_bytes() const { return sizeof(audio_); }
+  const void* fifo_ptr() const { return &fifo_; }
+  size_t fifo_bytes() const { return sizeof(fifo_); }
 
 private:
   struct AtomicPitchMark {

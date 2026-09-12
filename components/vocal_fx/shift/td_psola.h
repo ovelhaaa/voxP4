@@ -24,6 +24,10 @@ public:
   uint64_t input_end() const { return input_end_; }
   float window(size_t index) const { return hann_[index]; }
   size_t memory_bytes() const { return sizeof(*this); }
+  const void* history_ptr() const { return history_.data(); }
+  size_t history_bytes() const { return sizeof(history_); }
+  const void* hann_ptr() const { return hann_.data(); }
+  size_t hann_bytes() const { return sizeof(hann_); }
 private:
   std::array<float, kHistorySize> history_{};
   std::array<float, kHannSize> hann_{};

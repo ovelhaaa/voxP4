@@ -49,6 +49,9 @@ public:
     return delay_ms_;
   }
 
+  const void* buffer_ptr() const { return buffer_; }
+  size_t buffer_bytes() const { return sizeof(buffer_); }
+
   inline float process(float in) {
     buffer_[write_pos_] = in;
     if (!enabled_ || delay_samples_ == 0) {

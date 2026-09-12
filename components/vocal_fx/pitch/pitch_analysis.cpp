@@ -405,6 +405,8 @@ void PitchAnalysis::add_mark(PitchMark mark) {
   mark_metadata_.store((next_count << 16U) | next_write,
                        std::memory_order_release);
   mark_generation_.fetch_add(1, std::memory_order_release);
+  extern void vocal_fx_funnel_inc_pitch_marks_generated(uint64_t count);
+  vocal_fx_funnel_inc_pitch_marks_generated(1);
 }
 void PitchAnalysis::update_marks(const PitchResult &p) {
   VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch));

@@ -55,6 +55,10 @@ struct VocalFxConfig {
   float harmony_limiter_attack_ms = 0.5f;
   float harmony_limiter_release_ms = 40.0f;
   float harmony_limiter_max_reduction_db = 6.0f;
+  // Milestone 5.12 — Reverb Qualification & Minimal Multi-FX Routing
+  SpatialFxRouting spatial_routing = SpatialFxRouting::DelayIntoReverb;
+  SpatialFxSource spatial_source = SpatialFxSource::MainMix;
+  bool mute_dry = false;
 };
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };

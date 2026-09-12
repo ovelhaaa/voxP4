@@ -54,6 +54,10 @@ public:
   LpcTelemetry telemetry() const;
   ProfileStats profile(LpcProfileSection section) const;
   size_t memory_bytes() const { return sizeof(*this); }
+  const void* fifo_ptr() const { return &fifo_; }
+  size_t fifo_bytes() const { return sizeof(fifo_); }
+  const void* frame_ptr() const { return frame_.data(); }
+  size_t frame_bytes() const { return sizeof(frame_); }
 
   // Public for deterministic host tests of the numerical core.
   static bool solve(const float *frame, size_t count, uint16_t order,

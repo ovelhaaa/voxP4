@@ -133,6 +133,52 @@ int main() {
     fdn.process(0, l, r);
     CHECK(l == 0 && r == 0);
   }
+  // Milestone 5.12: FDN Reverb multi-parameter qualification & stability
+  for (float rt60 : {0.4f, 1.0f, 2.0f, 5.0f, 10.0f}) {
+    for (float damp : {0.0f, 0.1f, 0.5f, 0.9f, 1.0f}) {
+      fdn.reset();
+      fdn.set_rt60(rt60);
+      fdn.set_damping(damp);
+      fdn.set_wet(1.0f);
+      float p = 0.0f;
+      for (int i = 0; i < 48000; i++) {
+        fdn.process(i == 0 ? 1.0f : 0.0f, l, r);
+        CHECK(std::isfinite(l) && std::isfinite(r));
+        p = std::max(p, std::max(std::fabs(l), std::fabs(r)));
+      }
+      CHECK(p > 0.0f && p < 2.0f);
+    }
+  }
+  // Milestone 5.12: Spatial FX Memory & Routing Verification
+  VocalFxConfig vcfg{};
+  vcfg.enable_delay = true;
+  vcfg.enable_reverb = true;
+  vcfg.enable_pitch_analysis = false;
+  vcfg.spatial_routing = SpatialFxRouting::DelayIntoReverb;
+  CHECK(vocal_fx_init(vcfg));
+  CHECK(vocal_fx_delay_memory_bytes() > 0);
+  CHECK(vocal_fx_reverb_memory_bytes() > 0);
+  CHECK(vocal_fx_reverb_memory_bytes() == 68156);
+  // Verify routing switch continuity (Parallel <-> DelayIntoReverb)
+  float test_in[64]{1.0f};
+  float test_out_l[64], test_out_r[64];
+  vocal_fx_process(test_in, test_out_l, test_out_r, 64);
+  vocal_fx_set_spatial_routing(SpatialFxRouting::Parallel);
+  for (int b = 0; b < 10; ++b) {
+    float block_in[64]{0.0f};
+    vocal_fx_process(block_in, test_out_l, test_out_r, 64);
+    for (int i = 0; i < 64; ++i) {
+      CHECK(std::isfinite(test_out_l[i]) && std::isfinite(test_out_r[i]));
+    }
+  }
+  vocal_fx_set_spatial_routing(SpatialFxRouting::DelayIntoReverb);
+  for (int b = 0; b < 10; ++b) {
+    float block_in[64]{0.0f};
+    vocal_fx_process(block_in, test_out_l, test_out_r, 64);
+    for (int i = 0; i < 64; ++i) {
+      CHECK(std::isfinite(test_out_l[i]) && std::isfinite(test_out_r[i]));
+    }
+  }
   Profiler profiler;
   std::atomic<bool> writer_done{false};
   std::thread writer([&] {

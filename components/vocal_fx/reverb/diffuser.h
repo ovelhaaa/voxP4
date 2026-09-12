@@ -7,6 +7,8 @@ public:
   void reset();
   float process(float x);
   size_t memory_bytes() const { return size_ * sizeof(float); }
+  const void* buffer_ptr() const { return buffer_.get(); }
+  size_t size_bytes() const { return size_ * sizeof(float); }
 
 private:
   std::unique_ptr<float[]> buffer_;
@@ -20,6 +22,8 @@ public:
   void reset();
   float process(float x);
   size_t memory_bytes() const;
+  const void* stage_ptr(size_t i) const { return i < 3 ? stages_[i].buffer_ptr() : nullptr; }
+  size_t stage_bytes(size_t i) const { return i < 3 ? stages_[i].size_bytes() : 0; }
 
 private:
   AllPass stages_[3];

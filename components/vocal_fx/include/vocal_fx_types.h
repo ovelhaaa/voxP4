@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 enum class VocalFxParameter : uint16_t {
@@ -42,7 +43,19 @@ enum class VocalFxParameter : uint16_t {
   FormantVoice1ShiftSemitones, FormantVoice2ShiftSemitones,
   DryAlignmentEnabled, DryAlignmentMs,
   HarmonyAttackMs, HarmonyReleaseMs,
-  HarmonyLimiterEnabled, HarmonyLimiterThresholdDb
+  HarmonyLimiterEnabled, HarmonyLimiterThresholdDb,
+  SpatialRouting, SpatialSource, MuteDry
+};
+
+enum class SpatialFxRouting : uint8_t {
+  Parallel = 0,
+  DelayIntoReverb = 1
+};
+
+enum class SpatialFxSource : uint8_t {
+  MainMix = 0,    // Fold-down mono 0.5 * (Left + Right) [Current product behavior]
+  DryOnly = 1,    // Dry voice pre-harmony [Reserved for future milestone]
+  HarmonyOnly = 2 // Harmony bus only [Reserved for future milestone]
 };
 
 enum class PitchShiftMode : uint8_t { Bypass, FixedInterval };
@@ -474,7 +487,6 @@ struct SampleTelemetryRecord {
 };
 #pragma pack(pop)
 
-
 enum class PitchAnalysisProfileSection : uint8_t {
   Decimator,
   YinDifference,
@@ -493,11 +505,58 @@ enum class VocalFxProfileSection : uint8_t {
   Compressor,
   Delay,
   Reverb,
-  Pipeline
+  Pipeline,
+  Harmony,
+  Master,
+  ParameterQueue,
+  PitchLpcTap,
+  PitchMarkSync,
+  DryAlignment,
+  HarmonySlewPan,
+  HarmonyLimiter,
+  BusMixing,
+  DelayPrep,
+  ReverbPrep,
+  Count
 };
 struct VocalFxProfileStats {
   uint64_t blocks = 0;
   uint64_t total_us = 0;
   uint64_t worst_us = 0;
   uint64_t deadline_misses = 0;
+};
+
+struct VocalFxBufferAudit {
+  char name[32] = {0};
+  const void *ptr = nullptr;
+  size_t size_bytes = 0;
+  bool is_psram = false;
+  bool is_sram = false;
+};
+
+// Stage funnel metrics for forensic analysis (Req 7)
+struct VocalFxFunnelStats {
+  uint64_t synthetic_tone_blocks = 0;
+  uint64_t pitch_analysis_blocks = 0;
+  uint64_t pitch_results_produced = 0;
+  uint64_t voiced_pitch_results = 0;
+  uint64_t pitch_marks_generated = 0;
+  uint64_t pitch_marks_transferred = 0;
+  uint64_t pitch_marks_consumed = 0;
+  uint64_t harmony_target_activations = 0;
+  uint64_t psola_process_calls = 0;
+  uint64_t grain_schedule_attempts = 0;
+  uint64_t grains_scheduled = 0;
+  uint64_t grains_rendered = 0;
+};
+
+// Diagnostic sync tracking between Core 0 and Core 1
+struct PitchSyncDiagnostics {
+  uint64_t try_pitch_attempts = 0;
+  uint64_t try_pitch_successes = 0;
+  uint64_t try_marks_attempts = 0;
+  uint64_t try_marks_successes = 0;
+  uint64_t try_marks_start_gt_end = 0;
+  uint64_t last_mark_count = 0;
+  uint64_t last_mark_end = 0;
 };

@@ -16,6 +16,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#ifdef ESP_PLATFORM
+#include "esp_memory_utils.h"
+#include "esp_timer.h"
+#endif
 
 #ifndef ESP_PLATFORM
 static VocalFxSampleTelemetryCallback s_sample_telemetry_cb = nullptr;
@@ -44,6 +50,13 @@ struct Engine {
   float work[VOCAL_FX_MAX_BLOCK_SIZE], left[VOCAL_FX_MAX_BLOCK_SIZE],
       right[VOCAL_FX_MAX_BLOCK_SIZE];
   float shifted[2][VOCAL_FX_MAX_BLOCK_SIZE];
+  float delay_wet_l[VOCAL_FX_MAX_BLOCK_SIZE]{};
+  float delay_wet_r[VOCAL_FX_MAX_BLOCK_SIZE]{};
+  float rev_wet_l[VOCAL_FX_MAX_BLOCK_SIZE]{};
+  float rev_wet_r[VOCAL_FX_MAX_BLOCK_SIZE]{};
+  float dry_bus[VOCAL_FX_MAX_BLOCK_SIZE]{};
+  float harm_bus_mono[VOCAL_FX_MAX_BLOCK_SIZE]{};
+  SmoothedValue delay_to_reverb_send;
   float harmony_mix[2]{};
   float last_wanted_mix[2]{};
   PitchMark pitch_shift_marks[TdPsola::kMaxMarks];
@@ -72,14 +85,72 @@ struct PitchMailbox {
   std::atomic<uint8_t> pitch_track_state{0};
   std::atomic<uint32_t> coast_remaining{0};
 } pitch;
+
+} // namespace
+
+struct AtomicFunnelStats {
+  std::atomic<uint64_t> synthetic_tone_blocks{0};
+  std::atomic<uint64_t> pitch_analysis_blocks{0};
+  std::atomic<uint64_t> pitch_results_produced{0};
+  std::atomic<uint64_t> voiced_pitch_results{0};
+  std::atomic<uint64_t> pitch_marks_generated{0};
+  std::atomic<uint64_t> pitch_marks_transferred{0};
+  std::atomic<uint64_t> pitch_marks_consumed{0};
+  std::atomic<uint64_t> harmony_target_activations{0};
+  std::atomic<uint64_t> psola_process_calls{0};
+  std::atomic<uint64_t> grain_schedule_attempts{0};
+  std::atomic<uint64_t> grains_scheduled{0};
+  std::atomic<uint64_t> grains_rendered{0};
+};
+static AtomicFunnelStats g_funnel;
+
+struct AtomicPitchSync {
+  std::atomic<uint64_t> try_pitch_attempts{0};
+  std::atomic<uint64_t> try_pitch_successes{0};
+  std::atomic<uint64_t> try_marks_attempts{0};
+  std::atomic<uint64_t> try_marks_successes{0};
+  std::atomic<uint64_t> try_marks_start_gt_end{0};
+  std::atomic<uint64_t> last_mark_count{0};
+  std::atomic<uint64_t> last_mark_end{0};
+  std::atomic<int64_t> last_pitch_published_us{0};
+};
+static AtomicPitchSync g_sync;
+
+void vocal_fx_funnel_inc_synthetic_tone_blocks(uint64_t count) {
+  g_funnel.synthetic_tone_blocks.fetch_add(count, std::memory_order_relaxed);
+}
+void vocal_fx_funnel_inc_pitch_marks_generated(uint64_t count) {
+  g_funnel.pitch_marks_generated.fetch_add(count, std::memory_order_relaxed);
+}
+void vocal_fx_funnel_inc_pitch_marks_consumed(uint64_t count) {
+  g_funnel.pitch_marks_consumed.fetch_add(count, std::memory_order_relaxed);
+}
+void vocal_fx_funnel_inc_psola_process(uint64_t count) {
+  g_funnel.psola_process_calls.fetch_add(count, std::memory_order_relaxed);
+}
+void vocal_fx_funnel_inc_grain_schedule_attempts(uint64_t count) {
+  g_funnel.grain_schedule_attempts.fetch_add(count, std::memory_order_relaxed);
+}
+void vocal_fx_funnel_inc_grains_scheduled(uint64_t count) {
+  g_funnel.grains_scheduled.fetch_add(count, std::memory_order_relaxed);
+}
+void vocal_fx_funnel_inc_grains_rendered(uint64_t count) {
+  g_funnel.grains_rendered.fetch_add(count, std::memory_order_relaxed);
+}
+
+namespace {
+
 constexpr uint32_t kPitchResetting = 1U << 31U;
 std::atomic<uint32_t> pitch_users{0};
 bool enter_pitch_path() {
   uint32_t state = pitch_users.load(std::memory_order_acquire);
-  if (state & kPitchResetting)
-    return false;
-  return pitch_users.compare_exchange_strong(
-      state, state + 1U, std::memory_order_acq_rel, std::memory_order_relaxed);
+  while (!(state & kPitchResetting)) {
+    if (pitch_users.compare_exchange_weak(
+            state, state + 1U, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+      return true;
+    }
+  }
+  return false;
 }
 void leave_pitch_path() {
   pitch_users.fetch_sub(1U, std::memory_order_release);
@@ -125,6 +196,8 @@ bool vocal_fx_init(const VocalFxConfig &c) {
                          c.harmony_limiter_max_reduction_db);
   e.harmony_mix[0] = e.harmony_mix[1] = 0.0f;
   e.last_wanted_mix[0] = e.last_wanted_mix[1] = 0.0f;
+  const float send_target = (c.spatial_routing == SpatialFxRouting::DelayIntoReverb) ? 1.0f : 0.0f;
+  e.delay_to_reverb_send.init(send_target, c.sample_rate, 20.0f);
   if (c.enable_pitch_analysis) {
     PitchAnalysisConfig pitch_config{};
     pitch_config.input_sample_rate = c.sample_rate;
@@ -193,6 +266,8 @@ void vocal_fx_reset() {
   e.harmony_limiter.reset();
   e.harmony_mix[0] = e.harmony_mix[1] = 0.0f;
   e.last_wanted_mix[0] = e.last_wanted_mix[1] = 0.0f;
+  const float reset_send = (e.cfg.spatial_routing == SpatialFxRouting::DelayIntoReverb) ? 1.0f : 0.0f;
+  e.delay_to_reverb_send.init(reset_send, e.cfg.sample_rate, 20.0f);
   e.pitch_resources.reset();
   e.lpc_analysis.reset();
   for (auto &voice : e.pitch_shift) voice.reset();
@@ -207,47 +282,72 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     return;
   while (frames) {
     size_t n = std::min<size_t>(frames, VOCAL_FX_MAX_BLOCK_SIZE);
+    [[maybe_unused]] uint64_t deadline =
+        (uint64_t)(1000000.0 * n / e.cfg.sample_rate);
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Pipeline);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::PitchLpcTap);
     if (e.cfg.enable_pitch_analysis && enter_pitch_path()) {
       e.pitch_analysis.tap(in, n);
       e.lpc_analysis.tap(in, n);
       leave_pitch_path();
+      g_funnel.pitch_analysis_blocks.fetch_add(1, std::memory_order_relaxed);
     }
+    VF_PROFILE_END(e.profiler, ProfileSection::PitchLpcTap, 0);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::ParameterQueue);
     apply_pending_parameters();
-    [[maybe_unused]] uint64_t deadline =
-        (uint64_t)(1000000.0 * n / e.cfg.sample_rate);
-    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Pipeline);
+    VF_PROFILE_END(e.profiler, ProfileSection::ParameterQueue, 0);
+
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Input);
     for (size_t i = 0; i < n; i++) {
       float x = e.cfg.isolate_pitch_shift_output ? in[i] : e.hpf.process(in[i]);
       e.work[i] = e.cfg.enable_gate ? e.gate.process(x) : x;
     }
     VF_PROFILE_END(e.profiler, ProfileSection::Input, 0);
+
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Compressor);
     if (e.cfg.enable_compressor)
       for (size_t i = 0; i < n; i++)
         e.work[i] = e.compressor.process(e.work[i]);
     VF_PROFILE_END(e.profiler, ProfileSection::Compressor, 0);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::PitchMarkSync);
+    g_sync.try_pitch_attempts.fetch_add(1, std::memory_order_relaxed);
     PitchResult pitch_candidate;
-    if (vocal_fx_try_latest_pitch(&pitch_candidate))
+    if (vocal_fx_try_latest_pitch(&pitch_candidate)) {
+      g_sync.try_pitch_successes.fetch_add(1, std::memory_order_relaxed);
       e.pitch_shift_pitch = pitch_candidate;
+    }
     const PitchResult current_pitch = e.pitch_shift_pitch;
     const uint64_t mark_end = current_pitch.analysis_timestamp_samples;
     const uint64_t mark_start = mark_end > PitchAnalysis::kAudioHistory
                                     ? mark_end - PitchAnalysis::kAudioHistory
                                     : 0;
+    g_sync.last_mark_end.store(mark_end, std::memory_order_relaxed);
+    if (mark_start > mark_end) {
+      g_sync.try_marks_start_gt_end.fetch_add(1, std::memory_order_relaxed);
+    }
     if (e.cfg.enable_pitch_analysis &&
         (e.pitch_shift[0].enabled() || e.pitch_shift[1].enabled())) {
       size_t candidate_count = 0;
+      g_sync.try_marks_attempts.fetch_add(1, std::memory_order_relaxed);
       if (vocal_fx_try_get_pitch_marks(mark_start, mark_end,
                                        e.pitch_shift_candidate_marks,
                                        TdPsola::kMaxMarks, &candidate_count)) {
+        g_sync.try_marks_successes.fetch_add(1, std::memory_order_relaxed);
         std::copy_n(e.pitch_shift_candidate_marks, candidate_count,
                     e.pitch_shift_marks);
         e.pitch_shift_mark_count = candidate_count;
+        g_sync.last_mark_count.store(candidate_count, std::memory_order_relaxed);
+        g_funnel.pitch_marks_transferred.fetch_add(candidate_count, std::memory_order_relaxed);
       }
     } else {
       e.pitch_shift_mark_count = 0;
     }
+    VF_PROFILE_END(e.profiler, ProfileSection::PitchMarkSync, 0);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Harmony);
     e.pitch_resources.push(e.work,n);
     const auto targets=e.harmony.update(current_pitch.frequency_hz,
                                          current_pitch.voiced,e.midi);
@@ -260,23 +360,33 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
 #endif
     for(size_t v=0;v<2;++v){
       e.pitch_shift[v].set_enabled(e.harmony.voice(v).enabled);
-      if(targets[v].valid) e.pitch_shift[v].set_ratio(targets[v].target_frequency_hz/current_pitch.frequency_hz);
+      if(targets[v].valid) {
+        g_funnel.harmony_target_activations.fetch_add(1, std::memory_order_relaxed);
+        e.pitch_shift[v].set_ratio(targets[v].target_frequency_hz/current_pitch.frequency_hz);
+      }
       e.pitch_shift[v].process_shared(e.work,e.shifted[v],n,current_pitch,
           vocal_fx_pitch_track_state(),e.pitch_shift_marks,e.pitch_shift_mark_count);
     }
-    // -6 dB headroom, centred dry, equal-power harmony pan. Unvoiced/onset
-    // attenuation is performed by each PSOLA voice's acquisition fade.
-    // Milestone 5.11.3: Asymmetric slew (fast attack, smooth release)
+    VF_PROFILE_END(e.profiler, ProfileSection::Harmony, 0);
+
     const float attack_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_attack_ms * 0.001f);
     const float release_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_release_ms * 0.001f);
     const float attack_step = 1.0f / attack_samples;
     const float release_step = 1.0f / release_samples;
 
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::DryAlignment);
     for(size_t i=0;i<n;++i){
-      const float dry_sample = e.dry_delay.process(e.work[i]);
-      float harm_bus_l = 0.0f;
-      float harm_bus_r = 0.0f;
+      e.dry_bus[i] = e.dry_delay.process(e.work[i]);
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::DryAlignment, 0);
 
+    float harm_bus_l[VOCAL_FX_MAX_BLOCK_SIZE];
+    float harm_bus_r[VOCAL_FX_MAX_BLOCK_SIZE];
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::HarmonySlewPan);
+    for(size_t i=0;i<n;++i){
+      float hl = 0.0f;
+      float hr = 0.0f;
       for(size_t v=0;v<2;++v){
         const auto &c = e.harmony.voice(v);
         const float p = std::clamp(c.pan, -1.0f, 1.0f);
@@ -292,15 +402,25 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
           e.harmony_mix[v] += std::max(diff, -release_step);
         }
         const float voice_sig = e.shifted[v][i] * c.gain * e.harmony_mix[v];
-        harm_bus_l += voice_sig * std::sqrt(0.5f * (1.0f - p));
-        harm_bus_r += voice_sig * std::sqrt(0.5f * (1.0f + p));
+        hl += voice_sig * std::sqrt(0.5f * (1.0f - p));
+        hr += voice_sig * std::sqrt(0.5f * (1.0f + p));
       }
+      harm_bus_l[i] = hl;
+      harm_bus_r[i] = hr;
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::HarmonySlewPan, 0);
 
-      if (e.cfg.enable_harmony_limiter) {
-        e.harmony_limiter.process(harm_bus_l, harm_bus_r);
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::HarmonyLimiter);
+    if (e.cfg.enable_harmony_limiter) {
+      for(size_t i=0;i<n;++i){
+        e.harmony_limiter.process(harm_bus_l[i], harm_bus_r[i]);
       }
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::HarmonyLimiter, 0);
+
 #ifndef ESP_PLATFORM
-      if (s_sample_telemetry_cb) {
+    if (s_sample_telemetry_cb) {
+      for(size_t i=0;i<n;++i){
         telem_records[i].limiter_gain = e.harmony_limiter.current_gain();
         telem_records[i].limiter_reduction_db = e.harmony_limiter.reduction_db();
         telem_records[i].limiter_peak = e.harmony_limiter.last_peak();
@@ -308,21 +428,30 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
         telem_records[i].dry_alignment_active = e.dry_delay.enabled() ? 1 : 0;
         telem_records[i].wanted_mix = e.last_wanted_mix[iso_v];
       }
+    }
 #endif
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::BusMixing);
+    for(size_t i=0;i<n;++i){
+      const float dry_sample = e.dry_bus[i];
+      e.harm_bus_mono[i] = 0.5f * (harm_bus_l[i] + harm_bus_r[i]);
+      const float dry_mix = e.cfg.mute_dry ? 0.0f : dry_sample;
 
       if (e.cfg.isolate_pitch_shift_output) {
         if (e.cfg.apply_isolated_voice_envelope) {
-          e.left[i] = harm_bus_l;
-          e.right[i] = harm_bus_r;
+          e.left[i] = harm_bus_l[i];
+          e.right[i] = harm_bus_r[i];
         } else {
           const size_t iso_v_out = e.cfg.isolated_pitch_shift_voice < 2 ? e.cfg.isolated_pitch_shift_voice : 0;
           e.left[i] = e.right[i] = e.shifted[iso_v_out][i];
         }
       } else {
-        e.left[i] = 0.5f * (dry_sample + harm_bus_l);
-        e.right[i] = 0.5f * (dry_sample + harm_bus_r);
+        e.left[i] = 0.5f * (dry_mix + harm_bus_l[i]);
+        e.right[i] = 0.5f * (dry_mix + harm_bus_r[i]);
       }
     }
+    VF_PROFILE_END(e.profiler, ProfileSection::BusMixing, 0);
+
 #ifndef ESP_PLATFORM
     if (s_sample_telemetry_cb) {
       e.pitch_shift[iso_v].set_sample_telemetry_buffer(nullptr);
@@ -343,30 +472,74 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
       s_sample_telemetry_cb(telem_records, n, s_sample_telemetry_user_data);
     }
 #endif
-    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
-    for (size_t i = 0; i < n; i++) {
-      if (e.cfg.enable_delay) {
-        float delay_l, delay_r;
-        e.delay.process_wet((e.left[i] + e.right[i]) * .5f, delay_l, delay_r);
-        e.left[i] += delay_l;
-        e.right[i] += delay_r;
+
+    auto get_source_mono = [&](size_t i) -> float {
+      if (e.cfg.spatial_source == SpatialFxSource::DryOnly) {
+        return e.dry_bus[i];
+      } else if (e.cfg.spatial_source == SpatialFxSource::HarmonyOnly) {
+        return e.harm_bus_mono[i];
+      } else {
+        return (e.left[i] + e.right[i]) * 0.5f;
       }
+    };
+
+    float source_mono[VOCAL_FX_MAX_BLOCK_SIZE];
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::DelayPrep);
+    for (size_t i = 0; i < n; i++) {
+      source_mono[i] = get_source_mono(i);
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::DelayPrep, 0);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
+    if (e.cfg.enable_delay) {
+      for (size_t i = 0; i < n; i++) {
+        e.delay.process_wet(source_mono[i], e.delay_wet_l[i], e.delay_wet_r[i]);
+      }
+    } else {
+      std::fill_n(e.delay_wet_l, n, 0.0f);
+      std::fill_n(e.delay_wet_r, n, 0.0f);
     }
     VF_PROFILE_END(e.profiler, ProfileSection::Delay, 0);
-    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Reverb);
-    if (e.cfg.enable_reverb)
+
+    float rev_in[VOCAL_FX_MAX_BLOCK_SIZE];
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::ReverbPrep);
+    if (e.cfg.enable_reverb) {
       for (size_t i = 0; i < n; i++) {
-        float l, r;
-        e.reverb.process((e.left[i] + e.right[i]) * .5f, l, r);
-        e.left[i] += l;
-        e.right[i] += r;
+        const float send = e.delay_to_reverb_send.next();
+        const float delay_wet_mono = (e.delay_wet_l[i] + e.delay_wet_r[i]) * 0.5f;
+        rev_in[i] = source_mono[i] + send * delay_wet_mono;
       }
+    } else {
+      for (size_t i = 0; i < n; i++) {
+        (void)e.delay_to_reverb_send.next();
+      }
+      std::fill_n(e.rev_wet_l, n, 0.0f);
+      std::fill_n(e.rev_wet_r, n, 0.0f);
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::ReverbPrep, 0);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Reverb);
+    if (e.cfg.enable_reverb) {
+      for (size_t i = 0; i < n; i++) {
+        e.reverb.process(rev_in[i], e.rev_wet_l[i], e.rev_wet_r[i]);
+      }
+    } else {
+      std::fill_n(e.rev_wet_l, n, 0.0f);
+      std::fill_n(e.rev_wet_r, n, 0.0f);
+    }
     VF_PROFILE_END(e.profiler, ProfileSection::Reverb, 0);
+
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Master);
+    for (size_t i = 0; i < n; i++) {
+      e.left[i] += e.delay_wet_l[i] + e.rev_wet_l[i];
+      e.right[i] += e.delay_wet_r[i] + e.rev_wet_r[i];
+    }
     for (size_t i = 0; i < n; i++) {
       e.limiter.process(e.left[i], e.right[i]);
       ol[i] = e.left[i];
       orr[i] = e.right[i];
     }
+    VF_PROFILE_END(e.profiler, ProfileSection::Master, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Pipeline, deadline);
     in += n;
     ol += n;
@@ -520,6 +693,18 @@ void apply_parameter(VocalFxParameter p, float v) {
     e.cfg.harmony_limiter_threshold_db = v;
     e.harmony_limiter.set_threshold_db(v);
     break;
+  case VocalFxParameter::SpatialRouting: {
+    const auto r = (v >= 0.5f) ? SpatialFxRouting::DelayIntoReverb : SpatialFxRouting::Parallel;
+    e.cfg.spatial_routing = r;
+    e.delay_to_reverb_send.set_target(r == SpatialFxRouting::DelayIntoReverb ? 1.0f : 0.0f);
+    break;
+  }
+  case VocalFxParameter::SpatialSource:
+    e.cfg.spatial_source = static_cast<SpatialFxSource>(std::clamp(static_cast<int>(v), 0, 2));
+    break;
+  case VocalFxParameter::MuteDry:
+    e.cfg.mute_dry = (v >= 0.5f);
+    break;
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
@@ -570,6 +755,16 @@ void vocal_fx_set_harmony_limiter(bool enabled, float threshold_db) {
   vocal_fx_set_parameter(VocalFxParameter::HarmonyLimiterEnabled, enabled ? 1.0f : 0.0f);
   vocal_fx_set_parameter(VocalFxParameter::HarmonyLimiterThresholdDb, threshold_db);
 }
+void vocal_fx_set_spatial_routing(SpatialFxRouting routing) {
+  vocal_fx_set_parameter(VocalFxParameter::SpatialRouting,
+                         routing == SpatialFxRouting::DelayIntoReverb ? 1.0f : 0.0f);
+}
+void vocal_fx_set_spatial_source(SpatialFxSource source) {
+  vocal_fx_set_parameter(VocalFxParameter::SpatialSource, static_cast<float>(source));
+}
+void vocal_fx_set_mute_dry(bool mute) {
+  vocal_fx_set_parameter(VocalFxParameter::MuteDry, mute ? 1.0f : 0.0f);
+}
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
 void vocal_fx_midi_all_notes_off(){e.midi.all_notes_off();}
@@ -613,6 +808,19 @@ void vocal_fx_publish_pitch(const PitchResult &r) {
   pitch.coast_remaining.store(r.coast_remaining, std::memory_order_relaxed);
   pitch.seq.fetch_add(1, std::memory_order_release);
   pitch.publisher_lock.clear(std::memory_order_release);
+
+  g_funnel.pitch_results_produced.fetch_add(1, std::memory_order_relaxed);
+  if (r.voiced) {
+    g_funnel.voiced_pitch_results.fetch_add(1, std::memory_order_relaxed);
+  }
+#ifdef ESP_PLATFORM
+  g_sync.last_pitch_published_us.store(esp_timer_get_time(), std::memory_order_relaxed);
+#else
+  g_sync.last_pitch_published_us.store(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count(),
+      std::memory_order_relaxed);
+#endif
 }
 PitchResult vocal_fx_latest_pitch() {
   PitchResult r;
@@ -695,12 +903,68 @@ size_t vocal_fx_dsp_memory_bytes() {
          e.lpc_analysis.memory_bytes() +
          (e.cfg.enable_pitch_analysis ? e.pitch_analysis.memory_bytes() : 0);
 }
+size_t vocal_fx_delay_memory_bytes() {
+  return e.delay.memory_bytes();
+}
+size_t vocal_fx_reverb_memory_bytes() {
+  return e.reverb.memory_bytes();
+}
 LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].telemetry().formant_frames;x.voice2_formant_frames=e.pitch_shift[1].telemetry().formant_frames;return x;}
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection s){const auto x=e.lpc_analysis.profile(s);return{x.calls,x.total_us,x.max_us,x.deadline_misses};}
 
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {
   const auto stats = e.profiler.stats(static_cast<ProfileSection>(section));
   return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
+}
+
+void vocal_fx_reset_profiler() {
+  e.profiler.reset();
+}
+
+size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count) {
+  if (!out || max_count == 0) return 0;
+  size_t count = 0;
+
+  auto record = [&](const char *name, const void *ptr, size_t bytes) {
+    if (count >= max_count) return;
+    std::strncpy(out[count].name, name, sizeof(out[count].name) - 1);
+    out[count].name[sizeof(out[count].name) - 1] = '\0';
+    out[count].ptr = ptr;
+    out[count].size_bytes = bytes;
+#ifdef ESP_PLATFORM
+    out[count].is_psram = ptr ? esp_ptr_external_ram(ptr) : false;
+    out[count].is_sram = ptr ? esp_ptr_internal(ptr) : false;
+#else
+    out[count].is_psram = false;
+    out[count].is_sram = true;
+#endif
+    count++;
+  };
+
+  record("DelayLeft", e.delay.left_ptr(), e.delay.channel_bytes());
+  record("DelayRight", e.delay.right_ptr(), e.delay.channel_bytes());
+  for (size_t i = 0; i < 8; ++i) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "ReverbLine%zu", i);
+    record(name, e.reverb.line_ptr(i), e.reverb.line_bytes(i));
+  }
+  for (size_t s = 0; s < 3; ++s) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "Diffuser_Stage%zu", s);
+    record(name, e.reverb.diffuser().stage_ptr(s), e.reverb.diffuser().stage_bytes(s));
+  }
+  record("DryDelayBuffer", e.dry_delay.buffer_ptr(), e.dry_delay.buffer_bytes());
+  record("PitchResourcesHistory", e.pitch_resources.history_ptr(), e.pitch_resources.history_bytes());
+  record("PitchResourcesHann", e.pitch_resources.hann_ptr(), e.pitch_resources.hann_bytes());
+  record("PitchAudioHistory", e.pitch_analysis.audio_history_ptr(), e.pitch_analysis.audio_history_bytes());
+  record("PitchAnalysisFifo", e.pitch_analysis.fifo_ptr(), e.pitch_analysis.fifo_bytes());
+  record("LpcFifo", e.lpc_analysis.fifo_ptr(), e.lpc_analysis.fifo_bytes());
+  record("LpcFrame", e.lpc_analysis.frame_ptr(), e.lpc_analysis.frame_bytes());
+  record("WorkBuffer", e.work, sizeof(e.work));
+  record("LeftBuffer", e.left, sizeof(e.left));
+  record("RightBuffer", e.right, sizeof(e.right));
+
+  return count;
 }
 
 PitchShiftDebug vocal_fx_harmony_debug(size_t voice) {
@@ -719,4 +983,66 @@ void vocal_fx_set_sample_telemetry_callback(VocalFxSampleTelemetryCallback cb, v
   s_sample_telemetry_user_data = user_data;
 }
 #endif
+
+VocalFxFunnelStats vocal_fx_funnel_stats() {
+  VocalFxFunnelStats s{};
+  s.synthetic_tone_blocks = g_funnel.synthetic_tone_blocks.load(std::memory_order_relaxed);
+  s.pitch_analysis_blocks = g_funnel.pitch_analysis_blocks.load(std::memory_order_relaxed);
+  s.pitch_results_produced = g_funnel.pitch_results_produced.load(std::memory_order_relaxed);
+  s.voiced_pitch_results = g_funnel.voiced_pitch_results.load(std::memory_order_relaxed);
+  s.pitch_marks_generated = g_funnel.pitch_marks_generated.load(std::memory_order_relaxed);
+  s.pitch_marks_transferred = g_funnel.pitch_marks_transferred.load(std::memory_order_relaxed);
+  s.pitch_marks_consumed = g_funnel.pitch_marks_consumed.load(std::memory_order_relaxed);
+  s.harmony_target_activations = g_funnel.harmony_target_activations.load(std::memory_order_relaxed);
+  s.psola_process_calls = g_funnel.psola_process_calls.load(std::memory_order_relaxed);
+  s.grain_schedule_attempts = g_funnel.grain_schedule_attempts.load(std::memory_order_relaxed);
+  s.grains_scheduled = g_funnel.grains_scheduled.load(std::memory_order_relaxed);
+  s.grains_rendered = g_funnel.grains_rendered.load(std::memory_order_relaxed);
+  return s;
+}
+
+void vocal_fx_reset_funnel_stats() {
+  g_funnel.synthetic_tone_blocks.store(0, std::memory_order_relaxed);
+  g_funnel.pitch_analysis_blocks.store(0, std::memory_order_relaxed);
+  g_funnel.pitch_results_produced.store(0, std::memory_order_relaxed);
+  g_funnel.voiced_pitch_results.store(0, std::memory_order_relaxed);
+  g_funnel.pitch_marks_generated.store(0, std::memory_order_relaxed);
+  g_funnel.pitch_marks_transferred.store(0, std::memory_order_relaxed);
+  g_funnel.pitch_marks_consumed.store(0, std::memory_order_relaxed);
+  g_funnel.harmony_target_activations.store(0, std::memory_order_relaxed);
+  g_funnel.psola_process_calls.store(0, std::memory_order_relaxed);
+  g_funnel.grain_schedule_attempts.store(0, std::memory_order_relaxed);
+  g_funnel.grains_scheduled.store(0, std::memory_order_relaxed);
+  g_funnel.grains_rendered.store(0, std::memory_order_relaxed);
+}
+
+float vocal_fx_latest_pitch_age_ms() {
+  int64_t last = g_sync.last_pitch_published_us.load(std::memory_order_relaxed);
+  if (last <= 0) return 999999.0f;
+#ifdef ESP_PLATFORM
+  int64_t now = esp_timer_get_time();
+#else
+  int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+  if (now < last) return 0.0f;
+  return static_cast<float>(now - last) * 0.001f;
+}
+
+float vocal_fx_effective_harmony_mix(size_t voice) {
+  if (voice < 2) return e.harmony_mix[voice];
+  return 0.0f;
+}
+
+PitchSyncDiagnostics vocal_fx_pitch_sync_diagnostics() {
+  PitchSyncDiagnostics d{};
+  d.try_pitch_attempts = g_sync.try_pitch_attempts.load(std::memory_order_relaxed);
+  d.try_pitch_successes = g_sync.try_pitch_successes.load(std::memory_order_relaxed);
+  d.try_marks_attempts = g_sync.try_marks_attempts.load(std::memory_order_relaxed);
+  d.try_marks_successes = g_sync.try_marks_successes.load(std::memory_order_relaxed);
+  d.try_marks_start_gt_end = g_sync.try_marks_start_gt_end.load(std::memory_order_relaxed);
+  d.last_mark_count = g_sync.last_mark_count.load(std::memory_order_relaxed);
+  d.last_mark_end = g_sync.last_mark_end.load(std::memory_order_relaxed);
+  return d;
+}
 

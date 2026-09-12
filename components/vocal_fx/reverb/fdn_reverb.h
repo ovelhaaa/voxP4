@@ -14,6 +14,10 @@ public:
   void process(float input, float &l, float &r);
   size_t memory_bytes() const;
   static void hadamard8(float *x);
+  size_t line_count() const { return 8; }
+  const void* line_ptr(size_t i) const { return i < 8 ? lines_[i].b.get() : nullptr; }
+  size_t line_bytes(size_t i) const { return i < 8 ? lines_[i].size * sizeof(float) : 0; }
+  const Diffuser& diffuser() const { return diffuser_; }
 
 private:
   struct Line {

@@ -11,4 +11,68 @@ config VOCAL_FX_PITCH_DEBUG
     help
         Print pitch state from the telemetry task. The detector and audio task
         never log, irrespective of this option.
+choice VOXP4_OPERATION_MODE
+    prompt "VoxP4 Firmware Operation Mode"
+    default VOXP4_MODE_HEADLESS
+    help
+        Select the operational mode for VoxP4 bring-up and validation.
+
+config VOXP4_MODE_HEADLESS
+    bool "Headless DSP Timing and Memory Audit (Alpha 0.1A.1)"
+    help
+        Runs synthetic, real-time scheduler, throughput, and stress test suites
+        headlessly without requiring external audio codecs or I2S connections.
+
+config VOXP4_MODE_I2S_TX_TEST
+    bool "Stage B1: PCM5102 DAC-Only Bring-Up (Sine/Silence/Integrity)"
+    help
+        Generates synthetic tones (-18, -12, -6 dBFS) to PCM5102 DAC.
+
+config VOXP4_MODE_I2S_RX_TEST
+    bool "Stage B2: PCM1808 ADC-Only Bring-Up (Peak/RMS/Alignment)"
+    help
+        Receives 24-bit audio from PCM1808 ADC and computes peak, RMS, and DC stats.
+
+config VOXP4_MODE_I2S_BYPASS
+    bool "Stage B3: Hardware Bypass (ADC -> Format Conv -> DAC)"
+    help
+        Direct hardware bypass: PCM1808 -> Format Conv -> PCM5102 (no DSP).
+
+config VOXP4_MODE_I2S_B4A_QUIESCENT
+    bool "Stage B4A: Quiescent Full DSP Stress (Real ADC Quiescent -> DSP -> DAC)"
+    help
+        Full real-time vocal processor chain with real analog quiescent input from PCM1808.
+
+config VOXP4_MODE_I2S_B4B_SYNTHETIC_VOICED
+    bool "Stage B4B: Synthetic Voiced Full DSP Stress (Real DMA + Harmonic Voice -> DSP -> DAC)"
+    help
+        Full real-time vocal processor chain with deterministic synthetic harmonic voiced input.
+
+config VOXP4_MODE_I2S_B4C_REAL_ANALOG
+    bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
+    help
+        Full real-time vocal processor chain preserved for live musical testing with real mic.
+
+config VOXP4_MODE_I2S_FULL_DSP
+    bool "Stage B4: Full VoxP4 Live DSP (Legacy / Default Full DSP)"
+    help
+        Full real-time vocal processor chain: PCM1808 -> DSP -> PCM5102.
+
+config VOXP4_MODE_LATENCY_PULSE_TEST
+    bool "Hardware Latency Pulse Test (Loopback / Timing Pulse)"
+    help
+        Emits sharp pulses for physical roundtrip / oscilloscope latency measurement.
+
+config VOXP4_MODE_SAMPLE_FORMAT_FORENSIC
+    bool "Sample Format Forensic Mode (Raw 256 words inspect)"
+    help
+        Captures and dumps first 256 raw words from RX DMA to verify bit alignment.
+endchoice
+
+config VOXP4_HEADLESS_HW_TEST
+    bool
+    default y if VOXP4_MODE_HEADLESS
+    default n
+
 endmenu
+
