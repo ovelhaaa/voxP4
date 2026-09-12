@@ -19,7 +19,7 @@ public:
   static constexpr size_t kMarkCapacity = 64;
   bool init(const PitchAnalysisConfig &);
   void reset();
-  void tap(const float *, size_t); // audio-task producer, bounded/non-blocking
+  void tap(const float *, size_t, bool audit_identity = false); // audio-task producer, bounded/non-blocking
   size_t run(size_t max_hops);     // analysis-task consumer
   PitchResult latest() const;
   bool latest_mark(PitchMark *) const;
@@ -30,6 +30,9 @@ public:
   PitchTrackState track_state() const;
   uint64_t latency_samples() const { return latency_samples_; }
   ProfileStats profile(PitchAnalysisProfileSection) const;
+  PitchAnalysisAuditTelemetry audit_telemetry() const;
+  size_t read_audit_events(PitchAuditEvent *, size_t);
+  VocalFxInputIdentity tap_identity() const;
   size_t memory_bytes() const { return sizeof(*this); }
   const void* audio_history_ptr() const { return audio_.data(); }
   size_t audio_history_bytes() const { return sizeof(audio_); }
@@ -50,6 +53,14 @@ private:
   void publish(const PitchResult &);
   void update_marks(const PitchResult &);
   void add_mark(PitchMark);
+  void set_track_state(PitchTrackState, const PitchResult &,
+                       PitchMarkResetReason = PitchMarkResetReason::None);
+  void record_mark_event(PitchAuditEventType, const PitchResult &,
+                         PitchMarkResetReason, uint64_t predicted = 0,
+                         int best_offset = 0, float best_correlation = 0.0f);
+  void record_mark_reset(const PitchResult &, PitchMarkResetReason);
+  void record_correlation(float, bool);
+  void record_pitch_age(uint64_t);
   float median_history() const;
   PitchAnalysisConfig config_{};
   FirDecimator decimator_;
@@ -82,4 +93,29 @@ private:
   mutable std::atomic<uint32_t> state_seq_{0};
   PitchResult published_{};
   Profiler profiler_;
+  std::atomic<uint64_t> audit_input_position_{0}, audit_analysis_position_{0},
+      audit_published_timestamp_{0}, audit_backlog_max_samples_{0};
+  std::atomic<uint64_t> pitch_age_sum_samples_{0}, pitch_age_observations_{0},
+      pitch_age_max_samples_{0};
+  static constexpr size_t kPitchAgeHistogramBins = 128;
+  // 50 ms bins keep the 128-bin histogram useful even during multi-second
+  // worker stalls.  This is passive telemetry and does not affect analysis.
+  static constexpr uint32_t kPitchAgeBinSamples = 2400;
+  std::array<std::atomic<uint32_t>, kPitchAgeHistogramBins>
+      pitch_age_histogram_{};
+  std::atomic<uint8_t> coherent_marks_audit_{0}, coherent_marks_maximum_{0},
+      mark_failures_audit_{0}, mark_failures_maximum_{0};
+  std::atomic<uint64_t> coherent_mark_increments_{0}, coherent_mark_resets_{0};
+  std::array<std::atomic<uint64_t>, 7> mark_reset_reasons_{};
+  std::atomic<int64_t> correlation_sum_micros_{0};
+  std::atomic<int32_t> correlation_min_micros_{2000000},
+      correlation_max_micros_{-2000000};
+  std::atomic<uint64_t> correlation_observations_{0}, accepted_marks_{0},
+      rejected_marks_{0};
+  static constexpr size_t kAuditEventCapacity = 128;
+  std::array<PitchAuditEvent, kAuditEventCapacity> audit_events_{};
+  std::atomic<uint32_t> audit_event_head_{0}, audit_event_tail_{0};
+  std::atomic<uint64_t> audit_event_drops_{0}, first_locked_input_position_{0};
+  std::atomic<uint64_t> tap_identity_sequence_{0};
+  std::atomic<uint32_t> tap_rms_bits_{0}, tap_checksum_{0};
 };

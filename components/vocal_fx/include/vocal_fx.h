@@ -72,6 +72,10 @@ bool vocal_fx_try_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
                                   size_t *written);
 PitchTrackState vocal_fx_pitch_track_state();
 PitchAnalysisDebug vocal_fx_pitch_analysis_debug();
+PitchAnalysisAuditTelemetry vocal_fx_pitch_analysis_audit_telemetry();
+size_t vocal_fx_read_pitch_audit_events(PitchAuditEvent *events,
+                                        size_t capacity);
+VocalFxInputIdentity vocal_fx_input_identity();
 uint64_t vocal_fx_analysis_latency_samples();
 VocalFxProfileStats
 vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section);

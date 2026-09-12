@@ -48,6 +48,13 @@ config VOXP4_MODE_I2S_B4B_SYNTHETIC_VOICED
     help
         Full real-time vocal processor chain with deterministic synthetic harmonic voiced input.
 
+config VOXP4_MODE_I2S_B4B_2_PITCH_WORKER_LOCK_AUDIT
+    bool "Stage B4B.2: Pitch Worker Cadence & Lock Acquisition Audit"
+    help
+        Runs a 15-second constant 220 Hz pure-sine audit through the real RX/TX
+        transport while measuring pitch-worker cadence, FIFO backlog, pitch-mark
+        coherence, PSOLA activation, diagnostic queues, and safe teardown.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

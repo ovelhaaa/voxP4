@@ -23,6 +23,7 @@ enum class AudioI2sMode : uint8_t {
   LatencyPulse = 4,       // Latency test: Sharp impulse generation and roundtrip/echo timing
   SampleForensic = 5,     // Captures first 256 raw words from RX DMA for bit alignment audit
   SyntheticVoicedDsp = 6, // Stage B4B: Deterministic synthetic voiced harmonic tone -> Full DSP -> DAC (100% DMA active)
+  PitchWorkerLockAudit = 7, // Stage B4B.2: constant 220 Hz pure sine -> all DSP taps
 };
 
 enum class TxSignalType : uint8_t {
@@ -65,6 +66,18 @@ struct AudioTransportCounters {
   std::atomic<uint64_t> tx_dma_events{0};
   std::atomic<uint64_t> rx_overruns{0};
   std::atomic<uint64_t> tx_underruns{0};
+  std::atomic<uint64_t> rx_diagnostic_queue_overflows{0};
+  std::atomic<uint64_t> tx_diagnostic_queue_overflows{0};
+  std::atomic<uint64_t> actual_rx_dma_errors{0};
+  std::atomic<uint64_t> actual_tx_dma_errors{0};
+  std::atomic<uint64_t> i2s_read_failures{0};
+  std::atomic<uint64_t> i2s_write_failures{0};
+  std::atomic<uint64_t> i2s_read_successes{0};
+  std::atomic<uint64_t> i2s_write_successes{0};
+  std::atomic<uint64_t> rx_event_queue_depth{0};
+  std::atomic<uint64_t> tx_event_queue_depth{0};
+  std::atomic<uint64_t> rx_event_queue_max_depth{0};
+  std::atomic<uint64_t> tx_event_queue_max_depth{0};
   std::atomic<uint64_t> rx_dropped_frames{0};
   std::atomic<uint64_t> tx_dropped_frames{0};
   std::atomic<uint64_t> dma_errors{0};
@@ -82,6 +95,18 @@ struct AudioTransportCounters {
     tx_dma_events.store(0, std::memory_order_relaxed);
     rx_overruns.store(0, std::memory_order_relaxed);
     tx_underruns.store(0, std::memory_order_relaxed);
+    rx_diagnostic_queue_overflows.store(0, std::memory_order_relaxed);
+    tx_diagnostic_queue_overflows.store(0, std::memory_order_relaxed);
+    actual_rx_dma_errors.store(0, std::memory_order_relaxed);
+    actual_tx_dma_errors.store(0, std::memory_order_relaxed);
+    i2s_read_failures.store(0, std::memory_order_relaxed);
+    i2s_write_failures.store(0, std::memory_order_relaxed);
+    i2s_read_successes.store(0, std::memory_order_relaxed);
+    i2s_write_successes.store(0, std::memory_order_relaxed);
+    rx_event_queue_depth.store(0, std::memory_order_relaxed);
+    tx_event_queue_depth.store(0, std::memory_order_relaxed);
+    rx_event_queue_max_depth.store(0, std::memory_order_relaxed);
+    tx_event_queue_max_depth.store(0, std::memory_order_relaxed);
     rx_dropped_frames.store(0, std::memory_order_relaxed);
     tx_dropped_frames.store(0, std::memory_order_relaxed);
     dma_errors.store(0, std::memory_order_relaxed);
@@ -105,6 +130,11 @@ struct OutlierRecord {
   uint64_t wake_latency_us;
   uint64_t rx_gap_us;
   const char *category;
+  bool snapshot_active;
+  bool telemetry_formatting_active;
+  bool serial_printing_active;
+  bool pitch_worker_active;
+  bool diagnostic_queue_flush_active;
 };
 
 constexpr size_t kMaxOutlierRecords = 128;
@@ -166,6 +196,17 @@ struct SampleForensicData {
   bool captured = false;
 };
 
+struct SyntheticInputIdentityTelemetry {
+  uint64_t checks = 0;
+  uint64_t mismatches = 0;
+  float synthetic_rms = 0.0f;
+  float pitch_tap_rms = 0.0f;
+  float dsp_input_rms = 0.0f;
+  uint32_t synthetic_checksum = 0;
+  uint32_t pitch_tap_checksum = 0;
+  uint32_t dsp_input_checksum = 0;
+};
+
 // Audio Clock & PLL Verification structure
 struct AudioClockInfo {
   uint32_t requested_fs = 48000;
@@ -204,11 +245,13 @@ public:
 
   // Synthetic Voiced Source (Stage B4B)
   void generate_synthetic_voiced_mono(float *mono, size_t frames);
+  void generate_b4b2_pure_sine(float *mono, size_t frames);
   float current_synth_freq_hz() const { return current_synth_f0_; }
   bool is_current_synth_voiced() const { return current_synth_voiced_; }
   StimulusState current_stimulus_state() const { return current_stimulus_state_; }
   float current_stimulus_rms() const { return current_stimulus_rms_; }
   uint32_t current_block_checksum() const { return current_block_checksum_; }
+  SyntheticInputIdentityTelemetry synthetic_input_identity() const;
   typedef void (*SyntheticBlockHook)(uint64_t sample_in_cycle, float f0, void *user_data);
   void set_synthetic_block_hook(SyntheticBlockHook hook, void *user_data) {
     synth_hook_ = hook;
@@ -217,7 +260,9 @@ public:
 
   // Transport Error Event Logging (Req 3)
   void record_transport_error(const char *type, uint64_t block_idx, uint64_t dsp_us, uint64_t rx_gap, uint64_t tx_gap, uint64_t wake_us);
-  size_t transport_error_count() const { return transport_error_count_; }
+  size_t transport_error_count() const {
+    return transport_error_count_.load(std::memory_order_relaxed);
+  }
   const TransportErrorEvent &transport_error(size_t index) const { return transport_errors_[index % kMaxTransportErrorEvents]; }
   void print_transport_errors() const;
 
@@ -280,6 +325,21 @@ public:
   static bool detect_channel_swap(const float *l, const float *r, size_t count,
                                  float expected_freq_l, float expected_freq_r, float sample_rate);
 
+  void set_diagnostic_activity(bool snapshot, bool formatting,
+                               bool serial_printing, bool queue_flush) {
+    snapshot_active_.store(snapshot, std::memory_order_relaxed);
+    telemetry_formatting_active_.store(formatting, std::memory_order_relaxed);
+    serial_printing_active_.store(serial_printing, std::memory_order_relaxed);
+    diagnostic_queue_flush_active_.store(queue_flush,
+                                         std::memory_order_relaxed);
+  }
+  void set_pitch_worker_active(bool active) {
+    pitch_worker_active_.store(active, std::memory_order_relaxed);
+  }
+  bool callbacks_enabled() const {
+    return callbacks_enabled_.load(std::memory_order_acquire);
+  }
+
 private:
   AudioI2sConfig config_{};
   AudioClockInfo clock_info_{};
@@ -315,13 +375,24 @@ private:
   StimulusState current_stimulus_state_ = StimulusState::Silence;
   float current_stimulus_rms_ = 0.0f;
   uint32_t current_block_checksum_ = 0;
+  std::atomic<uint64_t> identity_checks_{0}, identity_mismatches_{0};
+  std::atomic<uint64_t> identity_sequence_seen_{0};
+  std::atomic<uint32_t> identity_synth_rms_bits_{0},
+      identity_pitch_rms_bits_{0}, identity_dsp_rms_bits_{0};
+  std::atomic<uint32_t> identity_synth_checksum_{0},
+      identity_pitch_checksum_{0}, identity_dsp_checksum_{0};
   uint64_t last_sample_in_cycle_ = 0;
   SyntheticBlockHook synth_hook_ = nullptr;
   void *synth_hook_user_data_ = nullptr;
 
   // Transport error event ring buffer (Req 3)
   TransportErrorEvent transport_errors_[kMaxTransportErrorEvents]{};
-  size_t transport_error_count_ = 0;
+  std::atomic<size_t> transport_error_count_{0};
+
+  std::atomic<bool> snapshot_active_{false},
+      telemetry_formatting_active_{false}, serial_printing_active_{false},
+      pitch_worker_active_{false}, diagnostic_queue_flush_active_{false};
+  std::atomic<bool> callbacks_enabled_{false};
 
   // Output level tracking
   float out_peak_l_ = 0.0f;

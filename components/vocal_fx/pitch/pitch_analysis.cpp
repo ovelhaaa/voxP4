@@ -1,6 +1,7 @@
 #include "pitch_analysis.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace {
 constexpr float kReferenceHz = 440.0f;
@@ -63,14 +64,52 @@ void PitchAnalysis::reset() {
   previous_mark_ = 0;
   coherent_marks_ = mark_failures_ = coasting_hops_ = 0;
   mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked));
+  audit_input_position_.store(0, std::memory_order_relaxed);
+  audit_analysis_position_.store(0, std::memory_order_relaxed);
+  audit_published_timestamp_.store(0, std::memory_order_relaxed);
+  audit_backlog_max_samples_.store(0, std::memory_order_relaxed);
+  pitch_age_sum_samples_.store(0, std::memory_order_relaxed);
+  pitch_age_observations_.store(0, std::memory_order_relaxed);
+  pitch_age_max_samples_.store(0, std::memory_order_relaxed);
+  for (auto &bin : pitch_age_histogram_)
+    bin.store(0, std::memory_order_relaxed);
+  coherent_marks_audit_.store(0, std::memory_order_relaxed);
+  coherent_marks_maximum_.store(0, std::memory_order_relaxed);
+  mark_failures_audit_.store(0, std::memory_order_relaxed);
+  mark_failures_maximum_.store(0, std::memory_order_relaxed);
+  coherent_mark_increments_.store(0, std::memory_order_relaxed);
+  coherent_mark_resets_.store(0, std::memory_order_relaxed);
+  for (auto &reason : mark_reset_reasons_)
+    reason.store(0, std::memory_order_relaxed);
+  correlation_sum_micros_.store(0, std::memory_order_relaxed);
+  correlation_min_micros_.store(2000000, std::memory_order_relaxed);
+  correlation_max_micros_.store(-2000000, std::memory_order_relaxed);
+  correlation_observations_.store(0, std::memory_order_relaxed);
+  accepted_marks_.store(0, std::memory_order_relaxed);
+  rejected_marks_.store(0, std::memory_order_relaxed);
+  audit_event_head_.store(0, std::memory_order_relaxed);
+  audit_event_tail_.store(0, std::memory_order_relaxed);
+  audit_event_drops_.store(0, std::memory_order_relaxed);
+  first_locked_input_position_.store(0, std::memory_order_relaxed);
+  tap_identity_sequence_.store(0, std::memory_order_relaxed);
+  tap_rms_bits_.store(0, std::memory_order_relaxed);
+  tap_checksum_.store(0, std::memory_order_relaxed);
   publish({});
 }
-void PitchAnalysis::tap(const float *samples, size_t n) {
+void PitchAnalysis::tap(const float *samples, size_t n, bool audit_identity) {
   if (!samples)
     return;
   VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::Decimator));
+  double audit_sum_sq = 0.0;
+  uint32_t audit_hash = 2166136261U;
   for (size_t i = 0; i < n; ++i) {
     const float x = std::isfinite(samples[i]) ? samples[i] : 0;
+    if (audit_identity) {
+      uint32_t bits = 0;
+      std::memcpy(&bits, &x, sizeof(bits));
+      audit_hash = (audit_hash ^ bits) * 16777619U;
+      audit_sum_sq += static_cast<double>(x) * static_cast<double>(x);
+    }
     audio_[input_position_ % kAudioHistory] = x;
     float y;
     if (decimator_.process(x, y))
@@ -78,6 +117,26 @@ void PitchAnalysis::tap(const float *samples, size_t n) {
     ++input_position_;
   }
   publish_audio_end(input_position_);
+  audit_input_position_.store(input_position_, std::memory_order_release);
+  const uint64_t analysis_position =
+      audit_analysis_position_.load(std::memory_order_acquire);
+  const uint64_t backlog =
+      input_position_ > analysis_position ? input_position_ - analysis_position
+                                          : 0;
+  uint64_t backlog_maximum =
+      audit_backlog_max_samples_.load(std::memory_order_relaxed);
+  while (backlog > backlog_maximum &&
+         !audit_backlog_max_samples_.compare_exchange_weak(
+             backlog_maximum, backlog, std::memory_order_relaxed)) {
+  }
+  if (audit_identity) {
+    const float rms = n ? static_cast<float>(std::sqrt(audit_sum_sq / n)) : 0.0f;
+    uint32_t rms_bits = 0;
+    std::memcpy(&rms_bits, &rms, sizeof(rms_bits));
+    tap_rms_bits_.store(rms_bits, std::memory_order_relaxed);
+    tap_checksum_.store(audit_hash, std::memory_order_relaxed);
+    tap_identity_sequence_.fetch_add(1, std::memory_order_release);
+  }
   VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Decimator), 0);
 }
 float PitchAnalysis::median_history() const {
@@ -103,6 +162,8 @@ size_t PitchAnalysis::run(size_t max_hops) {
     rolling_write_ = (rolling_write_ + 1) % config_.window_size;
     rolling_count_ = std::min<size_t>(rolling_count_ + 1, config_.window_size);
     latest_analysis_position_ = sample.input_position;
+    audit_analysis_position_.store(latest_analysis_position_,
+                                   std::memory_order_release);
     if (rolling_count_ < config_.window_size || ++since_hop_ < config_.hop_size)
       continue;
     since_hop_ = 0;
@@ -246,6 +307,7 @@ size_t PitchAnalysis::run(size_t max_hops) {
                    0);
     VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchSmoother));
     PitchResult result{};
+    result.raw_frequency_hz = measurement.frequency_hz;
     result.confidence = measurement.confidence;
     result.voiced = voiced_;
     result.voiced_raw = voiced_raw_;
@@ -336,6 +398,13 @@ size_t PitchAnalysis::run(size_t max_hops) {
     result.coast_remaining = (track_st == static_cast<uint8_t>(PitchTrackState::Coasting))
                                  ? (max_c_hops > coasting_hops_ ? max_c_hops - coasting_hops_ : 0)
                                  : (track_st == static_cast<uint8_t>(PitchTrackState::Locked) ? max_c_hops : 0);
+    audit_published_timestamp_.store(result.analysis_timestamp_samples,
+                                     std::memory_order_release);
+    const uint64_t input_position =
+        audit_input_position_.load(std::memory_order_acquire);
+    record_pitch_age(input_position > result.analysis_timestamp_samples
+                         ? input_position - result.analysis_timestamp_samples
+                         : 0);
     publish(result);
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Total),
                    static_cast<uint64_t>(1000000.0 * config_.hop_size /
@@ -408,6 +477,137 @@ void PitchAnalysis::add_mark(PitchMark mark) {
   extern void vocal_fx_funnel_inc_pitch_marks_generated(uint64_t count);
   vocal_fx_funnel_inc_pitch_marks_generated(1);
 }
+void PitchAnalysis::record_pitch_age(uint64_t samples) {
+  pitch_age_sum_samples_.fetch_add(samples, std::memory_order_relaxed);
+  pitch_age_observations_.fetch_add(1, std::memory_order_relaxed);
+  uint64_t maximum = pitch_age_max_samples_.load(std::memory_order_relaxed);
+  while (samples > maximum &&
+         !pitch_age_max_samples_.compare_exchange_weak(
+             maximum, samples, std::memory_order_relaxed)) {
+  }
+  const size_t bin = std::min<size_t>(
+      samples / kPitchAgeBinSamples, kPitchAgeHistogramBins - 1);
+  pitch_age_histogram_[bin].fetch_add(1, std::memory_order_relaxed);
+}
+void PitchAnalysis::record_correlation(float best, bool accepted) {
+  const int32_t micros = static_cast<int32_t>(std::lround(best * 1000000.0f));
+  correlation_sum_micros_.fetch_add(micros, std::memory_order_relaxed);
+  correlation_observations_.fetch_add(1, std::memory_order_relaxed);
+  int32_t minimum = correlation_min_micros_.load(std::memory_order_relaxed);
+  while (micros < minimum &&
+         !correlation_min_micros_.compare_exchange_weak(
+             minimum, micros, std::memory_order_relaxed)) {
+  }
+  int32_t maximum = correlation_max_micros_.load(std::memory_order_relaxed);
+  while (micros > maximum &&
+         !correlation_max_micros_.compare_exchange_weak(
+             maximum, micros, std::memory_order_relaxed)) {
+  }
+  (accepted ? accepted_marks_ : rejected_marks_)
+      .fetch_add(1, std::memory_order_relaxed);
+}
+void PitchAnalysis::record_mark_event(PitchAuditEventType type,
+                                      const PitchResult &pitch,
+                                      PitchMarkResetReason reason,
+                                      uint64_t predicted, int best_offset,
+                                      float best_correlation) {
+  const uint32_t head = audit_event_head_.load(std::memory_order_relaxed);
+  const uint32_t next = (head + 1U) % kAuditEventCapacity;
+  if (next == audit_event_tail_.load(std::memory_order_acquire)) {
+    audit_event_drops_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  PitchAuditEvent event{};
+  event.input_position = audit_input_position_.load(std::memory_order_acquire);
+  event.analysis_position =
+      audit_analysis_position_.load(std::memory_order_acquire);
+  event.published_timestamp = pitch.analysis_timestamp_samples;
+  event.predicted_position = predicted;
+  event.backlog_samples = static_cast<uint32_t>(std::min<uint64_t>(
+      event.input_position > event.analysis_position
+          ? event.input_position - event.analysis_position
+          : 0,
+      UINT32_MAX));
+  event.pitch_age_samples = static_cast<uint32_t>(std::min<uint64_t>(
+      event.input_position > event.published_timestamp
+          ? event.input_position - event.published_timestamp
+          : 0,
+      UINT32_MAX));
+  event.detected_f0_hz = pitch.frequency_hz;
+  event.confidence = pitch.confidence;
+  event.period_samples = pitch.period_samples;
+  event.best_correlation = best_correlation;
+  event.best_offset = static_cast<int16_t>(best_offset);
+  event.coherent_marks = coherent_marks_;
+  event.mark_failures = mark_failures_;
+  event.old_state = static_cast<PitchTrackState>(
+      mark_state_.load(std::memory_order_relaxed));
+  event.new_state = event.old_state;
+  event.type = type;
+  event.reason = reason;
+  audit_events_[head] = event;
+  audit_event_head_.store(next, std::memory_order_release);
+}
+void PitchAnalysis::set_track_state(PitchTrackState next,
+                                    const PitchResult &pitch,
+                                    PitchMarkResetReason reason) {
+  const auto previous = static_cast<PitchTrackState>(
+      mark_state_.load(std::memory_order_relaxed));
+  if (previous == next)
+    return;
+  const uint32_t head = audit_event_head_.load(std::memory_order_relaxed);
+  const uint32_t following = (head + 1U) % kAuditEventCapacity;
+  if (following != audit_event_tail_.load(std::memory_order_acquire)) {
+    PitchAuditEvent event{};
+    event.input_position = audit_input_position_.load(std::memory_order_acquire);
+    event.analysis_position =
+        audit_analysis_position_.load(std::memory_order_acquire);
+    event.published_timestamp = pitch.analysis_timestamp_samples;
+    event.backlog_samples = static_cast<uint32_t>(std::min<uint64_t>(
+        event.input_position > event.analysis_position
+            ? event.input_position - event.analysis_position
+            : 0,
+        UINT32_MAX));
+    event.pitch_age_samples = static_cast<uint32_t>(std::min<uint64_t>(
+        event.input_position > event.published_timestamp
+            ? event.input_position - event.published_timestamp
+            : 0,
+        UINT32_MAX));
+    event.detected_f0_hz = pitch.frequency_hz;
+    event.confidence = pitch.confidence;
+    event.period_samples = pitch.period_samples;
+    event.coherent_marks = coherent_marks_;
+    event.mark_failures = mark_failures_;
+    event.old_state = previous;
+    event.new_state = next;
+    event.type = PitchAuditEventType::TrackTransition;
+    event.reason = reason;
+    audit_events_[head] = event;
+    audit_event_head_.store(following, std::memory_order_release);
+  } else {
+    audit_event_drops_.fetch_add(1, std::memory_order_relaxed);
+  }
+  mark_state_.store(static_cast<uint8_t>(next), std::memory_order_release);
+  if (next == PitchTrackState::Locked) {
+    uint64_t expected = 0;
+    const uint64_t position =
+        audit_input_position_.load(std::memory_order_relaxed);
+    first_locked_input_position_.compare_exchange_strong(
+        expected, position, std::memory_order_relaxed);
+  }
+}
+void PitchAnalysis::record_mark_reset(const PitchResult &pitch,
+                                      PitchMarkResetReason reason) {
+  if (coherent_marks_ == 0 && mark_failures_ == 0)
+    return;
+  coherent_mark_resets_.fetch_add(1, std::memory_order_relaxed);
+  const size_t reason_index = static_cast<size_t>(reason);
+  if (reason_index < mark_reset_reasons_.size())
+    mark_reset_reasons_[reason_index].fetch_add(1,
+                                                std::memory_order_relaxed);
+  if (coherent_mark_resets_.load(std::memory_order_relaxed) <= 8)
+    record_mark_event(PitchAuditEventType::CoherentMarkReset, pitch, reason);
+}
 void PitchAnalysis::update_marks(const PitchResult &p) {
   VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch));
   const uint8_t cur_state = mark_state_.load(std::memory_order_relaxed);
@@ -428,8 +628,8 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
   if (should_unvoice) {
     if (can_coast && coasting_hops_ < max_coast_hops) {
       ++coasting_hops_;
-      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Coasting),
-                        std::memory_order_release);
+      set_track_state(PitchTrackState::Coasting, p,
+                      PitchMarkResetReason::VoicedLost);
       const uint64_t boundary = p.analysis_timestamp_samples;
       const size_t period = static_cast<size_t>(std::lround(p.period_samples));
       if (previous_mark_ > 0 && period >= 24 && period <= 800) {
@@ -439,11 +639,14 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
         }
       }
     } else {
+      record_mark_reset(p, PitchMarkResetReason::VoicedLost);
       previous_mark_ = 0;
       coherent_marks_ = 0;
       coasting_hops_ = 0;
-      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
-                        std::memory_order_release);
+      coherent_marks_audit_.store(0, std::memory_order_relaxed);
+      mark_failures_audit_.store(0, std::memory_order_relaxed);
+      set_track_state(PitchTrackState::Unlocked, p,
+                      PitchMarkResetReason::VoicedLost);
     }
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
                    0);
@@ -462,16 +665,27 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
     previous_mark_ = boundary;
     add_mark({previous_mark_, p.confidence * .5f});
     coherent_marks_ = 1;
-    mark_state_.store(static_cast<uint8_t>(PitchTrackState::Acquiring),
-                      std::memory_order_release);
+    coherent_marks_audit_.store(1, std::memory_order_relaxed);
+    coherent_marks_maximum_.store(
+        std::max<uint8_t>(coherent_marks_maximum_.load(std::memory_order_relaxed),
+                          1),
+        std::memory_order_relaxed);
+    coherent_mark_increments_.fetch_add(1, std::memory_order_relaxed);
+    record_mark_event(PitchAuditEventType::CoherentMarkIncrement, p,
+                      PitchMarkResetReason::None);
+    set_track_state(PitchTrackState::Acquiring, p);
   } else {
     if (previous_mark_ + period + kAudioHistory <= available) {
+      record_mark_reset(p, PitchMarkResetReason::MarkTimeout);
       previous_mark_ = boundary;
       coherent_marks_ = 1;
       mark_failures_ = 0;
+      coherent_marks_audit_.store(1, std::memory_order_relaxed);
+      mark_failures_audit_.store(0, std::memory_order_relaxed);
+      coherent_mark_increments_.fetch_add(1, std::memory_order_relaxed);
       add_mark({previous_mark_, p.confidence * .5f});
-      mark_state_.store(static_cast<uint8_t>(PitchTrackState::Acquiring),
-                        std::memory_order_release);
+      set_track_state(PitchTrackState::Acquiring, p,
+                      PitchMarkResetReason::MarkTimeout);
     }
   }
   const int radius = std::max<int>(2, period / 5),
@@ -503,6 +717,7 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
         }
       }
       if (best > .35f) {
+        record_correlation(best, true);
         previous_mark_ = static_cast<uint64_t>(static_cast<int64_t>(predicted) +
                                                best_offset);
         const float distance =
@@ -513,23 +728,58 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
                              0.0f, 1.0f)});
         coherent_marks_ =
             static_cast<uint8_t>(std::min<int>(255, coherent_marks_ + 1));
+        coherent_marks_audit_.store(coherent_marks_, std::memory_order_relaxed);
+        uint8_t coherent_maximum =
+            coherent_marks_maximum_.load(std::memory_order_relaxed);
+        while (coherent_marks_ > coherent_maximum &&
+               !coherent_marks_maximum_.compare_exchange_weak(
+                   coherent_maximum, coherent_marks_,
+                   std::memory_order_relaxed)) {
+        }
+        coherent_mark_increments_.fetch_add(1, std::memory_order_relaxed);
+        if (coherent_marks_ <= 4)
+          record_mark_event(PitchAuditEventType::CoherentMarkIncrement, p,
+                            PitchMarkResetReason::None, predicted,
+                            best_offset, best);
         mark_failures_ = 0;
+        mark_failures_audit_.store(0, std::memory_order_relaxed);
         if (coherent_marks_ >= 3)
-          mark_state_.store(static_cast<uint8_t>(PitchTrackState::Locked),
-                            std::memory_order_release);
+          set_track_state(PitchTrackState::Locked, p);
       } else {
+        record_correlation(best, false);
+        if (rejected_marks_.load(std::memory_order_relaxed) <= 8)
+          record_mark_event(PitchAuditEventType::CorrelationReject, p,
+                            PitchMarkResetReason::CorrelationBelowThreshold,
+                            predicted, best_offset, best);
         if (++mark_failures_ >= 3) {
+          mark_failures_audit_.store(mark_failures_,
+                                     std::memory_order_relaxed);
+          uint8_t failure_maximum =
+              mark_failures_maximum_.load(std::memory_order_relaxed);
+          while (mark_failures_ > failure_maximum &&
+                 !mark_failures_maximum_.compare_exchange_weak(
+                     failure_maximum, mark_failures_,
+                     std::memory_order_relaxed)) {
+          }
           if (can_coast && coasting_hops_ < max_coast_hops) {
             ++coasting_hops_;
-            mark_state_.store(static_cast<uint8_t>(PitchTrackState::Coasting),
-                              std::memory_order_release);
+            set_track_state(PitchTrackState::Coasting, p,
+                            PitchMarkResetReason::CorrelationBelowThreshold);
           } else {
+            record_mark_reset(
+                p, PitchMarkResetReason::CorrelationBelowThreshold);
             previous_mark_ = 0;
             coherent_marks_ = mark_failures_ = 0;
             coasting_hops_ = 0;
-            mark_state_.store(static_cast<uint8_t>(PitchTrackState::Unlocked),
-                              std::memory_order_release);
+            coherent_marks_audit_.store(0, std::memory_order_relaxed);
+            mark_failures_audit_.store(0, std::memory_order_relaxed);
+            set_track_state(
+                PitchTrackState::Unlocked, p,
+                PitchMarkResetReason::CorrelationBelowThreshold);
           }
+        } else {
+          mark_failures_audit_.store(mark_failures_,
+                                     std::memory_order_relaxed);
         }
         break;
       }
@@ -649,6 +899,138 @@ bool PitchAnalysis::try_marks(uint64_t start, uint64_t end, PitchMark *out,
 PitchTrackState PitchAnalysis::track_state() const {
   return static_cast<PitchTrackState>(
       mark_state_.load(std::memory_order_acquire));
+}
+PitchAnalysisAuditTelemetry PitchAnalysis::audit_telemetry() const {
+  PitchAnalysisAuditTelemetry result{};
+  result.audio_input_position =
+      audit_input_position_.load(std::memory_order_acquire);
+  result.latest_analysis_position =
+      audit_analysis_position_.load(std::memory_order_acquire);
+  result.published_analysis_timestamp =
+      audit_published_timestamp_.load(std::memory_order_acquire);
+  result.algorithmic_latency_samples = latency_samples_;
+  result.analysis_backlog_samples =
+      result.audio_input_position > result.latest_analysis_position
+          ? result.audio_input_position - result.latest_analysis_position
+          : 0;
+  result.analysis_backlog_ms = static_cast<float>(
+      1000.0 * result.analysis_backlog_samples / config_.input_sample_rate);
+  result.analysis_backlog_max_samples =
+      audit_backlog_max_samples_.load(std::memory_order_relaxed);
+  result.analysis_backlog_max_ms = static_cast<float>(
+      1000.0 * result.analysis_backlog_max_samples /
+      config_.input_sample_rate);
+  const uint64_t latest_age_samples =
+      result.audio_input_position > result.published_analysis_timestamp
+          ? result.audio_input_position - result.published_analysis_timestamp
+          : 0;
+  result.latest_pitch_age_ms = static_cast<float>(
+      1000.0 * latest_age_samples / config_.input_sample_rate);
+  const uint64_t age_observations =
+      pitch_age_observations_.load(std::memory_order_relaxed);
+  if (age_observations) {
+    result.pitch_age_average_ms = static_cast<float>(
+        1000.0 * pitch_age_sum_samples_.load(std::memory_order_relaxed) /
+        (config_.input_sample_rate * age_observations));
+    const uint64_t p95_target = (age_observations * 95U + 99U) / 100U;
+    const uint64_t p99_target = (age_observations * 99U + 99U) / 100U;
+    uint64_t cumulative = 0;
+    for (size_t i = 0; i < pitch_age_histogram_.size(); ++i) {
+      cumulative += pitch_age_histogram_[i].load(std::memory_order_relaxed);
+      const float upper_ms = static_cast<float>(
+          1000.0 * (i + 1) * kPitchAgeBinSamples /
+          config_.input_sample_rate);
+      if (result.pitch_age_p95_ms == 0.0f && cumulative >= p95_target)
+        result.pitch_age_p95_ms = upper_ms;
+      if (result.pitch_age_p99_ms == 0.0f && cumulative >= p99_target) {
+        result.pitch_age_p99_ms = upper_ms;
+        break;
+      }
+    }
+  }
+  result.pitch_age_max_ms = static_cast<float>(
+      1000.0 * pitch_age_max_samples_.load(std::memory_order_relaxed) /
+      config_.input_sample_rate);
+  result.fifo_pushes = fifo_.pushes();
+  result.fifo_pops = fifo_.pops();
+  result.fifo_drops = fifo_.dropped();
+  result.fifo_overflow_attempts = fifo_.overflow_attempts();
+  result.fifo_current_occupancy = fifo_.occupancy();
+  result.fifo_maximum_occupancy = fifo_.maximum_occupancy();
+  result.fifo_average_occupancy =
+      static_cast<float>(fifo_.average_occupancy());
+  result.coherent_marks =
+      coherent_marks_audit_.load(std::memory_order_relaxed);
+  result.coherent_marks_maximum =
+      coherent_marks_maximum_.load(std::memory_order_relaxed);
+  result.mark_failures = mark_failures_audit_.load(std::memory_order_relaxed);
+  result.mark_failures_maximum =
+      mark_failures_maximum_.load(std::memory_order_relaxed);
+  result.coherent_mark_increments =
+      coherent_mark_increments_.load(std::memory_order_relaxed);
+  result.coherent_mark_resets =
+      coherent_mark_resets_.load(std::memory_order_relaxed);
+  result.reset_correlation_below_threshold =
+      mark_reset_reasons_[static_cast<size_t>(
+          PitchMarkResetReason::CorrelationBelowThreshold)]
+          .load(std::memory_order_relaxed);
+  result.reset_period_invalid =
+      mark_reset_reasons_[static_cast<size_t>(
+          PitchMarkResetReason::PeriodInvalid)]
+          .load(std::memory_order_relaxed);
+  result.reset_voiced_lost =
+      mark_reset_reasons_[static_cast<size_t>(PitchMarkResetReason::VoicedLost)]
+          .load(std::memory_order_relaxed);
+  result.reset_analysis =
+      mark_reset_reasons_[static_cast<size_t>(PitchMarkResetReason::AnalysisReset)]
+          .load(std::memory_order_relaxed);
+  result.reset_mark_timeout =
+      mark_reset_reasons_[static_cast<size_t>(PitchMarkResetReason::MarkTimeout)]
+          .load(std::memory_order_relaxed);
+  result.reset_other =
+      mark_reset_reasons_[static_cast<size_t>(PitchMarkResetReason::Other)]
+          .load(std::memory_order_relaxed);
+  const uint64_t correlation_count =
+      correlation_observations_.load(std::memory_order_relaxed);
+  if (correlation_count) {
+    result.best_correlation_average = static_cast<float>(
+        static_cast<double>(correlation_sum_micros_.load(
+            std::memory_order_relaxed)) /
+        (1000000.0 * correlation_count));
+    result.best_correlation_minimum =
+        correlation_min_micros_.load(std::memory_order_relaxed) / 1000000.0f;
+    result.best_correlation_maximum =
+        correlation_max_micros_.load(std::memory_order_relaxed) / 1000000.0f;
+  }
+  result.accepted_marks = accepted_marks_.load(std::memory_order_relaxed);
+  result.rejected_marks = rejected_marks_.load(std::memory_order_relaxed);
+  result.audit_event_drops =
+      audit_event_drops_.load(std::memory_order_relaxed);
+  result.first_locked_input_position =
+      first_locked_input_position_.load(std::memory_order_relaxed);
+  return result;
+}
+size_t PitchAnalysis::read_audit_events(PitchAuditEvent *destination,
+                                        size_t capacity) {
+  if (!destination || capacity == 0)
+    return 0;
+  size_t count = 0;
+  uint32_t tail = audit_event_tail_.load(std::memory_order_relaxed);
+  const uint32_t head = audit_event_head_.load(std::memory_order_acquire);
+  while (tail != head && count < capacity) {
+    destination[count++] = audit_events_[tail];
+    tail = (tail + 1U) % kAuditEventCapacity;
+  }
+  audit_event_tail_.store(tail, std::memory_order_release);
+  return count;
+}
+VocalFxInputIdentity PitchAnalysis::tap_identity() const {
+  VocalFxInputIdentity result{};
+  result.sequence = tap_identity_sequence_.load(std::memory_order_acquire);
+  uint32_t rms_bits = tap_rms_bits_.load(std::memory_order_relaxed);
+  std::memcpy(&result.pitch_tap_rms, &rms_bits, sizeof(rms_bits));
+  result.pitch_tap_checksum = tap_checksum_.load(std::memory_order_relaxed);
+  return result;
 }
 ProfileStats PitchAnalysis::profile(PitchAnalysisProfileSection s) const {
   if (s >= PitchAnalysisProfileSection::Count)

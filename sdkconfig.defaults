@@ -2,7 +2,9 @@
 CONFIG_IDF_TARGET="esp32p4"
 CONFIG_IDF_TARGET_ESP32P4=y
 
-# PSRAM Configuration for ESP32-P4 (32MB HEX PSRAM @ 200MHz)
+# PSRAM configuration for ESP32-P4. The current hardware boot reports
+# a 32 MB HEX device running at 20 MHz; do not infer runtime speed from this
+# requested build option.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_USE_MALLOC=y
@@ -17,7 +19,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # Profiling and Operation Mode
 CONFIG_VOCAL_FX_ENABLE_PROFILING=y
-CONFIG_VOXP4_MODE_I2S_B4B_SYNTHETIC_VOICED=y
+CONFIG_VOXP4_MODE_I2S_B4B_2_PITCH_WORKER_LOCK_AUDIT=y
 
 # Normal Task Watchdog configuration (retained)
 CONFIG_ESP_TASK_WDT_INIT=y

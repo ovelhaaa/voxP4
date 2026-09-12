@@ -396,6 +396,93 @@ struct PitchMark {
 
 enum class PitchTrackState : uint8_t { Unlocked, Acquiring, Locked, Coasting };
 
+enum class PitchAuditEventType : uint8_t {
+  TrackTransition,
+  CoherentMarkIncrement,
+  CoherentMarkReset,
+  CorrelationReject,
+};
+
+enum class PitchMarkResetReason : uint8_t {
+  None,
+  CorrelationBelowThreshold,
+  PeriodInvalid,
+  VoicedLost,
+  AnalysisReset,
+  MarkTimeout,
+  Other,
+};
+
+struct PitchAuditEvent {
+  uint64_t input_position = 0;
+  uint64_t analysis_position = 0;
+  uint64_t published_timestamp = 0;
+  uint64_t predicted_position = 0;
+  uint32_t backlog_samples = 0;
+  uint32_t pitch_age_samples = 0;
+  float detected_f0_hz = 0.0f;
+  float confidence = 0.0f;
+  float period_samples = 0.0f;
+  float best_correlation = 0.0f;
+  int16_t best_offset = 0;
+  uint8_t coherent_marks = 0;
+  uint8_t mark_failures = 0;
+  PitchTrackState old_state = PitchTrackState::Unlocked;
+  PitchTrackState new_state = PitchTrackState::Unlocked;
+  PitchAuditEventType type = PitchAuditEventType::TrackTransition;
+  PitchMarkResetReason reason = PitchMarkResetReason::None;
+};
+
+struct PitchAnalysisAuditTelemetry {
+  uint64_t audio_input_position = 0;
+  uint64_t latest_analysis_position = 0;
+  uint64_t published_analysis_timestamp = 0;
+  uint64_t algorithmic_latency_samples = 0;
+  uint64_t analysis_backlog_samples = 0;
+  uint64_t analysis_backlog_max_samples = 0;
+  float analysis_backlog_ms = 0.0f;
+  float analysis_backlog_max_ms = 0.0f;
+  float latest_pitch_age_ms = 0.0f;
+  float pitch_age_average_ms = 0.0f;
+  float pitch_age_p95_ms = 0.0f;
+  float pitch_age_p99_ms = 0.0f;
+  float pitch_age_max_ms = 0.0f;
+  uint64_t fifo_pushes = 0;
+  uint64_t fifo_pops = 0;
+  uint64_t fifo_drops = 0;
+  uint64_t fifo_overflow_attempts = 0;
+  uint32_t fifo_current_occupancy = 0;
+  uint32_t fifo_maximum_occupancy = 0;
+  float fifo_average_occupancy = 0.0f;
+  uint8_t coherent_marks = 0;
+  uint8_t coherent_marks_maximum = 0;
+  uint8_t mark_failures = 0;
+  uint8_t mark_failures_maximum = 0;
+  uint64_t coherent_mark_increments = 0;
+  uint64_t coherent_mark_resets = 0;
+  uint64_t reset_correlation_below_threshold = 0;
+  uint64_t reset_period_invalid = 0;
+  uint64_t reset_voiced_lost = 0;
+  uint64_t reset_analysis = 0;
+  uint64_t reset_mark_timeout = 0;
+  uint64_t reset_other = 0;
+  float best_correlation_average = 0.0f;
+  float best_correlation_minimum = 0.0f;
+  float best_correlation_maximum = 0.0f;
+  uint64_t accepted_marks = 0;
+  uint64_t rejected_marks = 0;
+  uint64_t audit_event_drops = 0;
+  uint64_t first_locked_input_position = 0;
+};
+
+struct VocalFxInputIdentity {
+  uint64_t sequence = 0;
+  float dsp_input_rms = 0.0f;
+  float pitch_tap_rms = 0.0f;
+  uint32_t dsp_input_checksum = 0;
+  uint32_t pitch_tap_checksum = 0;
+};
+
 struct PitchAnalysisDebug {
   uint64_t previous_mark = 0;
   uint64_t predicted_mark = 0;

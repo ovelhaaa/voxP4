@@ -18,6 +18,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#ifndef ESP_PLATFORM
+#include <chrono>
+#endif
 #ifdef ESP_PLATFORM
 #include "esp_memory_utils.h"
 #include "esp_timer.h"
@@ -73,7 +76,7 @@ ParameterQueue<64> parameter_queue;
 struct PitchMailbox {
   std::atomic_flag publisher_lock = ATOMIC_FLAG_INIT;
   std::atomic<uint32_t> seq{0};
-  std::atomic<float> hz{0}, confidence{0};
+  std::atomic<float> hz{0}, raw_hz{0}, confidence{0};
   std::atomic<float> period{0};
   std::atomic<bool> voiced{false};
   std::atomic<bool> onset{false}, changed{false};
@@ -83,8 +86,17 @@ struct PitchMailbox {
   std::atomic<float> input_rms{0.0f}, input_peak{0.0f};
   std::atomic<float> spectral_centroid{0.0f}, high_frequency_ratio{0.0f}, zero_crossing_rate{0.0f};
   std::atomic<uint8_t> pitch_track_state{0};
+  std::atomic<uint8_t> coherent_marks{0};
   std::atomic<uint32_t> coast_remaining{0};
 } pitch;
+
+struct AtomicInputIdentity {
+  std::atomic<uint32_t> seq{0};
+  std::atomic<uint64_t> sequence{0};
+  std::atomic<uint32_t> dsp_rms_bits{0}, pitch_rms_bits{0};
+  std::atomic<uint32_t> dsp_checksum{0}, pitch_checksum{0};
+  uint64_t block_counter = 0; // audio-task owned
+} input_identity;
 
 } // namespace
 
@@ -288,7 +300,40 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::PitchLpcTap);
     if (e.cfg.enable_pitch_analysis && enter_pitch_path()) {
-      e.pitch_analysis.tap(in, n);
+      const bool audit_identity = ((++input_identity.block_counter & 63U) == 0);
+      float dsp_input_rms = 0.0f;
+      uint32_t dsp_checksum = 2166136261U;
+      if (audit_identity) {
+        double sum_sq = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+          const float sample = std::isfinite(in[i]) ? in[i] : 0.0f;
+          uint32_t bits = 0;
+          std::memcpy(&bits, &sample, sizeof(bits));
+          dsp_checksum = (dsp_checksum ^ bits) * 16777619U;
+          sum_sq += static_cast<double>(sample) * sample;
+        }
+        dsp_input_rms =
+            n ? static_cast<float>(std::sqrt(sum_sq / n)) : 0.0f;
+      }
+      e.pitch_analysis.tap(in, n, audit_identity);
+      if (audit_identity) {
+        const VocalFxInputIdentity tap = e.pitch_analysis.tap_identity();
+        uint32_t dsp_rms_bits = 0, pitch_rms_bits = 0;
+        std::memcpy(&dsp_rms_bits, &dsp_input_rms, sizeof(dsp_rms_bits));
+        std::memcpy(&pitch_rms_bits, &tap.pitch_tap_rms,
+                    sizeof(pitch_rms_bits));
+        input_identity.seq.fetch_add(1, std::memory_order_acq_rel);
+        input_identity.sequence.fetch_add(1, std::memory_order_relaxed);
+        input_identity.dsp_rms_bits.store(dsp_rms_bits,
+                                          std::memory_order_relaxed);
+        input_identity.pitch_rms_bits.store(pitch_rms_bits,
+                                            std::memory_order_relaxed);
+        input_identity.dsp_checksum.store(dsp_checksum,
+                                          std::memory_order_relaxed);
+        input_identity.pitch_checksum.store(tap.pitch_tap_checksum,
+                                            std::memory_order_relaxed);
+        input_identity.seq.fetch_add(1, std::memory_order_release);
+      }
       e.lpc_analysis.tap(in, n);
       leave_pitch_path();
       g_funnel.pitch_analysis_blocks.fetch_add(1, std::memory_order_relaxed);
@@ -786,6 +831,7 @@ void vocal_fx_publish_pitch(const PitchResult &r) {
   }
   pitch.seq.fetch_add(1, std::memory_order_acq_rel);
   pitch.hz.store(r.frequency_hz, std::memory_order_relaxed);
+  pitch.raw_hz.store(r.raw_frequency_hz, std::memory_order_relaxed);
   pitch.confidence.store(r.confidence, std::memory_order_relaxed);
   pitch.period.store(r.period_samples, std::memory_order_relaxed);
   pitch.voiced.store(r.voiced, std::memory_order_relaxed);
@@ -805,6 +851,7 @@ void vocal_fx_publish_pitch(const PitchResult &r) {
   pitch.high_frequency_ratio.store(r.high_frequency_ratio, std::memory_order_relaxed);
   pitch.zero_crossing_rate.store(r.zero_crossing_rate, std::memory_order_relaxed);
   pitch.pitch_track_state.store(static_cast<uint8_t>(r.pitch_track_state), std::memory_order_relaxed);
+  pitch.coherent_marks.store(r.coherent_marks, std::memory_order_relaxed);
   pitch.coast_remaining.store(r.coast_remaining, std::memory_order_relaxed);
   pitch.seq.fetch_add(1, std::memory_order_release);
   pitch.publisher_lock.clear(std::memory_order_release);
@@ -838,6 +885,7 @@ bool vocal_fx_try_latest_pitch(PitchResult *result) {
 
   PitchResult candidate;
   candidate.frequency_hz = pitch.hz.load(std::memory_order_relaxed);
+  candidate.raw_frequency_hz = pitch.raw_hz.load(std::memory_order_relaxed);
   candidate.confidence = pitch.confidence.load(std::memory_order_relaxed);
   candidate.period_samples = pitch.period.load(std::memory_order_relaxed);
   candidate.voiced = pitch.voiced.load(std::memory_order_relaxed);
@@ -856,6 +904,7 @@ bool vocal_fx_try_latest_pitch(PitchResult *result) {
   candidate.high_frequency_ratio = pitch.high_frequency_ratio.load(std::memory_order_relaxed);
   candidate.zero_crossing_rate = pitch.zero_crossing_rate.load(std::memory_order_relaxed);
   candidate.pitch_track_state = pitch.pitch_track_state.load(std::memory_order_relaxed);
+  candidate.coherent_marks = pitch.coherent_marks.load(std::memory_order_relaxed);
   candidate.coast_remaining = pitch.coast_remaining.load(std::memory_order_relaxed);
 
   const uint32_t after = pitch.seq.load(std::memory_order_acquire);
@@ -975,6 +1024,42 @@ PitchShiftDebug vocal_fx_harmony_debug(size_t voice) {
 
 PitchAnalysisDebug vocal_fx_pitch_analysis_debug() {
   return {};
+}
+
+PitchAnalysisAuditTelemetry vocal_fx_pitch_analysis_audit_telemetry() {
+  return e.pitch_analysis.audit_telemetry();
+}
+
+size_t vocal_fx_read_pitch_audit_events(PitchAuditEvent *events,
+                                        size_t capacity) {
+  return e.pitch_analysis.read_audit_events(events, capacity);
+}
+
+VocalFxInputIdentity vocal_fx_input_identity() {
+  VocalFxInputIdentity result{};
+  uint32_t before = 0, after = 0;
+  do {
+    before = input_identity.seq.load(std::memory_order_acquire);
+    if (before & 1U) {
+      after = before;
+      continue;
+    }
+    result.sequence =
+        input_identity.sequence.load(std::memory_order_relaxed);
+    uint32_t dsp_rms_bits =
+        input_identity.dsp_rms_bits.load(std::memory_order_relaxed);
+    uint32_t pitch_rms_bits =
+        input_identity.pitch_rms_bits.load(std::memory_order_relaxed);
+    std::memcpy(&result.dsp_input_rms, &dsp_rms_bits, sizeof(dsp_rms_bits));
+    std::memcpy(&result.pitch_tap_rms, &pitch_rms_bits,
+                sizeof(pitch_rms_bits));
+    result.dsp_input_checksum =
+        input_identity.dsp_checksum.load(std::memory_order_relaxed);
+    result.pitch_tap_checksum =
+        input_identity.pitch_checksum.load(std::memory_order_relaxed);
+    after = input_identity.seq.load(std::memory_order_acquire);
+  } while (before != after || (after & 1U));
+  return result;
 }
 
 #ifndef ESP_PLATFORM

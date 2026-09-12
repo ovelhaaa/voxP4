@@ -5,6 +5,7 @@
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <cmath>
@@ -17,24 +18,127 @@ vocal_fx_platform::AudioI2s s_audio;
 TaskHandle_t s_audio_task_handle = nullptr;
 TaskHandle_t s_pitch_task_handle = nullptr;
 std::atomic<bool> s_pitch_running{false};
+constexpr EventBits_t kAudioTaskStopped = BIT0;
+constexpr EventBits_t kPitchTaskStopped = BIT1;
+StaticEventGroup_t s_task_events_storage{};
+EventGroupHandle_t s_task_events = nullptr;
+bool s_teardown_diagnostics_enabled = false;
+std::atomic<bool> s_pitch_lock_audit_enabled{false};
+
+struct PitchWorkerCounters {
+  std::atomic<uint64_t> iterations{0};
+  std::atomic<uint64_t> wakeups{0};
+  std::atomic<uint64_t> yields{0};
+  std::atomic<uint64_t> run_calls{0};
+  std::atomic<uint64_t> hops_requested{0};
+  std::atomic<uint64_t> hops_processed{0};
+  std::atomic<uint64_t> zero_hop_calls{0};
+  std::atomic<uint64_t> one_hop_calls{0};
+  std::atomic<uint64_t> multi_hop_calls{0};
+  std::atomic<uint64_t> maximum_hops_per_call{0};
+  std::atomic<int64_t> cents_error_sum_milli{0};
+  std::atomic<uint64_t> cents_error_abs_sum_milli{0};
+  std::atomic<uint64_t> cents_error_samples{0};
+  std::atomic<uint64_t> cents_error_max_abs_milli{0};
+  std::atomic<uint64_t> detected_f0_sum_millihz{0};
+
+  void reset() {
+    iterations.store(0, std::memory_order_relaxed);
+    wakeups.store(0, std::memory_order_relaxed);
+    yields.store(0, std::memory_order_relaxed);
+    run_calls.store(0, std::memory_order_relaxed);
+    hops_requested.store(0, std::memory_order_relaxed);
+    hops_processed.store(0, std::memory_order_relaxed);
+    zero_hop_calls.store(0, std::memory_order_relaxed);
+    one_hop_calls.store(0, std::memory_order_relaxed);
+    multi_hop_calls.store(0, std::memory_order_relaxed);
+    maximum_hops_per_call.store(0, std::memory_order_relaxed);
+    cents_error_sum_milli.store(0, std::memory_order_relaxed);
+    cents_error_abs_sum_milli.store(0, std::memory_order_relaxed);
+    cents_error_samples.store(0, std::memory_order_relaxed);
+    cents_error_max_abs_milli.store(0, std::memory_order_relaxed);
+    detected_f0_sum_millihz.store(0, std::memory_order_relaxed);
+  }
+} s_pitch_worker;
 
 void audio_task_entry(void *) {
   s_audio.run();
+  if (s_task_events)
+    xEventGroupSetBits(s_task_events, kAudioTaskStopped);
   vTaskDelete(nullptr);
 }
 
 void pitch_worker_task(void *) {
   while (s_pitch_running.load(std::memory_order_relaxed)) {
-    if (vocal_fx_run_pitch_analysis(4)) {
-      vTaskDelay(pdMS_TO_TICKS(1)); // Allow IDLE1 to run and feed watchdog
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1));
+    s_pitch_worker.wakeups.fetch_add(1, std::memory_order_relaxed);
+    s_pitch_worker.iterations.fetch_add(1, std::memory_order_relaxed);
+    constexpr size_t kMaximumHops = 4;
+    s_pitch_worker.run_calls.fetch_add(1, std::memory_order_relaxed);
+    s_pitch_worker.hops_requested.fetch_add(kMaximumHops,
+                                            std::memory_order_relaxed);
+    s_audio.set_pitch_worker_active(true);
+    const size_t processed = vocal_fx_run_pitch_analysis(kMaximumHops);
+    s_audio.set_pitch_worker_active(false);
+    s_pitch_worker.hops_processed.fetch_add(processed,
+                                            std::memory_order_relaxed);
+    if (processed != 0 &&
+        s_pitch_lock_audit_enabled.load(std::memory_order_relaxed)) {
+      PitchResult latest{};
+      if (vocal_fx_try_latest_pitch(&latest) && latest.voiced &&
+          latest.frequency_hz > 0.0f && std::isfinite(latest.frequency_hz)) {
+        const double cents = 1200.0 * std::log2(latest.frequency_hz / 220.0);
+        const int64_t cents_milli =
+            static_cast<int64_t>(std::llround(cents * 1000.0));
+        const uint64_t absolute_milli = static_cast<uint64_t>(
+            cents_milli < 0 ? -cents_milli : cents_milli);
+        s_pitch_worker.cents_error_sum_milli.fetch_add(
+            cents_milli, std::memory_order_relaxed);
+        s_pitch_worker.cents_error_abs_sum_milli.fetch_add(
+            absolute_milli, std::memory_order_relaxed);
+        s_pitch_worker.cents_error_samples.fetch_add(1,
+                                                      std::memory_order_relaxed);
+        s_pitch_worker.detected_f0_sum_millihz.fetch_add(
+            static_cast<uint64_t>(std::llround(latest.frequency_hz * 1000.0)),
+            std::memory_order_relaxed);
+        uint64_t max_error = s_pitch_worker.cents_error_max_abs_milli.load(
+            std::memory_order_relaxed);
+        while (absolute_milli > max_error &&
+               !s_pitch_worker.cents_error_max_abs_milli.compare_exchange_weak(
+                   max_error, absolute_milli, std::memory_order_relaxed)) {
+        }
+      }
     }
+    if (processed == 0)
+      s_pitch_worker.zero_hop_calls.fetch_add(1, std::memory_order_relaxed);
+    else if (processed == 1)
+      s_pitch_worker.one_hop_calls.fetch_add(1, std::memory_order_relaxed);
+    else
+      s_pitch_worker.multi_hop_calls.fetch_add(1, std::memory_order_relaxed);
+    uint64_t maximum =
+        s_pitch_worker.maximum_hops_per_call.load(std::memory_order_relaxed);
+    while (processed > maximum &&
+           !s_pitch_worker.maximum_hops_per_call.compare_exchange_weak(
+               maximum, processed, std::memory_order_relaxed)) {
+    }
+    s_pitch_worker.yields.fetch_add(1, std::memory_order_relaxed);
+    vTaskDelay(pdMS_TO_TICKS(1)); // Allow IDLE1 to run and feed watchdog
   }
+  s_audio.set_pitch_worker_active(false);
+  if (s_task_events)
+    xEventGroupSetBits(s_task_events, kPitchTaskStopped);
+  vTaskDelete(nullptr);
+}
+
+void b4b2_coordinator_task(void *) {
+  run_i2s_stage_b4b2_pitch_worker_lock_audit();
   vTaskDelete(nullptr);
 }
 
 bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch = true) {
+  if (!s_task_events)
+    s_task_events = xEventGroupCreateStatic(&s_task_events_storage);
+  xEventGroupClearBits(s_task_events, kAudioTaskStopped | kPitchTaskStopped);
+  s_pitch_worker.reset();
   vocal_fx_platform::AudioI2sConfig io{};
   io.mode = mode;
   io.dma_desc_num = 6;
@@ -61,19 +165,56 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
     if (xTaskCreatePinnedToCore(pitch_worker_task, "vocal_pitch", 16384, nullptr,
                                 configMAX_PRIORITIES - 5, &s_pitch_task_handle, 1) != pdPASS) {
       ESP_LOGE(TAG, "Failed to create pitch task on Core 1");
+      s_pitch_running.store(false, std::memory_order_release);
+      s_audio.stop();
+      (void)xEventGroupWaitBits(s_task_events, kAudioTaskStopped, pdFALSE,
+                                pdTRUE, pdMS_TO_TICKS(1000));
+      s_audio.deinit();
+      s_audio_task_handle = nullptr;
+      return false;
     }
+  } else {
+    s_pitch_task_handle = nullptr;
+    xEventGroupSetBits(s_task_events, kPitchTaskStopped);
   }
 
   return true;
 }
 
-void stop_pipeline_tasks() {
+bool stop_pipeline_tasks() {
+  if (s_teardown_diagnostics_enabled)
+    printf("[B4B.2 TEARDOWN] test stop requested\n");
   s_pitch_running.store(false, std::memory_order_release);
+  if (s_teardown_diagnostics_enabled)
+    printf("[B4B.2 TEARDOWN] pitch task stop requested\n");
   s_audio.stop();
-  vTaskDelay(pdMS_TO_TICKS(100));
+  if (s_teardown_diagnostics_enabled)
+    printf("[B4B.2 TEARDOWN] audio task stop requested\n");
+  const EventBits_t stopped = xEventGroupWaitBits(
+      s_task_events, kAudioTaskStopped | kPitchTaskStopped, pdFALSE, pdTRUE,
+      pdMS_TO_TICKS(1000));
+  if (s_teardown_diagnostics_enabled) {
+    printf("[B4B.2 TEARDOWN] audio task confirmed stopped: %s\n",
+           (stopped & kAudioTaskStopped) ? "yes" : "TIMEOUT");
+    printf("[B4B.2 TEARDOWN] pitch task confirmed stopped: %s\n",
+           (stopped & kPitchTaskStopped) ? "yes" : "TIMEOUT");
+  }
+  if ((stopped & (kAudioTaskStopped | kPitchTaskStopped)) !=
+      (kAudioTaskStopped | kPitchTaskStopped)) {
+    ESP_LOGE(TAG, "Refusing I2S teardown while pipeline tasks are live");
+    return false;
+  }
   s_audio.deinit();
+  if (s_teardown_diagnostics_enabled) {
+    printf("[B4B.2 TEARDOWN] I2S callbacks disabled\n");
+    printf("[B4B.2 TEARDOWN] RX channel disabled\n");
+    printf("[B4B.2 TEARDOWN] TX channel disabled\n");
+    printf("[B4B.2 TEARDOWN] driver queues deleted\n");
+    printf("[B4B.2 TEARDOWN] DMA buffers released\n");
+  }
   s_audio_task_handle = nullptr;
   s_pitch_task_handle = nullptr;
+  return true;
 }
 
 } // namespace
@@ -820,9 +961,456 @@ void run_i2s_stage_b4b_synthetic_voiced(void) {
   stop_pipeline_tasks();
 }
 
+namespace {
+const char *pitch_track_name(PitchTrackState state) {
+  switch (state) {
+  case PitchTrackState::Unlocked: return "UNLOCKED";
+  case PitchTrackState::Acquiring: return "ACQUIRING";
+  case PitchTrackState::Locked: return "LOCKED";
+  case PitchTrackState::Coasting: return "COASTING";
+  }
+  return "UNKNOWN";
+}
+
+const char *mark_reset_reason_name(PitchMarkResetReason reason) {
+  switch (reason) {
+  case PitchMarkResetReason::None: return "none";
+  case PitchMarkResetReason::CorrelationBelowThreshold:
+    return "mark correlation below threshold";
+  case PitchMarkResetReason::PeriodInvalid: return "period invalid";
+  case PitchMarkResetReason::VoicedLost: return "voiced lost";
+  case PitchMarkResetReason::AnalysisReset: return "analysis reset";
+  case PitchMarkResetReason::MarkTimeout: return "mark timeout";
+  case PitchMarkResetReason::Other: return "other";
+  }
+  return "other";
+}
+
+void print_pitch_audit_event(const PitchAuditEvent &event) {
+  const double timestamp_ms = event.input_position / 48.0;
+  if (event.type == PitchAuditEventType::TrackTransition) {
+    printf("[B4B.2 TRACK] t=%.3fms %s -> %s F0=%.3fHz conf=%.4f period=%.3f coherent=%u failures=%u pitch_age=%.3fms backlog=%.3fms reason=%s\n",
+           timestamp_ms, pitch_track_name(event.old_state),
+           pitch_track_name(event.new_state), event.detected_f0_hz,
+           event.confidence, event.period_samples,
+           static_cast<unsigned>(event.coherent_marks),
+           static_cast<unsigned>(event.mark_failures),
+           event.pitch_age_samples / 48.0, event.backlog_samples / 48.0,
+           mark_reset_reason_name(event.reason));
+  } else if (event.type == PitchAuditEventType::CoherentMarkReset) {
+    printf("[B4B.2 MARK RESET] t=%.3fms coherent=%u failures=%u reason=%s F0=%.3fHz conf=%.4f age=%.3fms backlog=%.3fms\n",
+           timestamp_ms, static_cast<unsigned>(event.coherent_marks),
+           static_cast<unsigned>(event.mark_failures),
+           mark_reset_reason_name(event.reason), event.detected_f0_hz,
+           event.confidence, event.pitch_age_samples / 48.0,
+           event.backlog_samples / 48.0);
+  } else if (event.type == PitchAuditEventType::CorrelationReject) {
+    printf("[B4B.2 MARK REJECT] t=%.3fms predicted=%llu offset=%d best=%.5f period=%.3f F0=%.3fHz\n",
+           timestamp_ms,
+           static_cast<unsigned long long>(event.predicted_position),
+           static_cast<int>(event.best_offset), event.best_correlation,
+           event.period_samples, event.detected_f0_hz);
+  } else if (event.coherent_marks <= 3) {
+    printf("[B4B.2 MARK] t=%.3fms coherent=%u best=%.5f offset=%d predicted=%llu\n",
+           timestamp_ms, static_cast<unsigned>(event.coherent_marks),
+           event.best_correlation, static_cast<int>(event.best_offset),
+           static_cast<unsigned long long>(event.predicted_position));
+  }
+}
+} // namespace
+
+void run_i2s_stage_b4b2_pitch_worker_lock_audit(void) {
+  constexpr int kDurationSeconds = 15;
+  constexpr uint64_t kToneStartSample = 24000;
+  printf("\n=======================================================\n");
+  printf("   B4B_2_PITCH_WORKER_LOCK_AUDIT\n");
+  printf("=======================================================\n");
+  printf("Duration: 15 seconds\n");
+  printf("Stimulus: 500 ms silence, 20 ms attack, then 220.0 Hz pure sine at -18 dBFS\n");
+  printf("Pipeline: PCM1808 -> real I2S RX DMA/read -> synthetic replacement -> all DSP taps -> I2S TX DMA -> PCM5102\n");
+  printf("Continuity policy: Baseline (unchanged)\n");
+  printf("Expected period: 218.18 samples at 48 kHz\n");
+  printf("PSRAM device: 32 MB HEX\n");
+  printf("Reported runtime speed: 20 MHz\n");
+  printf("Physical flash detected: 16 MB\n");
+  printf("Image header configured: 2 MB\n");
+  printf("FLASH NOTE: size mismatch deferred to a later milestone; partition table unchanged.\n");
+
+  const uint32_t initial_internal =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const uint32_t initial_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+  static VocalFxConfig config;
+  config = {};
+  config.enable_gate = true;
+  config.enable_compressor = true;
+  config.enable_delay = true;
+  config.enable_reverb = true;
+  config.enable_pitch_analysis = true;
+  config.pitch_shift.enabled = true;
+  config.pitch_shift.semitones = 4.0f;
+  config.pitch_shift.wet = 1.0f;
+  config.pitch_shift.continuity_policy = PsolaContinuityPolicy::Baseline;
+  config.psola_continuity_policy = PsolaContinuityPolicy::Baseline;
+  config.align_dry_to_harmony = true;
+  config.enable_harmony_limiter = true;
+
+  if (!vocal_fx_init(config)) {
+    ESP_LOGE(TAG, "B4B.2 Vocal FX initialization failed");
+    return;
+  }
+  vocal_fx_set_harmony_enabled(0, true);
+  vocal_fx_set_harmony_interval(0, 4.0f);
+  vocal_fx_set_harmony_gain(0, 1.0f);
+  vocal_fx_set_formant_mode(0, FormantMode::Lpc);
+  vocal_fx_set_harmony_enabled(1, true);
+  vocal_fx_set_harmony_interval(1, 7.0f);
+  vocal_fx_set_harmony_gain(1, 1.0f);
+  vocal_fx_set_formant_mode(1, FormantMode::Lpc);
+
+  vocal_fx_reset_funnel_stats();
+  s_pitch_lock_audit_enabled.store(true, std::memory_order_release);
+  s_teardown_diagnostics_enabled = true;
+#ifdef ESP_PLATFORM
+  esp_task_wdt_config_t audit_wdt_config = {
+      .timeout_ms = 10000,
+      // Serial telemetry can monopolize either idle task during this bounded
+      // diagnostic.  The normal dual-core watchdog configuration is restored
+      // after all audit output has been emitted.
+      .idle_core_mask = 0,
+      .trigger_panic = false,
+  };
+  (void)esp_task_wdt_reconfigure(&audit_wdt_config);
+#endif
+  if (!start_pipeline_tasks(
+          vocal_fx_platform::AudioI2sMode::PitchWorkerLockAudit, true)) {
+    s_pitch_lock_audit_enabled.store(false, std::memory_order_release);
+    s_teardown_diagnostics_enabled = false;
+    printf("B4B.2: FAILED TO INITIALIZE AUDIO DRIVER\n");
+    return;
+  }
+
+  const uint32_t baseline_internal =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const uint32_t baseline_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  uint32_t heap_5s_internal = 0, heap_5s_spiram = 0;
+  uint32_t heap_10s_internal = 0, heap_10s_spiram = 0;
+  uint64_t previous_calls = 0, previous_hops = 0;
+  TickType_t next_telemetry_wake = xTaskGetTickCount();
+
+  for (int second = 1; second <= kDurationSeconds; ++second) {
+    vTaskDelayUntil(&next_telemetry_wake, pdMS_TO_TICKS(1000));
+    s_audio.set_diagnostic_activity(true, false, false, false);
+    const uint64_t calls =
+        s_pitch_worker.run_calls.load(std::memory_order_relaxed);
+    const uint64_t hops =
+        s_pitch_worker.hops_processed.load(std::memory_order_relaxed);
+    const uint64_t interval_calls = calls - previous_calls;
+    const uint64_t interval_hops = hops - previous_hops;
+    previous_calls = calls;
+    previous_hops = hops;
+    const PitchAnalysisAuditTelemetry audit =
+        vocal_fx_pitch_analysis_audit_telemetry();
+    PitchResult pitch{};
+    (void)vocal_fx_try_latest_pitch(&pitch);
+    const PitchShiftDebug harmony = vocal_fx_harmony_debug(0);
+    const VocalFxFunnelStats funnel = vocal_fx_funnel_stats();
+    const PitchSyncDiagnostics sync = vocal_fx_pitch_sync_diagnostics();
+    const auto identity = s_audio.synthetic_input_identity();
+    PitchAuditEvent events[24];
+    const size_t event_count =
+        vocal_fx_read_pitch_audit_events(events, 24);
+    const uint64_t blocks = s_audio.counters().audio_blocks_processed.load(
+        std::memory_order_relaxed);
+    const float error_cents =
+        pitch.frequency_hz > 0.0f
+            ? static_cast<float>(1200.0 *
+                                 std::log2(pitch.frequency_hz / 220.0))
+            : 0.0f;
+    if (second == 5) {
+      heap_5s_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      heap_5s_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    } else if (second == 10) {
+      heap_10s_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      heap_10s_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    }
+    s_audio.set_diagnostic_activity(false, true, true, false);
+    printf("\n[B4B.2 t=%ds]\n", second);
+    printf("Audio blocks: %llu\nWorker iterations: %llu\nWorker calls/s: %llu\nHops processed/s: %llu\nAvg hops/call: %.3f\n",
+           static_cast<unsigned long long>(blocks),
+           static_cast<unsigned long long>(s_pitch_worker.iterations.load(
+               std::memory_order_relaxed)),
+           static_cast<unsigned long long>(interval_calls),
+           static_cast<unsigned long long>(interval_hops),
+           interval_calls ? static_cast<double>(interval_hops) / interval_calls
+                          : 0.0);
+    printf("FIFO current: %u\nFIFO max: %u\nFIFO drops: %llu\n",
+           static_cast<unsigned>(audit.fifo_current_occupancy),
+           static_cast<unsigned>(audit.fifo_maximum_occupancy),
+           static_cast<unsigned long long>(audit.fifo_drops));
+    printf("Pitch age ms: %.3f\nBacklog ms: %.3f\n",
+           audit.latest_pitch_age_ms, audit.analysis_backlog_ms);
+    printf("Injected F0: 220.000 Hz\nDetected F0: %.3f Hz\nError cents: %+.3f\nConfidence: %.4f\nVoiced: %s\nTrack state: %s\nCoherent marks: %u\nMark count: %llu\n",
+           pitch.frequency_hz, error_cents, pitch.confidence,
+           pitch.voiced ? "true" : "false",
+           pitch_track_name(static_cast<PitchTrackState>(
+               pitch.pitch_track_state)),
+           static_cast<unsigned>(pitch.coherent_marks),
+           static_cast<unsigned long long>(sync.last_mark_count));
+    printf("PSOLA usable: %s\nHarmony mix: %.4f\nGrain attempts: %llu\nGrains rendered: %llu\n",
+           harmony.usable ? "true" : "false",
+           vocal_fx_effective_harmony_mix(0),
+           static_cast<unsigned long long>(funnel.grain_schedule_attempts),
+           static_cast<unsigned long long>(funnel.grains_rendered));
+    printf("Buffer identity: synth_rms=%.7f pitch_rms=%.7f dsp_rms=%.7f checks=%llu mismatches=%llu hashes=%08lx/%08lx/%08lx\n",
+           identity.synthetic_rms, identity.pitch_tap_rms,
+           identity.dsp_input_rms,
+           static_cast<unsigned long long>(identity.checks),
+           static_cast<unsigned long long>(identity.mismatches),
+           static_cast<unsigned long>(identity.synthetic_checksum),
+           static_cast<unsigned long>(identity.pitch_tap_checksum),
+           static_cast<unsigned long>(identity.dsp_input_checksum));
+    for (size_t i = 0; i < event_count; ++i)
+      print_pitch_audit_event(events[i]);
+    s_audio.set_diagnostic_activity(false, false, false, false);
+  }
+
+  const bool teardown_clean = stop_pipeline_tasks();
+  s_pitch_lock_audit_enabled.store(false, std::memory_order_release);
+  s_teardown_diagnostics_enabled = false;
+
+  const uint32_t end_internal =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const uint32_t end_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  const auto audit = vocal_fx_pitch_analysis_audit_telemetry();
+  PitchResult pitch{};
+  (void)vocal_fx_try_latest_pitch(&pitch);
+  const PitchShiftDebug harmony = vocal_fx_harmony_debug(0);
+  const VocalFxFunnelStats funnel = vocal_fx_funnel_stats();
+  const auto identity = s_audio.synthetic_input_identity();
+  const auto &transport = s_audio.counters();
+  const uint64_t worker_calls =
+      s_pitch_worker.run_calls.load(std::memory_order_relaxed);
+  const uint64_t hops =
+      s_pitch_worker.hops_processed.load(std::memory_order_relaxed);
+  const uint64_t error_samples =
+      s_pitch_worker.cents_error_samples.load(std::memory_order_relaxed);
+  const double worker_calls_per_second =
+      static_cast<double>(worker_calls) / kDurationSeconds;
+  const double hops_per_second =
+      static_cast<double>(hops) / kDurationSeconds;
+  const double average_hops_per_call =
+      worker_calls ? static_cast<double>(hops) / worker_calls : 0.0;
+  const double mean_abs_error_cents =
+      error_samples
+          ? s_pitch_worker.cents_error_abs_sum_milli.load(
+                std::memory_order_relaxed) /
+                (1000.0 * error_samples)
+          : 0.0;
+  const double mean_f0 =
+      error_samples
+          ? s_pitch_worker.detected_f0_sum_millihz.load(
+                std::memory_order_relaxed) /
+                (1000.0 * error_samples)
+          : 0.0;
+  const double max_error_cents =
+      s_pitch_worker.cents_error_max_abs_milli.load(
+          std::memory_order_relaxed) /
+      1000.0;
+  const bool ever_locked = audit.first_locked_input_position != 0;
+  const double lock_time_ms =
+      ever_locked && audit.first_locked_input_position > kToneStartSample
+          ? (audit.first_locked_input_position - kToneStartSample) / 48.0
+          : 0.0;
+
+  size_t spike_count = 0, harness_context_spikes = 0;
+  for (size_t i = 0; i < s_audio.outlier_count(); ++i) {
+    const auto &event = s_audio.outliers()[i];
+    if (event.pure_dsp_us >= 8000 && event.pure_dsp_us <= 9500) {
+      ++spike_count;
+      if (event.snapshot_active || event.telemetry_formatting_active ||
+          event.serial_printing_active || event.diagnostic_queue_flush_active)
+        ++harness_context_spikes;
+    }
+  }
+
+  const bool worker_healthy = hops_per_second >= 160.0 &&
+                              audit.fifo_drops == 0 &&
+                              audit.analysis_backlog_ms < 100.0f;
+  const bool psola_pass = harmony.usable &&
+                          funnel.grain_schedule_attempts > 0 &&
+                          funnel.grains_rendered > 0;
+  const bool diagnostic_queue_clean =
+      transport.rx_diagnostic_queue_overflows.load(std::memory_order_relaxed) ==
+          0 &&
+      transport.tx_diagnostic_queue_overflows.load(std::memory_order_relaxed) ==
+          0;
+  const char *classification = "HARNESS / SCHEDULER ISSUE";
+  if (!worker_healthy)
+    classification = "PITCH_WORKER_STARVATION";
+  else if (!ever_locked) {
+    classification = mean_abs_error_cents <= 50.0 &&
+                             audit.coherent_marks_maximum < 3 &&
+                             audit.rejected_marks > 0
+                         ? "PITCH_MARK_COHERENCE_ISSUE"
+                         : "PITCH_TRACKING_INSTABILITY";
+  } else if (!psola_pass)
+    classification = "PSOLA_ACTIVATION_ISSUE";
+  else if (teardown_clean && diagnostic_queue_clean &&
+           identity.mismatches == 0)
+    classification = "B4B.2 PASS";
+
+  printf("\n=======================================================================\n");
+  printf("Stage B4B.2 — Pitch Worker Cadence & Lock Acquisition Audit Report\n");
+  printf("=======================================================================\n");
+  printf("1. Pitch worker executions/s: %.2f (iterations=%llu, wakeups=%llu, yields=%llu)\n",
+         worker_calls_per_second,
+         static_cast<unsigned long long>(s_pitch_worker.iterations.load()),
+         static_cast<unsigned long long>(s_pitch_worker.wakeups.load()),
+         static_cast<unsigned long long>(s_pitch_worker.yields.load()));
+  printf("2. Analysis hops processed/s: %.2f\n", hops_per_second);
+  printf("3. Expected ~200 hops/s reached: %s\n",
+         (hops_per_second >= 180.0 && hops_per_second <= 220.0) ? "yes"
+                                                               : "no");
+  printf("4. Hops/call: average=%.4f max=%llu zero=%llu one=%llu multi=%llu requested=%llu processed=%llu\n",
+         average_hops_per_call,
+         static_cast<unsigned long long>(s_pitch_worker.maximum_hops_per_call.load()),
+         static_cast<unsigned long long>(s_pitch_worker.zero_hop_calls.load()),
+         static_cast<unsigned long long>(s_pitch_worker.one_hop_calls.load()),
+         static_cast<unsigned long long>(s_pitch_worker.multi_hop_calls.load()),
+         static_cast<unsigned long long>(s_pitch_worker.hops_requested.load()),
+         static_cast<unsigned long long>(hops));
+  printf("5. FIFO backlog: current=%u avg=%.2f max=%u; accumulated=%s; pushes=%llu pops=%llu\n",
+         static_cast<unsigned>(audit.fifo_current_occupancy),
+         audit.fifo_average_occupancy,
+         static_cast<unsigned>(audit.fifo_maximum_occupancy),
+         audit.analysis_backlog_ms < 100.0f ? "no" : "yes",
+         static_cast<unsigned long long>(audit.fifo_pushes),
+         static_cast<unsigned long long>(audit.fifo_pops));
+  printf("6. FIFO drops=%llu overflow_attempts=%llu\n",
+         static_cast<unsigned long long>(audit.fifo_drops),
+         static_cast<unsigned long long>(audit.fifo_overflow_attempts));
+  printf("7. Maximum analysis backlog=%llu samples / %.3f ms (current=%llu / %.3f ms)\n",
+         static_cast<unsigned long long>(audit.analysis_backlog_max_samples),
+         audit.analysis_backlog_max_ms,
+         static_cast<unsigned long long>(audit.analysis_backlog_samples),
+         audit.analysis_backlog_ms);
+  printf("   Algorithmic analysis latency=%llu samples / %.3f ms (separate from worker backlog)\n",
+         static_cast<unsigned long long>(audit.algorithmic_latency_samples),
+         audit.algorithmic_latency_samples / 48.0);
+  printf("8. Pitch age ms: average=%.3f P95<=%.3f P99<=%.3f max=%.3f latest=%.3f\n",
+         audit.pitch_age_average_ms, audit.pitch_age_p95_ms,
+         audit.pitch_age_p99_ms, audit.pitch_age_max_ms,
+         audit.latest_pitch_age_ms);
+  printf("9. Pure 220 Hz detected correctly: %s (mean F0=%.4f Hz, final=%.4f Hz)\n",
+         mean_abs_error_cents <= 50.0 ? "yes" : "no", mean_f0,
+         pitch.frequency_hz);
+  printf("10. F0 error: mean absolute=%.3f cents max absolute=%.3f cents\n",
+         mean_abs_error_cents, max_error_cents);
+  printf("11. Tracker reached LOCKED: %s\n", ever_locked ? "yes" : "no");
+  printf("12. Time from tone start to LOCKED: %.3f ms\n", lock_time_ms);
+  printf("13. Maximum coherent_marks: %u\n",
+         static_cast<unsigned>(audit.coherent_marks_maximum));
+  printf("14. Coherent mark resets=%llu [correlation=%llu period_invalid=%llu voiced_lost=%llu analysis_reset=%llu timeout=%llu other=%llu]\n",
+         static_cast<unsigned long long>(audit.coherent_mark_resets),
+         static_cast<unsigned long long>(audit.reset_correlation_below_threshold),
+         static_cast<unsigned long long>(audit.reset_period_invalid),
+         static_cast<unsigned long long>(audit.reset_voiced_lost),
+         static_cast<unsigned long long>(audit.reset_analysis),
+         static_cast<unsigned long long>(audit.reset_mark_timeout),
+         static_cast<unsigned long long>(audit.reset_other));
+  printf("   Mark correlation: avg=%.5f min=%.5f max=%.5f accepted=%llu rejected=%llu event_drops=%llu\n",
+         audit.best_correlation_average, audit.best_correlation_minimum,
+         audit.best_correlation_maximum,
+         static_cast<unsigned long long>(audit.accepted_marks),
+         static_cast<unsigned long long>(audit.rejected_marks),
+         static_cast<unsigned long long>(audit.audit_event_drops));
+  printf("15. PSOLA usable: %s\n", harmony.usable ? "yes" : "no");
+  printf("16. Grain schedule attempts: %llu\n",
+         static_cast<unsigned long long>(funnel.grain_schedule_attempts));
+  printf("17. Grains rendered: %llu\n",
+         static_cast<unsigned long long>(funnel.grains_rendered));
+  printf("18. PureDsp 8-9.5 ms spikes=%zu; coincident with harness telemetry=%zu; attribution=%s\n",
+         spike_count, harness_context_spikes,
+         spike_count == 0
+             ? "not reproduced"
+             : (harness_context_spikes == spike_count ? "harness-associated"
+                                                      : "DSP/unattributed samples remain"));
+  printf("19. Diagnostic queue overflow RX/TX=%llu/%llu; actual DMA errors RX/TX=%llu/%llu; read/write failures=%llu/%llu; dropped frames RX/TX=%llu/%llu\n",
+         static_cast<unsigned long long>(transport.rx_diagnostic_queue_overflows.load()),
+         static_cast<unsigned long long>(transport.tx_diagnostic_queue_overflows.load()),
+         static_cast<unsigned long long>(transport.actual_rx_dma_errors.load()),
+         static_cast<unsigned long long>(transport.actual_tx_dma_errors.load()),
+         static_cast<unsigned long long>(transport.i2s_read_failures.load()),
+         static_cast<unsigned long long>(transport.i2s_write_failures.load()),
+         static_cast<unsigned long long>(transport.rx_dropped_frames.load()),
+         static_cast<unsigned long long>(transport.tx_dropped_frames.load()));
+  printf("   Event queue producer/consumer/current/max depth RX=%llu/%llu/%llu/%llu TX=%llu/%llu/%llu/%llu\n",
+         static_cast<unsigned long long>(transport.rx_dma_events.load()),
+         static_cast<unsigned long long>(transport.i2s_read_successes.load()),
+         static_cast<unsigned long long>(transport.rx_event_queue_depth.load()),
+         static_cast<unsigned long long>(transport.rx_event_queue_max_depth.load()),
+         static_cast<unsigned long long>(transport.i2s_write_successes.load()),
+         static_cast<unsigned long long>(transport.tx_dma_events.load()),
+         static_cast<unsigned long long>(transport.tx_event_queue_depth.load()),
+         static_cast<unsigned long long>(transport.tx_event_queue_max_depth.load()));
+  printf("   Event queue producer/consumer rates per second RX=%.2f/%.2f TX=%.2f/%.2f\n",
+         transport.rx_dma_events.load() / static_cast<double>(kDurationSeconds),
+         transport.i2s_read_successes.load() /
+             static_cast<double>(kDurationSeconds),
+         transport.i2s_write_successes.load() /
+             static_cast<double>(kDurationSeconds),
+         transport.tx_dma_events.load() /
+             static_cast<double>(kDurationSeconds));
+  printf("20. Spinlock crash reproduced: no (report reached after teardown)\n");
+  printf("21. Teardown clean: %s\n", teardown_clean ? "yes" : "no");
+  printf("   Buffer identity checks=%llu mismatches=%llu (synthetic==pitch==DSP: %s)\n",
+         static_cast<unsigned long long>(identity.checks),
+         static_cast<unsigned long long>(identity.mismatches),
+         identity.checks > 0 && identity.mismatches == 0 ? "yes" : "no");
+  printf("   Heap bytes Initial Int/PSRAM=%lu/%lu Baseline=%lu/%lu 5s=%lu/%lu 10s=%lu/%lu End=%lu/%lu Delta End-Baseline=%ld/%ld\n",
+         static_cast<unsigned long>(initial_internal),
+         static_cast<unsigned long>(initial_spiram),
+         static_cast<unsigned long>(baseline_internal),
+         static_cast<unsigned long>(baseline_spiram),
+         static_cast<unsigned long>(heap_5s_internal),
+         static_cast<unsigned long>(heap_5s_spiram),
+         static_cast<unsigned long>(heap_10s_internal),
+         static_cast<unsigned long>(heap_10s_spiram),
+         static_cast<unsigned long>(end_internal),
+         static_cast<unsigned long>(end_spiram),
+         static_cast<long>(end_internal) - static_cast<long>(baseline_internal),
+         static_cast<long>(end_spiram) - static_cast<long>(baseline_spiram));
+  printf("22. FINAL CLASSIFICATION: %s\n", classification);
+  printf("First failed arrow: %s\n",
+         !worker_healthy
+             ? "synthetic input -> timely analysis"
+             : (mean_abs_error_cents > 50.0
+                    ? "Injected F0 -> Detected F0"
+                    : (!ever_locked
+                           ? "Detected F0 -> coherent_marks >= 3 / LOCKED"
+                           : (!harmony.usable
+                                  ? "LOCKED -> PSOLA usable"
+                                  : (funnel.grain_schedule_attempts == 0
+                                         ? "PSOLA usable -> grain schedule attempts"
+                                         : (funnel.grains_rendered == 0
+                                                ? "grain attempts -> grains rendered"
+                                                : "none"))))));
+  printf("B4C READY: no\n");
+  printf("=======================================================================\n");
+#ifdef ESP_PLATFORM
+  esp_task_wdt_config_t normal_wdt_config = {
+      .timeout_ms = 5000,
+      .idle_core_mask = (1 << 0) | (1 << 1),
+      .trigger_panic = false,
+  };
+  (void)esp_task_wdt_reconfigure(&normal_wdt_config);
+#endif
+}
+
 void run_i2s_stage_b4c_real_analog(void) {
   printf("\n=======================================================\n");
-  printf("   STAGE B4C: REAL ANALOG LIVE MUSICAL DSP (READY)     \n");
+  printf("   STAGE B4C: REAL ANALOG LIVE MUSICAL DSP             \n");
   printf("=======================================================\n");
   printf("Input: Real Analog Microphone / Instrument on PCM1808\n");
   printf("Output: Real Analog Output on PCM5102\n");
@@ -910,6 +1498,12 @@ void run_i2s_bringup_selected_mode(void) {
   run_i2s_stage_b4a_quiescent();
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_SYNTHETIC_VOICED)
   run_i2s_stage_b4b_synthetic_voiced();
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_2_PITCH_WORKER_LOCK_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b2_coordinator_task, "b4b2_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.2 low-priority coordinator task");
+  }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4C_REAL_ANALOG)
   run_i2s_stage_b4c_real_analog();
 #elif defined(CONFIG_VOXP4_MODE_I2S_FULL_DSP)

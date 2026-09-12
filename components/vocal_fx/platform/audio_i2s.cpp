@@ -26,15 +26,35 @@ const char *TAG = "audio_i2s";
 static volatile int64_t s_last_rx_callback_us = 0;
 static volatile int64_t s_last_tx_callback_us = 0;
 
+static void increment_depth(std::atomic<uint64_t> &depth,
+                            std::atomic<uint64_t> &maximum) {
+  const uint64_t value = depth.fetch_add(1, std::memory_order_relaxed) + 1;
+  uint64_t old_maximum = maximum.load(std::memory_order_relaxed);
+  while (value > old_maximum &&
+         !maximum.compare_exchange_weak(old_maximum, value,
+                                        std::memory_order_relaxed)) {
+  }
+}
+
+static void decrement_depth(std::atomic<uint64_t> &depth) {
+  uint64_t value = depth.load(std::memory_order_relaxed);
+  while (value != 0 &&
+         !depth.compare_exchange_weak(value, value - 1,
+                                      std::memory_order_relaxed)) {
+  }
+}
+
 static bool IRAM_ATTR i2s_rx_event_callback(i2s_chan_handle_t handle,
                                             i2s_event_data_t *event,
                                             void *user_data) {
   (void)handle;
   (void)event;
   auto *self = static_cast<AudioI2s *>(user_data);
-  if (!self) return false;
+  if (!self || !self->callbacks_enabled()) return false;
 
   self->counters().rx_dma_events.fetch_add(1, std::memory_order_relaxed);
+  increment_depth(self->counters().rx_event_queue_depth,
+                  self->counters().rx_event_queue_max_depth);
   int64_t now = esp_timer_get_time();
   int64_t prev = s_last_rx_callback_us;
   s_last_rx_callback_us = now;
@@ -56,10 +76,13 @@ static bool IRAM_ATTR i2s_rx_q_ovf_callback(i2s_chan_handle_t handle,
   (void)handle;
   (void)event;
   auto *self = static_cast<AudioI2s *>(user_data);
-  if (self) {
-    self->counters().rx_overruns.fetch_add(1, std::memory_order_relaxed);
-    self->counters().rx_dropped_frames.fetch_add(64, std::memory_order_relaxed);
-    self->record_transport_error("ISR_RX_Q_OVF", self->counters().audio_blocks_processed.load(std::memory_order_relaxed), 0, 0, 0, 0);
+  if (self && self->callbacks_enabled()) {
+    self->counters().rx_diagnostic_queue_overflows.fetch_add(
+        1, std::memory_order_relaxed);
+    self->record_transport_error(
+        "RX_DIAGNOSTIC_EVENT_QUEUE_OVERFLOW",
+        self->counters().audio_blocks_processed.load(std::memory_order_relaxed),
+        0, 0, 0, 0);
   }
   return false;
 }
@@ -70,9 +93,10 @@ static bool IRAM_ATTR i2s_tx_event_callback(i2s_chan_handle_t handle,
   (void)handle;
   (void)event;
   auto *self = static_cast<AudioI2s *>(user_data);
-  if (!self) return false;
+  if (!self || !self->callbacks_enabled()) return false;
 
   self->counters().tx_dma_events.fetch_add(1, std::memory_order_relaxed);
+  decrement_depth(self->counters().tx_event_queue_depth);
   int64_t now = esp_timer_get_time();
   int64_t prev = s_last_tx_callback_us;
   s_last_tx_callback_us = now;
@@ -94,10 +118,13 @@ static bool IRAM_ATTR i2s_tx_q_ovf_callback(i2s_chan_handle_t handle,
   (void)handle;
   (void)event;
   auto *self = static_cast<AudioI2s *>(user_data);
-  if (self) {
-    self->counters().tx_underruns.fetch_add(1, std::memory_order_relaxed);
-    self->counters().tx_dropped_frames.fetch_add(64, std::memory_order_relaxed);
-    self->record_transport_error("ISR_TX_Q_OVF", self->counters().audio_blocks_processed.load(std::memory_order_relaxed), 0, 0, 0, 0);
+  if (self && self->callbacks_enabled()) {
+    self->counters().tx_diagnostic_queue_overflows.fetch_add(
+        1, std::memory_order_relaxed);
+    self->record_transport_error(
+        "TX_DIAGNOSTIC_EVENT_QUEUE_OVERFLOW",
+        self->counters().audio_blocks_processed.load(std::memory_order_relaxed),
+        0, 0, 0, 0);
   }
   return false;
 }
@@ -142,6 +169,10 @@ bool AudioI2s::init(const AudioI2sConfig &cfg, size_t bs) {
   adc_diag_ = {};
   forensic_data_.captured = false;
   forensic_data_.captured_words = 0;
+  identity_checks_.store(0, std::memory_order_relaxed);
+  identity_mismatches_.store(0, std::memory_order_relaxed);
+  identity_sequence_seen_.store(0, std::memory_order_relaxed);
+  transport_error_count_.store(0, std::memory_order_relaxed);
 
 #ifdef ESP_PLATFORM
   // Allocate single full-duplex I2S controller with shared clocks
@@ -250,6 +281,7 @@ bool AudioI2s::init(const AudioI2sConfig &cfg, size_t bs) {
       .on_send_q_ovf = i2s_tx_q_ovf_callback,
   };
   i2s_channel_register_event_callback(tx, &tx_cbs, this);
+  callbacks_enabled_.store(true, std::memory_order_release);
 
   // Safe startup: Preload 3 descriptors (4.00 ms) into TX DMA to prevent underruns
   // while keeping remaining descriptors available so TX write does not backpressure RX pacing.
@@ -291,14 +323,7 @@ bool AudioI2s::init(const AudioI2sConfig &cfg, size_t bs) {
 void AudioI2s::deinit() {
   running_.store(false, std::memory_order_release);
 #ifdef ESP_PLATFORM
-  if (tx_chan_) {
-    if (tx_enabled_) {
-      i2s_channel_disable(static_cast<i2s_chan_handle_t>(tx_chan_));
-      tx_enabled_ = false;
-    }
-    i2s_del_channel(static_cast<i2s_chan_handle_t>(tx_chan_));
-    tx_chan_ = nullptr;
-  }
+  callbacks_enabled_.store(false, std::memory_order_release);
   if (rx_chan_) {
     if (rx_enabled_) {
       i2s_channel_disable(static_cast<i2s_chan_handle_t>(rx_chan_));
@@ -307,21 +332,19 @@ void AudioI2s::deinit() {
     i2s_del_channel(static_cast<i2s_chan_handle_t>(rx_chan_));
     rx_chan_ = nullptr;
   }
+  if (tx_chan_) {
+    if (tx_enabled_) {
+      i2s_channel_disable(static_cast<i2s_chan_handle_t>(tx_chan_));
+      tx_enabled_ = false;
+    }
+    i2s_del_channel(static_cast<i2s_chan_handle_t>(tx_chan_));
+    tx_chan_ = nullptr;
+  }
 #endif
 }
 
 void AudioI2s::stop() {
   running_.store(false, std::memory_order_release);
-#ifdef ESP_PLATFORM
-  if (tx_chan_ && tx_enabled_) {
-    i2s_channel_disable(static_cast<i2s_chan_handle_t>(tx_chan_));
-    tx_enabled_ = false;
-  }
-  if (rx_chan_ && rx_enabled_) {
-    i2s_channel_disable(static_cast<i2s_chan_handle_t>(rx_chan_));
-    rx_enabled_ = false;
-  }
-#endif
 }
 
 void AudioI2s::set_mode(AudioI2sMode mode) {
@@ -376,6 +399,11 @@ void AudioI2s::record_timing(uint64_t dsp_us, uint64_t cycle_us,
           wake_us,
           rx_gap_us,
           (dsp_us > 1333) ? "DspDeadlineMiss" : "TransportOrSchedulerMiss",
+          snapshot_active_.load(std::memory_order_relaxed),
+          telemetry_formatting_active_.load(std::memory_order_relaxed),
+          serial_printing_active_.load(std::memory_order_relaxed),
+          pitch_worker_active_.load(std::memory_order_relaxed),
+          diagnostic_queue_flush_active_.load(std::memory_order_relaxed),
       };
       outlier_count_++;
     }
@@ -397,6 +425,7 @@ void AudioI2s::generate_synthetic_voiced_mono(float *mono, size_t frames) {
   constexpr float kInvFs = 1.0f / 48000.0f;
 
   double sum_sq = 0.0;
+  uint32_t checksum = 2166136261U;
   for (size_t i = 0; i < frames; ++i) {
     uint64_t idx = synth_sample_idx_++;
     if (idx < kInitialSilenceSamples) {
@@ -404,6 +433,9 @@ void AudioI2s::generate_synthetic_voiced_mono(float *mono, size_t frames) {
       current_synth_f0_ = kFrequencies[0];
       current_synth_voiced_ = false;
       current_stimulus_state_ = StimulusState::Silence;
+      uint32_t bits = 0;
+      std::memcpy(&bits, &mono[i], sizeof(bits));
+      checksum = (checksum ^ bits) * 16777619U;
       continue;
     }
 
@@ -446,8 +478,55 @@ void AudioI2s::generate_synthetic_voiced_mono(float *mono, size_t frames) {
       mono[i] = 0.0f;
     }
     sum_sq += static_cast<double>(mono[i]) * static_cast<double>(mono[i]);
+    uint32_t bits = 0;
+    std::memcpy(&bits, &mono[i], sizeof(bits));
+    checksum = (checksum ^ bits) * 16777619U;
   }
   current_stimulus_rms_ = static_cast<float>(std::sqrt(sum_sq / frames));
+  current_block_checksum_ = checksum;
+}
+
+void AudioI2s::generate_b4b2_pure_sine(float *mono, size_t frames) {
+  constexpr uint64_t kInitialSilenceSamples = 24000; // 500 ms @ 48 kHz
+  constexpr uint64_t kAttackSamples = 960;           // 20 ms @ 48 kHz
+  constexpr float kFrequencyHz = 220.0f;
+  constexpr float kTargetAmplitude = 0.12589254f; // -18 dBFS
+  constexpr float kTwoPi = 6.28318530717958647692f;
+  constexpr float kInvFs = 1.0f / 48000.0f;
+
+  double sum_sq = 0.0;
+  uint32_t checksum = 2166136261U;
+  for (size_t i = 0; i < frames; ++i) {
+    const uint64_t index = synth_sample_idx_++;
+    current_synth_f0_ = kFrequencyHz;
+    if (index < kInitialSilenceSamples) {
+      mono[i] = 0.0f;
+      current_synth_voiced_ = false;
+      current_stimulus_state_ = StimulusState::Silence;
+    } else {
+      const uint64_t tone_index = index - kInitialSilenceSamples;
+      const float envelope =
+          tone_index < kAttackSamples
+              ? static_cast<float>(tone_index) /
+                    static_cast<float>(kAttackSamples)
+              : 1.0f;
+      current_synth_voiced_ = true;
+      current_stimulus_state_ = tone_index < kAttackSamples
+                                    ? StimulusState::Attack
+                                    : StimulusState::Tone;
+      mono[i] = kTargetAmplitude * envelope * std::sin(synth_phase_);
+      synth_phase_ += kTwoPi * kFrequencyHz * kInvFs;
+      if (synth_phase_ >= kTwoPi)
+        synth_phase_ -= kTwoPi;
+    }
+    sum_sq += static_cast<double>(mono[i]) * mono[i];
+    uint32_t bits = 0;
+    std::memcpy(&bits, &mono[i], sizeof(bits));
+    checksum = (checksum ^ bits) * 16777619U;
+  }
+  current_stimulus_rms_ =
+      frames ? static_cast<float>(std::sqrt(sum_sq / frames)) : 0.0f;
+  current_block_checksum_ = checksum;
 }
 
 void AudioI2s::generate_tx_tones(float *out_l, float *out_r, size_t frames) {
@@ -575,10 +654,16 @@ void AudioI2s::run() {
     size_t got = 0;
     esp_err_t rx_err = i2s_channel_read(rx, in32, byte_count, &got, pdMS_TO_TICKS(100));
     if (rx_err != ESP_OK || got < byte_count) {
-      counters_.rx_overruns.fetch_add(1, std::memory_order_relaxed);
-      record_transport_error("DMA_RX_READ_TIMEOUT", block_idx, 0, 0, 0, 0);
+      counters_.i2s_read_failures.fetch_add(1, std::memory_order_relaxed);
+      counters_.rx_dropped_frames.fetch_add(
+          (byte_count - std::min(got, byte_count)) /
+              (2 * sizeof(int32_t)),
+          std::memory_order_relaxed);
+      record_transport_error("I2S_RX_READ_FAILURE", block_idx, 0, 0, 0, 0);
       continue;
     }
+    counters_.i2s_read_successes.fetch_add(1, std::memory_order_relaxed);
+    decrement_depth(counters_.rx_event_queue_depth);
 
     int64_t t_wake = esp_timer_get_time();
     int64_t last_rx_cb = s_last_rx_callback_us;
@@ -636,6 +721,48 @@ void AudioI2s::run() {
       if (synth_hook_ && ((last_sample_in_cycle_ >= 24000 && last_sample_in_cycle_ < 24064) ||
                           (last_sample_in_cycle_ >= 72000 && last_sample_in_cycle_ < 72500))) {
         synth_hook_(last_sample_in_cycle_, current_synth_f0_, synth_hook_user_data_);
+      }
+      break;
+    }
+    case AudioI2sMode::PitchWorkerLockAudit: {
+      generate_b4b2_pure_sine(mono, n);
+      if (current_stimulus_state_ == StimulusState::Tone)
+        vocal_fx_funnel_inc_synthetic_tone_blocks();
+      const int64_t t_dsp_start = esp_timer_get_time();
+      vocal_fx_process(mono, l, r, n);
+      pure_dsp_us =
+          static_cast<uint64_t>(esp_timer_get_time() - t_dsp_start);
+
+      const VocalFxInputIdentity identity = vocal_fx_input_identity();
+      const uint64_t last_identity =
+          identity_sequence_seen_.load(std::memory_order_relaxed);
+      if (identity.sequence != 0 && identity.sequence != last_identity) {
+        identity_sequence_seen_.store(identity.sequence,
+                                      std::memory_order_relaxed);
+        identity_checks_.fetch_add(1, std::memory_order_relaxed);
+        uint32_t synth_rms_bits = 0, pitch_rms_bits = 0, dsp_rms_bits = 0;
+        std::memcpy(&synth_rms_bits, &current_stimulus_rms_,
+                    sizeof(synth_rms_bits));
+        std::memcpy(&pitch_rms_bits, &identity.pitch_tap_rms,
+                    sizeof(pitch_rms_bits));
+        std::memcpy(&dsp_rms_bits, &identity.dsp_input_rms,
+                    sizeof(dsp_rms_bits));
+        identity_synth_rms_bits_.store(synth_rms_bits,
+                                       std::memory_order_relaxed);
+        identity_pitch_rms_bits_.store(pitch_rms_bits,
+                                       std::memory_order_relaxed);
+        identity_dsp_rms_bits_.store(dsp_rms_bits,
+                                     std::memory_order_relaxed);
+        identity_synth_checksum_.store(current_block_checksum_,
+                                       std::memory_order_relaxed);
+        identity_pitch_checksum_.store(identity.pitch_tap_checksum,
+                                       std::memory_order_relaxed);
+        identity_dsp_checksum_.store(identity.dsp_input_checksum,
+                                     std::memory_order_relaxed);
+        if (current_block_checksum_ != identity.pitch_tap_checksum ||
+            current_block_checksum_ != identity.dsp_input_checksum ||
+            synth_rms_bits != pitch_rms_bits || synth_rms_bits != dsp_rms_bits)
+          identity_mismatches_.fetch_add(1, std::memory_order_relaxed);
       }
       break;
     }
@@ -712,8 +839,17 @@ void AudioI2s::run() {
     size_t sent = 0;
     esp_err_t tx_err = i2s_channel_write(tx, out32, byte_count, &sent, pdMS_TO_TICKS(100));
     if (tx_err != ESP_OK || sent < byte_count) {
-      counters_.tx_underruns.fetch_add(1, std::memory_order_relaxed);
-      record_transport_error("DMA_TX_WRITE_TIMEOUT", block_idx, pure_dsp_us, rx_gap_us, 0, wake_latency_us);
+      counters_.i2s_write_failures.fetch_add(1, std::memory_order_relaxed);
+      counters_.tx_dropped_frames.fetch_add(
+          (byte_count - std::min(sent, byte_count)) /
+              (2 * sizeof(int32_t)),
+          std::memory_order_relaxed);
+      record_transport_error("I2S_TX_WRITE_FAILURE", block_idx, pure_dsp_us,
+                             rx_gap_us, 0, wake_latency_us);
+    } else {
+      counters_.i2s_write_successes.fetch_add(1, std::memory_order_relaxed);
+      increment_depth(counters_.tx_event_queue_depth,
+                      counters_.tx_event_queue_max_depth);
     }
 
     // 8. Record cycle timing
@@ -844,7 +980,7 @@ TimingPercentiles AudioI2s::calculate_wake_percentiles() const {
 
 void AudioI2s::print_hardware_config() const {
   if (clock_info_.apll_fallback_occurred) {
-    printf("AUDIO CLOCK WARNING: APLL unavailable, using XTAL fractional clock\n");
+    printf("AUDIO CLOCK: EXPECTED_FALLBACK (APLL unavailable, using XTAL fractional clock)\n");
   }
   printf("\n=======================================================\n");
   printf("            AUDIO HARDWARE CONFIGURATION               \n");
@@ -900,7 +1036,7 @@ void AudioI2s::print_forensic_outliers() const {
   printf("\n--- Forensic Outlier Report (%zu events recorded) ---\n", outlier_count_);
   for (size_t i = 0; i < outlier_count_; ++i) {
     const auto &ev = outliers_[i];
-    printf("  [%zu] Block=%llu Time=%llu us PureDsp=%llu us Cycle=%llu us Wake=%llu us Gap=%llu us Cause=%s\n",
+    printf("  [%zu] Block=%llu Time=%llu us PureDsp=%llu us Cycle=%llu us Wake=%llu us Gap=%llu us Cause=%s Context[snapshot=%d formatting=%d serial=%d pitch_worker=%d queue_flush=%d]\n",
            i,
            static_cast<unsigned long long>(ev.block_index),
            static_cast<unsigned long long>(ev.timestamp_us),
@@ -908,7 +1044,9 @@ void AudioI2s::print_forensic_outliers() const {
            static_cast<unsigned long long>(ev.block_cycle_us),
            static_cast<unsigned long long>(ev.wake_latency_us),
            static_cast<unsigned long long>(ev.rx_gap_us),
-           ev.category);
+           ev.category, ev.snapshot_active, ev.telemetry_formatting_active,
+           ev.serial_printing_active, ev.pitch_worker_active,
+           ev.diagnostic_queue_flush_active);
   }
 }
 
@@ -942,7 +1080,7 @@ void AudioI2s::dump_sample_forensic() const {
 }
 
 void AudioI2s::record_transport_error(const char *type, uint64_t block_idx, uint64_t dsp_us, uint64_t rx_gap, uint64_t tx_gap, uint64_t wake_us) {
-  size_t idx = transport_error_count_++;
+  size_t idx = transport_error_count_.fetch_add(1, std::memory_order_relaxed);
   TransportErrorEvent &ev = transport_errors_[idx % kMaxTransportErrorEvents];
 #ifdef ESP_PLATFORM
   ev.timestamp_us = static_cast<uint64_t>(esp_timer_get_time());
@@ -958,8 +1096,9 @@ void AudioI2s::record_transport_error(const char *type, uint64_t block_idx, uint
 }
 
 void AudioI2s::print_transport_errors() const {
-  printf("\n--- Transport Error Event Log (%zu total events) ---\n", transport_error_count_);
-  size_t n = std::min(transport_error_count_, kMaxTransportErrorEvents);
+  const size_t total = transport_error_count_.load(std::memory_order_relaxed);
+  printf("\n--- Transport Error Event Log (%zu total events) ---\n", total);
+  size_t n = std::min(total, kMaxTransportErrorEvents);
   for (size_t i = 0; i < n; ++i) {
     const auto &ev = transport_errors_[i];
     printf("  [%zu] Type=%s Time=%llu us Block=%llu PureDsp=%llu us Wake=%llu us RxGap=%llu us TxGap=%llu us\n",
@@ -971,10 +1110,29 @@ void AudioI2s::print_transport_errors() const {
            static_cast<unsigned long long>(ev.rx_gap_us),
            static_cast<unsigned long long>(ev.tx_gap_us));
   }
-  if (transport_error_count_ == 0) {
+  if (total == 0) {
     printf("  No transport errors recorded.\n");
   }
   printf("----------------------------------------------------\n\n");
+}
+
+SyntheticInputIdentityTelemetry AudioI2s::synthetic_input_identity() const {
+  SyntheticInputIdentityTelemetry result{};
+  result.checks = identity_checks_.load(std::memory_order_relaxed);
+  result.mismatches = identity_mismatches_.load(std::memory_order_relaxed);
+  uint32_t synth_bits = identity_synth_rms_bits_.load(std::memory_order_relaxed);
+  uint32_t pitch_bits = identity_pitch_rms_bits_.load(std::memory_order_relaxed);
+  uint32_t dsp_bits = identity_dsp_rms_bits_.load(std::memory_order_relaxed);
+  std::memcpy(&result.synthetic_rms, &synth_bits, sizeof(synth_bits));
+  std::memcpy(&result.pitch_tap_rms, &pitch_bits, sizeof(pitch_bits));
+  std::memcpy(&result.dsp_input_rms, &dsp_bits, sizeof(dsp_bits));
+  result.synthetic_checksum =
+      identity_synth_checksum_.load(std::memory_order_relaxed);
+  result.pitch_tap_checksum =
+      identity_pitch_checksum_.load(std::memory_order_relaxed);
+  result.dsp_input_checksum =
+      identity_dsp_checksum_.load(std::memory_order_relaxed);
+  return result;
 }
 
 // -----------------------------------------------------------------------------
