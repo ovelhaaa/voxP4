@@ -37,14 +37,22 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
   PitchDetectorMeasurement out;
   if (!initialized_ || !x || n < config_.window_size)
     return out;
+  VF_PROFILE_BEGIN(profiler_,
+                   profile_section(PitchAnalysisProfileSection::YinTotal));
+  VF_PROFILE_BEGIN(profiler_,
+                   profile_section(PitchAnalysisProfileSection::YinEnergy));
   double energy = 0;
   for (size_t i = 0; i < n; ++i)
     energy += static_cast<double>(x[i]) * x[i];
   out.rms_db = 10.0f * std::log10(static_cast<float>(energy / n) + 1e-20f);
+  VF_PROFILE_END(profiler_,
+                 profile_section(PitchAnalysisProfileSection::YinEnergy), 0);
   VF_PROFILE_BEGIN(profiler_,
                    profile_section(PitchAnalysisProfileSection::YinDifference));
   difference_[0] = 0;
+  uint64_t inner_iterations = 0;
   for (size_t tau = 1; tau <= tau_max_ + 1; ++tau) {
+    inner_iterations += n - tau;
     float sum = 0;
     for (size_t i = 0; i + tau < n; ++i) {
       const float d = x[i] - x[i + tau];
@@ -107,16 +115,37 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
   VF_PROFILE_END(profiler_,
                  profile_section(PitchAnalysisProfileSection::YinInterpolation),
                  0);
+  executions_.fetch_add(1, std::memory_order_relaxed);
+  inner_iterations_.fetch_add(inner_iterations, std::memory_order_relaxed);
+  VF_PROFILE_END(profiler_,
+                 profile_section(PitchAnalysisProfileSection::YinTotal), 0);
   return out;
 }
 void YinDetector::reset() {
   difference_.fill(0);
   cmnd_.fill(0);
   profiler_.reset();
+  executions_.store(0, std::memory_order_relaxed);
+  inner_iterations_.store(0, std::memory_order_relaxed);
 }
 ProfileStats YinDetector::profile(PitchAnalysisProfileSection s) const {
-  if (s < PitchAnalysisProfileSection::YinDifference ||
-      s > PitchAnalysisProfileSection::YinInterpolation)
+  if (s < PitchAnalysisProfileSection::YinEnergy ||
+      s > PitchAnalysisProfileSection::YinTotal)
     return {};
   return profiler_.stats(profile_section(s));
+}
+YinForensicTelemetry YinDetector::forensic_telemetry() const {
+  YinForensicTelemetry result{};
+  result.tau_min = static_cast<uint32_t>(tau_min_);
+  result.tau_max = static_cast<uint32_t>(tau_max_);
+  result.window_size = config_.window_size;
+  result.tau_values_per_execution = static_cast<uint32_t>(tau_max_ + 1);
+  result.executions = executions_.load(std::memory_order_relaxed);
+  result.actual_inner_iterations =
+      inner_iterations_.load(std::memory_order_relaxed);
+  const uint64_t per_execution =
+      (tau_max_ + 1) * static_cast<uint64_t>(config_.window_size) -
+      ((tau_max_ + 1) * (tau_max_ + 2)) / 2;
+  result.expected_inner_iterations = result.executions * per_execution;
+  return result;
 }

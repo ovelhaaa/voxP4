@@ -11,6 +11,7 @@ public:
                                    uint64_t timestamp) override;
   void reset() override;
   ProfileStats profile(PitchAnalysisProfileSection section) const;
+  YinForensicTelemetry forensic_telemetry() const;
 
 private:
   PitchAnalysisConfig config_{};
@@ -18,4 +19,5 @@ private:
   bool initialized_ = false;
   std::array<float, kMaxWindow + 1> difference_{}, cmnd_{};
   Profiler profiler_;
+  std::atomic<uint64_t> executions_{0}, inner_iterations_{0};
 };

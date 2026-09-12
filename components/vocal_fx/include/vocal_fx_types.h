@@ -475,6 +475,24 @@ struct PitchAnalysisAuditTelemetry {
   uint64_t first_locked_input_position = 0;
 };
 
+struct YinForensicTelemetry {
+  uint32_t tau_min = 0;
+  uint32_t tau_max = 0;
+  uint32_t window_size = 0;
+  uint32_t tau_values_per_execution = 0;
+  uint64_t executions = 0;
+  uint64_t actual_inner_iterations = 0;
+  uint64_t expected_inner_iterations = 0;
+};
+
+struct PitchMarkForensicTelemetry {
+  uint64_t pitch_hops = 0;
+  uint64_t correlation_searches = 0;
+  uint64_t candidate_offsets_evaluated = 0;
+  uint64_t sample_pairs_correlated = 0;
+  uint64_t mac_like_operations = 0;
+};
+
 struct VocalFxInputIdentity {
   uint64_t sequence = 0;
   float dsp_input_rms = 0.0f;
@@ -576,14 +594,23 @@ struct SampleTelemetryRecord {
 
 enum class PitchAnalysisProfileSection : uint8_t {
   Decimator,
+  FifoDrain,
+  RollingWindow,
+  LinearWindowCopy,
+  YinEnergy,
   YinDifference,
   YinCmnd,
   YinSearch,
   YinInterpolation,
+  YinTotal,
+  VoicedFeatures,
   VoicedClassifier,
   PitchSmoother,
   PitchMarkSearch,
+  PitchMarkCorrelation,
+  PitchPublication,
   Total,
+  RunTotal,
   Count
 };
 
@@ -611,6 +638,8 @@ struct VocalFxProfileStats {
   uint64_t total_us = 0;
   uint64_t worst_us = 0;
   uint64_t deadline_misses = 0;
+  uint64_t total_cycles = 0;
+  uint64_t worst_cycles = 0;
 };
 
 struct VocalFxBufferAudit {

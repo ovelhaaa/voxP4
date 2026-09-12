@@ -31,6 +31,10 @@ public:
   uint64_t latency_samples() const { return latency_samples_; }
   ProfileStats profile(PitchAnalysisProfileSection) const;
   PitchAnalysisAuditTelemetry audit_telemetry() const;
+  PitchMarkForensicTelemetry mark_forensic_telemetry() const;
+  YinForensicTelemetry yin_forensic_telemetry() const {
+    return yin_.forensic_telemetry();
+  }
   size_t read_audit_events(PitchAuditEvent *, size_t);
   VocalFxInputIdentity tap_identity() const;
   size_t memory_bytes() const { return sizeof(*this); }
@@ -118,4 +122,7 @@ private:
   std::atomic<uint64_t> audit_event_drops_{0}, first_locked_input_position_{0};
   std::atomic<uint64_t> tap_identity_sequence_{0};
   std::atomic<uint32_t> tap_rms_bits_{0}, tap_checksum_{0};
+  std::atomic<uint64_t> mark_correlation_searches_{0},
+      mark_candidate_offsets_{0}, mark_sample_pairs_{0},
+      mark_mac_like_operations_{0};
 };

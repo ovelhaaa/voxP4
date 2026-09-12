@@ -94,6 +94,10 @@ void PitchAnalysis::reset() {
   tap_identity_sequence_.store(0, std::memory_order_relaxed);
   tap_rms_bits_.store(0, std::memory_order_relaxed);
   tap_checksum_.store(0, std::memory_order_relaxed);
+  mark_correlation_searches_.store(0, std::memory_order_relaxed);
+  mark_candidate_offsets_.store(0, std::memory_order_relaxed);
+  mark_sample_pairs_.store(0, std::memory_order_relaxed);
+  mark_mac_like_operations_.store(0, std::memory_order_relaxed);
   publish({});
 }
 void PitchAnalysis::tap(const float *samples, size_t n, bool audit_identity) {
@@ -155,24 +159,42 @@ float PitchAnalysis::median_history() const {
   return v[history_count_ / 2];
 }
 size_t PitchAnalysis::run(size_t max_hops) {
+  VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::RunTotal));
   size_t completed = 0;
   AnalysisSample sample;
-  while (completed < max_hops && fifo_.pop(sample)) {
+  uint64_t fifo_drain_cycles = 0;
+  uint64_t rolling_window_cycles = 0;
+  while (completed < max_hops) {
+    uint32_t cycle_start = Profiler::now_cycles();
+    const bool have_sample = fifo_.pop(sample);
+    fifo_drain_cycles +=
+        static_cast<uint32_t>(Profiler::now_cycles() - cycle_start);
+    if (!have_sample)
+      break;
+    cycle_start = Profiler::now_cycles();
     rolling_[rolling_write_] = sample.value;
     rolling_write_ = (rolling_write_ + 1) % config_.window_size;
     rolling_count_ = std::min<size_t>(rolling_count_ + 1, config_.window_size);
     latest_analysis_position_ = sample.input_position;
     audit_analysis_position_.store(latest_analysis_position_,
                                    std::memory_order_release);
-    if (rolling_count_ < config_.window_size || ++since_hop_ < config_.hop_size)
+    const bool needs_more_samples =
+        rolling_count_ < config_.window_size || ++since_hop_ < config_.hop_size;
+    rolling_window_cycles +=
+        static_cast<uint32_t>(Profiler::now_cycles() - cycle_start);
+    if (needs_more_samples)
       continue;
     since_hop_ = 0;
+    VF_PROFILE_BEGIN(
+        profiler_, ps(PitchAnalysisProfileSection::LinearWindowCopy));
     for (size_t i = 0; i < config_.window_size; ++i)
       linear_[i] = rolling_[(rolling_write_ + i) % config_.window_size];
+    VF_PROFILE_END(
+        profiler_, ps(PitchAnalysisProfileSection::LinearWindowCopy), 0);
     VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::Total));
     auto measurement = yin_.analyze(linear_.data(), config_.window_size, 0);
     VF_PROFILE_BEGIN(profiler_,
-                     ps(PitchAnalysisProfileSection::VoicedClassifier));
+                     ps(PitchAnalysisProfileSection::VoicedFeatures));
 
     // Time-domain feature extraction (scalar, fixed-cost, ESP32-P4 friendly)
     float peak = 0.0f;
@@ -198,6 +220,10 @@ size_t PitchAnalysis::run(size_t max_hops) {
     last_zcr_ = zcr;
     last_r1_ = r1;
     last_spectral_centroid_ = spectral_centroid;
+    VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::VoicedFeatures),
+                   0);
+    VF_PROFILE_BEGIN(profiler_,
+                     ps(PitchAnalysisProfileSection::VoicedClassifier));
 
     const bool level_ok = measurement.rms_db > config_.min_input_db;
     const bool raw_spectral_ok = (zcr <= config_.max_unvoiced_zcr) && (r1 >= config_.min_unvoiced_r1);
@@ -405,12 +431,21 @@ size_t PitchAnalysis::run(size_t max_hops) {
     record_pitch_age(input_position > result.analysis_timestamp_samples
                          ? input_position - result.analysis_timestamp_samples
                          : 0);
+    VF_PROFILE_BEGIN(profiler_,
+                     ps(PitchAnalysisProfileSection::PitchPublication));
     publish(result);
+    VF_PROFILE_END(profiler_,
+                   ps(PitchAnalysisProfileSection::PitchPublication), 0);
     VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::Total),
                    static_cast<uint64_t>(1000000.0 * config_.hop_size /
                                          config_.analysis_sample_rate));
     ++completed;
   }
+  profiler_.record_cycles(ps(PitchAnalysisProfileSection::FifoDrain),
+                          fifo_drain_cycles);
+  profiler_.record_cycles(ps(PitchAnalysisProfileSection::RollingWindow),
+                          rolling_window_cycles);
+  VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::RunTotal), 0);
   return completed;
 }
 void PitchAnalysis::publish(const PitchResult &r) {
@@ -611,6 +646,9 @@ void PitchAnalysis::record_mark_reset(const PitchResult &pitch,
 void PitchAnalysis::update_marks(const PitchResult &p) {
   VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch));
   const uint8_t cur_state = mark_state_.load(std::memory_order_relaxed);
+  uint64_t correlation_searches = 0;
+  uint64_t candidate_offsets = 0;
+  uint64_t sample_pairs = 0;
   const bool can_coast =
       (config_.continuity_policy == PsolaContinuityPolicy::Coasting ||
        config_.continuity_policy == PsolaContinuityPolicy::OnsetContinuityCoasting) &&
@@ -694,14 +732,19 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
       const uint64_t predicted = previous_mark_ + period;
       if (predicted + period / 2 >= available)
         break;
+      ++correlation_searches;
       float best = -2;
       int best_offset = 0;
       // Hotspot candidate for ESP32-P4 Xai/SIMD.
+      VF_PROFILE_BEGIN(
+          profiler_, ps(PitchAnalysisProfileSection::PitchMarkCorrelation));
       for (int offset = -radius; offset <= radius; ++offset) {
         const int64_t candidate = static_cast<int64_t>(predicted) + offset;
         if (candidate < window ||
             previous_mark_ < static_cast<uint64_t>(window))
           continue;
+        ++candidate_offsets;
+        sample_pairs += static_cast<uint64_t>(window);
         float dot = 0, aa = 0, bb = 0;
         for (int i = -window; i < 0; ++i) {
           const float a = audio_at(previous_mark_ + i),
@@ -716,6 +759,8 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
           best_offset = offset;
         }
       }
+      VF_PROFILE_END(
+          profiler_, ps(PitchAnalysisProfileSection::PitchMarkCorrelation), 0);
       if (best > .35f) {
         record_correlation(best, true);
         previous_mark_ = static_cast<uint64_t>(static_cast<int64_t>(predicted) +
@@ -784,6 +829,13 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
         break;
       }
     }
+  mark_correlation_searches_.fetch_add(correlation_searches,
+                                       std::memory_order_relaxed);
+  mark_candidate_offsets_.fetch_add(candidate_offsets,
+                                    std::memory_order_relaxed);
+  mark_sample_pairs_.fetch_add(sample_pairs, std::memory_order_relaxed);
+  mark_mac_like_operations_.fetch_add(sample_pairs * 3,
+                                      std::memory_order_relaxed);
   VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::PitchMarkSearch),
                  0);
 }
@@ -1035,8 +1087,22 @@ VocalFxInputIdentity PitchAnalysis::tap_identity() const {
 ProfileStats PitchAnalysis::profile(PitchAnalysisProfileSection s) const {
   if (s >= PitchAnalysisProfileSection::Count)
     return {};
-  if (s >= PitchAnalysisProfileSection::YinDifference &&
-      s <= PitchAnalysisProfileSection::YinInterpolation)
+  if (s >= PitchAnalysisProfileSection::YinEnergy &&
+      s <= PitchAnalysisProfileSection::YinTotal)
     return yin_.profile(s);
   return profiler_.stats(ps(s));
+}
+
+PitchMarkForensicTelemetry PitchAnalysis::mark_forensic_telemetry() const {
+  PitchMarkForensicTelemetry result{};
+  result.pitch_hops = profile(PitchAnalysisProfileSection::Total).calls;
+  result.correlation_searches =
+      mark_correlation_searches_.load(std::memory_order_relaxed);
+  result.candidate_offsets_evaluated =
+      mark_candidate_offsets_.load(std::memory_order_relaxed);
+  result.sample_pairs_correlated =
+      mark_sample_pairs_.load(std::memory_order_relaxed);
+  result.mac_like_operations =
+      mark_mac_like_operations_.load(std::memory_order_relaxed);
+  return result;
 }

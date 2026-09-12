@@ -55,6 +55,19 @@ config VOXP4_MODE_I2S_B4B_2_PITCH_WORKER_LOCK_AUDIT
         transport while measuring pitch-worker cadence, FIFO backlog, pitch-mark
         coherence, PSOLA activation, diagnostic queues, and safe teardown.
 
+config VOXP4_MODE_I2S_B4B_3_PITCH_ANALYSIS_HOTSPOT_AUDIT
+    bool "Stage B4B.3: Pitch Analysis Compute Hotspot Audit"
+    help
+        Runs a 10-second constant 220 Hz pure-sine audit through the real RX/TX
+        transport and accounts for pitch-worker compute cost by internal
+        PitchAnalysis, YIN, pitch-mark, and LPC section.
+
+config VOXP4_MODE_I2S_B4B_4A_LPC_RING_BUFFER_AUDIT
+    bool "Stage B4B.4A: LPC Ring Buffer Optimization Audit"
+    help
+        Repeats the 10-second B4B.3 hardware audit after the algorithm-preserving
+        LPC circular-frame storage optimization and reports before/after costs.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

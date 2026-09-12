@@ -21,14 +21,23 @@ enum class ProfileSection : uint8_t {
   DelayPrep,
   ReverbPrep,
   AnalysisDecimator,
+  AnalysisFifoDrain,
+  AnalysisRollingWindow,
+  AnalysisLinearWindowCopy,
+  YinEnergy,
   YinDifference,
   YinCmnd,
   YinSearch,
   YinInterpolation,
+  YinTotal,
+  VoicedFeatures,
   VoicedClassifier,
   PitchSmoother,
   PitchMarkSearch,
+  PitchMarkCorrelation,
+  PitchPublication,
   AnalysisTotal,
+  AnalysisRunTotal,
   PitchShiftLookup,
   PitchShiftGrain,
   PitchShiftWindowOla,
@@ -36,17 +45,23 @@ enum class ProfileSection : uint8_t {
   PitchShiftUnvoiced,
   PitchShiftCrossfade,
   PitchShiftTotal,
-  LpcWindowing, LpcAutocorrelation, LpcLevinsonDurbin, LpcPublication, LpcTotal,
+  LpcFifoDrain, LpcRingWrite, LpcFrameLinearization, LpcSolveWindowing,
+  LpcAutocorrelation, LpcLevinsonDurbin, LpcPublication, LpcSolveTotal, LpcTotal,
   Count
 };
 struct ProfileStats {
   uint64_t calls = 0, total_us = 0, max_us = 0, deadline_misses = 0;
+  uint64_t total_cycles = 0, max_cycles = 0;
 };
 class Profiler {
 public:
   static uint64_t now_us();
+  static uint32_t now_cycles();
+  static uint32_t cycles_per_us();
   void begin(ProfileSection s);
   void end(ProfileSection s, uint64_t deadline_us = 0);
+  void record_cycles(ProfileSection s, uint64_t cycles,
+                     uint64_t calls = 1);
   ProfileStats stats(ProfileSection s) const;
   void reset();
 
@@ -57,7 +72,8 @@ private:
   };
   struct PublishedStats {
     std::atomic<uint32_t> sequence{0};
-    Atomic64Parts calls, total_us, max_us, deadline_misses;
+    Atomic64Parts calls, total_us, max_us, deadline_misses, total_cycles,
+        max_cycles;
   };
 
   static void store(Atomic64Parts &destination, uint64_t value);
@@ -65,6 +81,7 @@ private:
   void publish(size_t index);
 
   std::array<uint64_t, (size_t)ProfileSection::Count> start_{};
+  std::array<uint32_t, (size_t)ProfileSection::Count> start_cycles_{};
   std::array<ProfileStats, (size_t)ProfileSection::Count> stats_{};
   std::array<PublishedStats, (size_t)ProfileSection::Count> published_{};
 };

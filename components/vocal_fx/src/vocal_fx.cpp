@@ -824,7 +824,8 @@ PitchShiftDebug vocal_fx_pitch_shift_debug() { return e.pitch_shift[0].debug(); 
 VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection s) {
   const auto stats = e.pitch_shift[0].profile(s);
-  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
+  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses,
+          stats.total_cycles, stats.max_cycles};
 }
 void vocal_fx_publish_pitch(const PitchResult &r) {
   while (pitch.publisher_lock.test_and_set(std::memory_order_acquire)) {
@@ -943,7 +944,8 @@ uint64_t vocal_fx_analysis_latency_samples() {
 VocalFxProfileStats
 vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section) {
   const auto stats = e.pitch_analysis.profile(section);
-  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
+  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses,
+          stats.total_cycles, stats.max_cycles};
 }
 size_t vocal_fx_dsp_memory_bytes() {
   return e.delay.memory_bytes() + e.reverb.memory_bytes() +
@@ -959,11 +961,15 @@ size_t vocal_fx_reverb_memory_bytes() {
   return e.reverb.memory_bytes();
 }
 LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].telemetry().formant_frames;x.voice2_formant_frames=e.pitch_shift[1].telemetry().formant_frames;return x;}
-VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection s){const auto x=e.lpc_analysis.profile(s);return{x.calls,x.total_us,x.max_us,x.deadline_misses};}
+VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection s){const auto x=e.lpc_analysis.profile(s);return{x.calls,x.total_us,x.max_us,x.deadline_misses,x.total_cycles,x.max_cycles};}
+LpcFrameCostSummary vocal_fx_lpc_frame_cost_summary() {
+  return e.lpc_analysis.frame_cost_summary();
+}
 
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {
   const auto stats = e.profiler.stats(static_cast<ProfileSection>(section));
-  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses};
+  return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses,
+          stats.total_cycles, stats.max_cycles};
 }
 
 void vocal_fx_reset_profiler() {
@@ -1008,7 +1014,8 @@ size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count) {
   record("PitchAudioHistory", e.pitch_analysis.audio_history_ptr(), e.pitch_analysis.audio_history_bytes());
   record("PitchAnalysisFifo", e.pitch_analysis.fifo_ptr(), e.pitch_analysis.fifo_bytes());
   record("LpcFifo", e.lpc_analysis.fifo_ptr(), e.lpc_analysis.fifo_bytes());
-  record("LpcFrame", e.lpc_analysis.frame_ptr(), e.lpc_analysis.frame_bytes());
+  record("LpcCircularFrame", e.lpc_analysis.frame_ptr(), e.lpc_analysis.frame_bytes());
+  record("LpcLinearFrame", e.lpc_analysis.linear_frame_ptr(), e.lpc_analysis.linear_frame_bytes());
   record("WorkBuffer", e.work, sizeof(e.work));
   record("LeftBuffer", e.left, sizeof(e.left));
   record("RightBuffer", e.right, sizeof(e.right));
@@ -1028,6 +1035,14 @@ PitchAnalysisDebug vocal_fx_pitch_analysis_debug() {
 
 PitchAnalysisAuditTelemetry vocal_fx_pitch_analysis_audit_telemetry() {
   return e.pitch_analysis.audit_telemetry();
+}
+
+YinForensicTelemetry vocal_fx_yin_forensic_telemetry() {
+  return e.pitch_analysis.yin_forensic_telemetry();
+}
+
+PitchMarkForensicTelemetry vocal_fx_pitch_mark_forensic_telemetry() {
+  return e.pitch_analysis.mark_forensic_telemetry();
 }
 
 size_t vocal_fx_read_pitch_audit_events(PitchAuditEvent *events,

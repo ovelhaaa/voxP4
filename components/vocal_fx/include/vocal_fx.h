@@ -73,6 +73,8 @@ bool vocal_fx_try_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
 PitchTrackState vocal_fx_pitch_track_state();
 PitchAnalysisDebug vocal_fx_pitch_analysis_debug();
 PitchAnalysisAuditTelemetry vocal_fx_pitch_analysis_audit_telemetry();
+YinForensicTelemetry vocal_fx_yin_forensic_telemetry();
+PitchMarkForensicTelemetry vocal_fx_pitch_mark_forensic_telemetry();
 size_t vocal_fx_read_pitch_audit_events(PitchAuditEvent *events,
                                         size_t capacity);
 VocalFxInputIdentity vocal_fx_input_identity();
@@ -87,6 +89,7 @@ void vocal_fx_reset_profiler();
 size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count);
 LpcTelemetry vocal_fx_lpc_telemetry();
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection section);
+LpcFrameCostSummary vocal_fx_lpc_frame_cost_summary();
 
 // Stage funnel & diagnostic telemetry (Req 5, 7, 8)
 VocalFxFunnelStats vocal_fx_funnel_stats();
