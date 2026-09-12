@@ -100,6 +100,10 @@ void PitchAnalysis::reset() {
   mark_candidate_offsets_.store(0, std::memory_order_relaxed);
   mark_sample_pairs_.store(0, std::memory_order_relaxed);
   mark_mac_like_operations_.store(0, std::memory_order_relaxed);
+  mark_windows_.fill(0);
+  mark_offsets_per_search_.fill(0);
+  mark_pairs_per_search_.fill(0);
+  mark_geometry_count_ = 0;
   publish({});
 }
 void PitchAnalysis::tap(const float *samples, size_t n, bool audit_identity) {
@@ -748,34 +752,27 @@ void PitchAnalysis::update_marks(const PitchResult &p) {
       if (predicted + period / 2 >= available)
         break;
       ++correlation_searches;
-      float best = -2;
-      int best_offset = 0;
       // Hotspot candidate for ESP32-P4 Xai/SIMD.
       VF_PROFILE_BEGIN(
           profiler_, ps(PitchAnalysisProfileSection::PitchMarkCorrelation));
-      for (int offset = -radius; offset <= radius; ++offset) {
-        const int64_t candidate = static_cast<int64_t>(predicted) + offset;
-        if (candidate < window ||
-            previous_mark_ < static_cast<uint64_t>(window))
-          continue;
-        ++candidate_offsets;
-        sample_pairs += static_cast<uint64_t>(window);
-        float dot = 0, aa = 0, bb = 0;
-        for (int i = -window; i < 0; ++i) {
-          const float a = audio_at(previous_mark_ + i),
-                      b = audio_at(candidate + i);
-          dot += a * b;
-          aa += a * a;
-          bb += b * b;
-        }
-        const float score = dot / std::sqrt(std::max(aa * bb, 1e-20f));
-        if (score > best) {
-          best = score;
-          best_offset = offset;
-        }
-      }
+      const PitchMarkNccResult ncc = pitch_mark_ncc_search(
+          config_.pitch_mark_ncc, audio_.data(), audio_.size(), previous_mark_,
+          predicted, radius, window, linear_.data(), linear_.size());
       VF_PROFILE_END(
           profiler_, ps(PitchAnalysisProfileSection::PitchMarkCorrelation), 0);
+      candidate_offsets += ncc.offsets;
+      sample_pairs += ncc.sample_pairs;
+      const float best = ncc.best_score;
+      const int best_offset = ncc.best_offset;
+      if (mark_geometry_count_ < kMarkGeometryCapacity) {
+        mark_windows_[mark_geometry_count_] = static_cast<uint16_t>(window);
+        mark_offsets_per_search_[mark_geometry_count_] =
+            static_cast<uint16_t>(ncc.offsets);
+        mark_pairs_per_search_[mark_geometry_count_] =
+            (static_cast<uint32_t>(period) << 20) |
+            (static_cast<uint32_t>(ncc.sample_pairs) & 0x000fffffU);
+        ++mark_geometry_count_;
+      }
       if (best > .35f) {
         record_correlation(best, true);
         previous_mark_ = static_cast<uint64_t>(static_cast<int64_t>(predicted) +
@@ -1119,5 +1116,47 @@ PitchMarkForensicTelemetry PitchAnalysis::mark_forensic_telemetry() const {
       mark_sample_pairs_.load(std::memory_order_relaxed);
   result.mac_like_operations =
       mark_mac_like_operations_.load(std::memory_order_relaxed);
+  result.geometry_observations =
+      std::min<uint32_t>(mark_geometry_count_, kMarkGeometryCapacity);
+  if (result.geometry_observations) {
+    std::array<uint16_t, kMarkGeometryCapacity> periods{}, radii{};
+    auto windows = mark_windows_;
+    auto offsets = mark_offsets_per_search_;
+    std::array<uint32_t, kMarkGeometryCapacity> pairs{};
+    const size_t n = result.geometry_observations;
+    for (size_t i = 0; i < n; ++i) {
+      periods[i] = static_cast<uint16_t>(mark_pairs_per_search_[i] >> 20);
+      radii[i] = static_cast<uint16_t>((offsets[i] - 1) / 2);
+      pairs[i] = mark_pairs_per_search_[i] & 0x000fffffU;
+    }
+    std::sort(periods.begin(), periods.begin() + n);
+    std::sort(radii.begin(), radii.begin() + n);
+    std::sort(windows.begin(), windows.begin() + n);
+    std::sort(offsets.begin(), offsets.begin() + n);
+    std::sort(pairs.begin(), pairs.begin() + n);
+    const auto index = [n](size_t percentile) {
+      return std::min(n - 1, (n * percentile + 99) / 100 - 1);
+    };
+    result.period_p50 = periods[index(50)];
+    result.period_p95 = periods[index(95)];
+    result.period_p99 = periods[index(99)];
+    result.period_max = periods[n - 1];
+    result.radius_p50 = radii[index(50)];
+    result.radius_p95 = radii[index(95)];
+    result.radius_p99 = radii[index(99)];
+    result.radius_max = radii[n - 1];
+    result.window_p50 = windows[index(50)];
+    result.window_p95 = windows[index(95)];
+    result.window_p99 = windows[index(99)];
+    result.window_max = windows[n - 1];
+    result.offsets_p50 = offsets[index(50)];
+    result.offsets_p95 = offsets[index(95)];
+    result.offsets_p99 = offsets[index(99)];
+    result.offsets_max = offsets[n - 1];
+    result.pairs_p50 = pairs[index(50)];
+    result.pairs_p95 = pairs[index(95)];
+    result.pairs_p99 = pairs[index(99)];
+    result.pairs_max = pairs[n - 1];
+  }
   return result;
 }

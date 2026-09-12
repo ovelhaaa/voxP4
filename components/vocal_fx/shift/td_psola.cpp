@@ -327,8 +327,42 @@ void TdPsola::record_grain_failure(GrainFailureReason reason,
   record.required_first_sample = center >= half ? center - half : 0;
   record.required_last_sample = center + half;
   record.source_to_nearest_mark = static_cast<float>(distance);
+  record.signed_delta_samples = static_cast<float>(center - source);
+  record.pitch_period = current_synthesis_period_;
+  record.delta_in_periods = current_synthesis_period_ > 0.0f
+                                ? record.signed_delta_samples /
+                                      current_synthesis_period_
+                                : 0.0f;
   record.allowed_distance = static_cast<float>(allowed_distance);
   record.reason = reason;
+}
+
+void TdPsola::record_grain_alignment(double source, uint64_t center,
+                                     float period, bool distance_failure) {
+  if (!(period > 0.0f) || !std::isfinite(source))
+    return;
+  const double delta_periods =
+      (static_cast<double>(center) - source) / static_cast<double>(period);
+  size_t delta_bin = 0;
+  if (delta_periods < -3.0) delta_bin = 0;
+  else if (delta_periods < -2.0) delta_bin = 1;
+  else if (delta_periods < -1.0) delta_bin = 2;
+  else if (delta_periods < 0.0) delta_bin = 3;
+  else if (delta_periods < 1.0) delta_bin = 4;
+  else if (delta_periods < 2.0) delta_bin = 5;
+  else if (delta_periods <= 3.0) delta_bin = 6;
+  else delta_bin = 7;
+  ++grain_rejection_.signed_delta_period_histogram[delta_bin];
+  ++grain_rejection_.alignment_observations;
+
+  const double age_ms = 1000.0 * static_cast<double>(debug_.analysis_age) /
+                        static_cast<double>(sample_rate_);
+  size_t age_bin = age_ms < 20.0 ? 0 : age_ms < 40.0 ? 1
+                       : age_ms < 60.0 ? 2 : age_ms < 100.0 ? 3
+                       : age_ms < 150.0 ? 4 : age_ms < 250.0 ? 5 : 6;
+  ++grain_rejection_.pitch_age_attempt_histogram[age_bin];
+  if (distance_failure)
+    ++grain_rejection_.pitch_age_distance_failure_histogram[age_bin];
 }
 
 #ifndef ESP_PLATFORM
@@ -395,8 +429,15 @@ bool TdPsola::add_grain(double destination, double source,
   float period;
   GrainFailureReason reason = GrainFailureReason::None;
   double distance = 0.0, allowed_distance = 0.0;
-  if (!select_mark(source, marks, count, index, period, &reason, &distance,
-                   &allowed_distance)) {
+  const bool selected = select_mark(source, marks, count, index, period, &reason,
+                                    &distance, &allowed_distance);
+  if (marks && count) {
+    const uint64_t nearest = marks[index].sample_position;
+    record_grain_alignment(
+        source, nearest, period,
+        !selected && reason == GrainFailureReason::SelectMarkDistanceTooLarge);
+  }
+  if (!selected) {
     const uint64_t center = marks && count ? marks[index].sample_position : 0;
     record_grain_failure(reason, destination, source, center, 0, distance,
                          allowed_distance);

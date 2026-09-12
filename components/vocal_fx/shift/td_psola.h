@@ -176,6 +176,8 @@ private:
                             double source, uint64_t center = 0,
                             uint32_t half = 0, double distance = 0.0,
                             double allowed_distance = 0.0);
+  void record_grain_alignment(double source, uint64_t center, float period,
+                              bool distance_failure);
   void clear_ola();
   PitchShiftFallbackReason fallback_reason_for_sample(
       const PitchResult &pitch, PitchTrackState track, bool usable,

@@ -63,6 +63,15 @@ struct VocalFxConfig {
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };
 
+enum class PitchMarkNccVariant : uint8_t {
+  Reference,
+  ReuseAa,
+  Fma4AccDot,
+  Fma8AccDot,
+  Fma8SlidingBb,
+  LinearScratch,
+};
+
 // Stage B4B.4D keeps the original scalar implementation available as the
 // numerical oracle while allowing the exact same YIN difference pairs to be
 // evaluated by dependency-chain variants.
@@ -99,6 +108,7 @@ struct PitchAnalysisConfig {
   // Zero disables periodic rebases (drift-study only). Incremental variants
   // always bootstrap and recover from discontinuities with Fma8Acc.
   uint8_t yin_incremental_rebase_hops = 8;
+  PitchMarkNccVariant pitch_mark_ncc = PitchMarkNccVariant::Reference;
   PsolaContinuityPolicy continuity_policy = PsolaContinuityPolicy::Baseline;
   float coast_ms = 0.0f;
   bool warm_reacquire_enabled = false;

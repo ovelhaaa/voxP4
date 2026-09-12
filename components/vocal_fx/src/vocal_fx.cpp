@@ -213,6 +213,11 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   if (c.enable_pitch_analysis) {
     PitchAnalysisConfig pitch_config{};
     pitch_config.input_sample_rate = c.sample_rate;
+#ifdef ESP_PLATFORM
+    // P4 production default selected by the B4B.4F bit-identical guardrail.
+    // The cross-platform PitchAnalysisConfig default remains the oracle.
+    pitch_config.pitch_mark_ncc = PitchMarkNccVariant::ReuseAa;
+#endif
     pitch_config.continuity_policy = (c.pitch_shift.continuity_policy != PsolaContinuityPolicy::Baseline)
                                          ? c.pitch_shift.continuity_policy
                                          : c.psola_continuity_policy;

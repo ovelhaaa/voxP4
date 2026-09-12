@@ -96,6 +96,13 @@ config VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT
         candidates against the preserved FMA_8ACC oracle, then runs the
         eligible production candidate in the unchanged full-worker audit.
 
+config VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT
+    bool "Stage B4B.4F: Pitch-Mark NCC Kernel & Passive Alignment Audit"
+    help
+        Benchmarks the preserved pitch-mark NCC oracle and mathematically
+        equivalent candidates, then runs the eligible kernel in the unchanged
+        full-worker audit while observing source-to-mark grain alignment.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

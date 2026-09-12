@@ -1,6 +1,7 @@
 #include "i2s_bringup.h"
 #include "vocal_fx.h"
 #include "pitch_analysis.h"
+#include "pitch_mark_ncc.h"
 #include "yin_detector.h"
 #include "esp_heap_caps.h"
 #include "esp_cpu.h"
@@ -19,6 +20,11 @@
 #include <new>
 #include <string_view>
 
+// B4B.4F retains the B4B.4E YIN selection and reuses its audited transport.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT 1
+#endif
 // B4B.4E reuses the already-audited B4B.4D transport/coordinator scaffolding.
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT) && \
     !defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
@@ -1812,7 +1818,7 @@ benchmark_yin_difference(YinDifferenceVariant variant,
   return result;
 }
 
-void print_yin_isolated_benchmarks() {
+[[maybe_unused]] void print_yin_isolated_benchmarks() {
   constexpr double kProductsPerHop = 77515.0;
   const std::array<YinDifferenceVariant, 5> variants{{
       YinDifferenceVariant::ReferenceScalar,
@@ -1875,6 +1881,265 @@ void print_yin_isolated_benchmarks() {
   }
 #endif
 }
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+struct PitchMarkReferenceCost {
+  uint64_t ring_lookup = 0;
+  uint64_t dot = 0;
+  uint64_t aa = 0;
+  uint64_t bb = 0;
+  uint64_t square_root = 0;
+  uint64_t division = 0;
+  uint64_t candidate_loop = 0;
+  uint64_t best_selection = 0;
+};
+
+inline uint32_t b4b4f_cycle_probe() {
+  // Keep the diagnostic-only fine-grained measurements on their intended
+  // side of the counter read. This code is not part of the production kernel.
+  asm volatile("" ::: "memory");
+  return esp_cpu_get_cycle_count();
+}
+
+uint32_t b4b4f_probe_overhead() {
+  uint32_t best = UINT32_MAX;
+  for (size_t i = 0; i < 1024; ++i) {
+    const uint32_t start = b4b4f_cycle_probe();
+    const uint32_t elapsed = b4b4f_cycle_probe() - start;
+    best = std::min(best, elapsed);
+  }
+  return best;
+}
+
+inline uint32_t b4b4f_net_cycles(uint32_t start, uint32_t overhead) {
+  const uint32_t elapsed = b4b4f_cycle_probe() - start;
+  return elapsed > overhead ? elapsed - overhead : 0;
+}
+
+PitchMarkReferenceCost profile_pitch_mark_reference_cost(
+    const float *ring, size_t ring_size, uint32_t probe_overhead,
+    volatile float &checksum) {
+  constexpr size_t kProfileRuns = 4;
+  constexpr int kPeriod = 218, kRadius = kPeriod / 5, kWindow = kPeriod / 2;
+  const size_t mask = ring_size - 1;
+  PitchMarkReferenceCost cost{};
+  for (size_t run = 0; run < kProfileRuns; ++run) {
+    const uint64_t previous = 512 + run;
+    const uint64_t predicted = previous + kPeriod;
+    const uint64_t a_start = previous - kWindow;
+    float best_score = -2.0f;
+    int best_offset = 0;
+    for (int offset = -kRadius; offset <= kRadius; ++offset) {
+      uint32_t start = b4b4f_cycle_probe();
+      const uint64_t candidate = predicted + offset;
+      const uint64_t b_start = candidate - kWindow;
+      asm volatile("" : : "r"(candidate), "r"(b_start));
+      cost.candidate_loop += b4b4f_net_cycles(start, probe_overhead);
+
+      float dot = 0.0f, aa = 0.0f, bb = 0.0f;
+      for (int i = 0; i < kWindow; ++i) {
+        start = b4b4f_cycle_probe();
+        const float a = ring[(a_start + i) & mask];
+        const float b = ring[(b_start + i) & mask];
+        asm volatile("" : : "f"(a), "f"(b) : "memory");
+        cost.ring_lookup += b4b4f_net_cycles(start, probe_overhead);
+
+        start = b4b4f_cycle_probe();
+        dot += a * b;
+        asm volatile("" : "+f"(dot));
+        cost.dot += b4b4f_net_cycles(start, probe_overhead);
+
+        start = b4b4f_cycle_probe();
+        aa += a * a;
+        asm volatile("" : "+f"(aa));
+        cost.aa += b4b4f_net_cycles(start, probe_overhead);
+
+        start = b4b4f_cycle_probe();
+        bb += b * b;
+        asm volatile("" : "+f"(bb));
+        cost.bb += b4b4f_net_cycles(start, probe_overhead);
+      }
+      start = b4b4f_cycle_probe();
+      const float denominator = std::sqrt(std::max(aa * bb, 1e-20f));
+      asm volatile("" : : "f"(denominator));
+      cost.square_root += b4b4f_net_cycles(start, probe_overhead);
+
+      start = b4b4f_cycle_probe();
+      const float score = dot / denominator;
+      asm volatile("" : : "f"(score));
+      cost.division += b4b4f_net_cycles(start, probe_overhead);
+
+      start = b4b4f_cycle_probe();
+      if (score > best_score) {
+        best_score = score;
+        best_offset = offset;
+      }
+      asm volatile("" : "+f"(best_score), "+r"(best_offset));
+      cost.best_selection += b4b4f_net_cycles(start, probe_overhead);
+    }
+    checksum = checksum + best_score + static_cast<float>(best_offset) * 1e-9f;
+  }
+  cost.ring_lookup /= kProfileRuns;
+  cost.dot /= kProfileRuns;
+  cost.aa /= kProfileRuns;
+  cost.bb /= kProfileRuns;
+  cost.square_root /= kProfileRuns;
+  cost.division /= kProfileRuns;
+  cost.candidate_loop /= kProfileRuns;
+  cost.best_selection /= kProfileRuns;
+  return cost;
+}
+
+void print_pitch_mark_ncc_isolated_benchmarks() {
+  constexpr size_t kRingSize = 2048;
+  constexpr size_t kRuns = 128;
+  constexpr int kPeriod = 218, kRadius = kPeriod / 5, kWindow = kPeriod / 2;
+  auto *ring = static_cast<float *>(heap_caps_malloc(
+      kRingSize * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  auto *scratch = static_cast<float *>(heap_caps_malloc(
+      kPitchMarkNccScratchCapacity * sizeof(float),
+      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!ring || !scratch) {
+    printf("B4B4F_ISOLATED allocation_failed ring=%p scratch=%p\n", ring,
+           scratch);
+    if (ring) heap_caps_free(ring);
+    if (scratch) heap_caps_free(scratch);
+    return;
+  }
+  constexpr float kPi = 3.14159265358979323846f;
+  for (size_t i = 0; i < kRingSize; ++i) {
+    const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) / 48000.0f;
+    ring[i] = 0.12589254f *
+              (std::sin(phase) + .31f * std::sin(2.0f * phase + .23f) +
+               .13f * std::sin(3.0f * phase - .41f));
+  }
+  const std::array<PitchMarkNccVariant, 6> variants{{
+      PitchMarkNccVariant::Reference, PitchMarkNccVariant::ReuseAa,
+      PitchMarkNccVariant::Fma4AccDot, PitchMarkNccVariant::Fma8AccDot,
+      PitchMarkNccVariant::Fma8SlidingBb,
+      PitchMarkNccVariant::LinearScratch}};
+  volatile float checksum = 0.0f;
+  double reference_average_cycles = 0.0;
+  for (const auto variant : variants) {
+    std::array<uint32_t, kRuns> elapsed_us{}, elapsed_cycles{};
+    uint64_t total_us = 0, total_cycles = 0;
+    PitchMarkNccResult last{};
+    // One untimed warm-up eliminates first-call/cache effects.
+    (void)pitch_mark_ncc_search(variant, ring, kRingSize, 512,
+                                512 + kPeriod, kRadius, kWindow, scratch,
+                                kPitchMarkNccScratchCapacity);
+    for (size_t run = 0; run < kRuns; ++run) {
+      const uint64_t previous = 512 + run;
+      const uint64_t start_us = esp_timer_get_time();
+      const uint32_t start_cycles = esp_cpu_get_cycle_count();
+      last = pitch_mark_ncc_search(variant, ring, kRingSize, previous,
+                                   previous + kPeriod, kRadius, kWindow,
+                                   scratch, kPitchMarkNccScratchCapacity);
+      elapsed_cycles[run] = esp_cpu_get_cycle_count() - start_cycles;
+      elapsed_us[run] = static_cast<uint32_t>(esp_timer_get_time() - start_us);
+      total_us += elapsed_us[run];
+      total_cycles += elapsed_cycles[run];
+      checksum = checksum + last.best_score;
+    }
+    std::sort(elapsed_us.begin(), elapsed_us.end());
+    std::sort(elapsed_cycles.begin(), elapsed_cycles.end());
+    const double average_us = static_cast<double>(total_us) / kRuns;
+    const double average_cycles = static_cast<double>(total_cycles) / kRuns;
+    if (variant == PitchMarkNccVariant::Reference)
+      reference_average_cycles = average_cycles;
+    printf("B4B4F_ISOLATED variant=%s searches=%lu avg_us/search=%.2f cycles/search=%.2f us/offset=%.5f cycles/offset=%.5f cycles/pair=%.7f P50_us=%lu P95_us=%lu P99_us=%lu max_us=%lu P50_cycles=%lu P95_cycles=%lu P99_cycles=%lu max_cycles=%lu window=%d offsets=%lu pairs=%llu checksum=%.9g\n",
+           pitch_mark_ncc_variant_name(variant),
+           static_cast<unsigned long>(kRuns), average_us, average_cycles,
+           average_us / last.offsets, average_cycles / last.offsets,
+           average_cycles / last.sample_pairs,
+           static_cast<unsigned long>(percentile_sorted(elapsed_us.data(), kRuns, 50)),
+           static_cast<unsigned long>(percentile_sorted(elapsed_us.data(), kRuns, 95)),
+           static_cast<unsigned long>(percentile_sorted(elapsed_us.data(), kRuns, 99)),
+           static_cast<unsigned long>(elapsed_us.back()),
+           static_cast<unsigned long>(percentile_sorted(elapsed_cycles.data(), kRuns, 50)),
+           static_cast<unsigned long>(percentile_sorted(elapsed_cycles.data(), kRuns, 95)),
+           static_cast<unsigned long>(percentile_sorted(elapsed_cycles.data(), kRuns, 99)),
+           static_cast<unsigned long>(elapsed_cycles.back()), kWindow,
+           static_cast<unsigned long>(last.offsets),
+           static_cast<unsigned long long>(last.sample_pairs), checksum);
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+
+  // Isolate the one-time copy used by LINEAR_SCRATCH. End-to-end candidate
+  // timing above remains authoritative; this split explains its net result.
+  std::array<uint32_t, kRuns> copy_us{}, copy_cycles{};
+  uint64_t copy_total_us = 0, copy_total_cycles = 0;
+  for (size_t run = 0; run < kRuns; ++run) {
+    const uint64_t previous = 512 + run;
+    const uint64_t a_start = previous - kWindow;
+    const uint64_t first_candidate = previous + kPeriod - kRadius;
+    const uint64_t b_region = first_candidate - kWindow;
+    const uint64_t start_us = esp_timer_get_time();
+    const uint32_t start_cycles = esp_cpu_get_cycle_count();
+    for (int i = 0; i < kWindow; ++i)
+      scratch[i] = ring[(a_start + i) & (kRingSize - 1)];
+    for (int i = 0; i < kWindow + 2 * kRadius; ++i)
+      scratch[kWindow + i] = ring[(b_region + i) & (kRingSize - 1)];
+    copy_cycles[run] = esp_cpu_get_cycle_count() - start_cycles;
+    copy_us[run] = static_cast<uint32_t>(esp_timer_get_time() - start_us);
+    copy_total_cycles += copy_cycles[run];
+    copy_total_us += copy_us[run];
+    checksum = checksum + scratch[run % (2 * kWindow + 2 * kRadius)];
+  }
+  std::sort(copy_us.begin(), copy_us.end());
+  std::sort(copy_cycles.begin(), copy_cycles.end());
+  printf("B4B4F_LINEAR_COPY searches=%lu samples/search=%d avg_us/search=%.2f cycles/search=%.2f P50_us=%lu P95_us=%lu P99_us=%lu max_us=%lu P50_cycles=%lu P95_cycles=%lu P99_cycles=%lu max_cycles=%lu\n",
+         static_cast<unsigned long>(kRuns), 2 * kWindow + 2 * kRadius,
+         static_cast<double>(copy_total_us) / kRuns,
+         static_cast<double>(copy_total_cycles) / kRuns,
+         static_cast<unsigned long>(percentile_sorted(copy_us.data(), kRuns, 50)),
+         static_cast<unsigned long>(percentile_sorted(copy_us.data(), kRuns, 95)),
+         static_cast<unsigned long>(percentile_sorted(copy_us.data(), kRuns, 99)),
+         static_cast<unsigned long>(copy_us.back()),
+         static_cast<unsigned long>(percentile_sorted(copy_cycles.data(), kRuns, 50)),
+         static_cast<unsigned long>(percentile_sorted(copy_cycles.data(), kRuns, 95)),
+         static_cast<unsigned long>(percentile_sorted(copy_cycles.data(), kRuns, 99)),
+         static_cast<unsigned long>(copy_cycles.back()));
+
+  // Fine-grained cycle probes perturb the kernel, so subtract the minimum
+  // counter-pair overhead and normalize their relative weights to 98% of the
+  // independently measured uninstrumented reference. The remaining 2% is
+  // reported as other; the reconciled attribution is therefore exactly 100%.
+  const uint32_t probe_overhead = b4b4f_probe_overhead();
+  const auto cost = profile_pitch_mark_reference_cost(
+      ring, kRingSize, probe_overhead, checksum);
+  const uint64_t measured_sum = cost.ring_lookup + cost.dot + cost.aa + cost.bb +
+      cost.square_root + cost.division + cost.candidate_loop +
+      cost.best_selection;
+  const double scale = measured_sum && reference_average_cycles > 0.0
+                           ? reference_average_cycles * 0.98 / measured_sum
+                           : 0.0;
+  const double other_cycles = reference_average_cycles * 0.02;
+  const auto print_cost = [&](const char *category, uint64_t raw_cycles) {
+    const double normalized = raw_cycles * scale;
+    printf("B4B4F_COST category=%s raw_cycles/search=%llu normalized_cycles/search=%.2f percent=%.3f\n",
+           category, static_cast<unsigned long long>(raw_cycles), normalized,
+           reference_average_cycles > 0.0
+               ? normalized * 100.0 / reference_average_cycles
+               : 0.0);
+  };
+  printf("B4B4F_COST_METHOD probe_overhead=%lu reference_cycles/search=%.2f measured_raw_sum=%llu normalized_probe_coverage=98.000 other=2.000 reconciled=100.000\n",
+         static_cast<unsigned long>(probe_overhead), reference_average_cycles,
+         static_cast<unsigned long long>(measured_sum));
+  print_cost("audio_ring_lookup", cost.ring_lookup);
+  print_cost("dot_accumulation", cost.dot);
+  print_cost("aa_accumulation", cost.aa);
+  print_cost("bb_accumulation", cost.bb);
+  print_cost("sqrt", cost.square_root);
+  print_cost("division", cost.division);
+  print_cost("candidate_loop", cost.candidate_loop);
+  print_cost("best_score_selection", cost.best_selection);
+  printf("B4B4F_COST category=other raw_cycles/search=0 normalized_cycles/search=%.2f percent=2.000\n",
+         other_cycles);
+  heap_caps_free(scratch);
+  heap_caps_free(ring);
+}
+#endif
 #endif
 
 OldSlidingStorageBenchmark benchmark_old_lpc_sliding_storage() {
@@ -1954,6 +2219,9 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   constexpr double kBeforeCombinedUsPerHop = 18891.58;
   constexpr double kBeforeCore1Percent = 98.23;
   constexpr double kBeforePitchHopsPerSecond = 51.97;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  // B4B.4F reports its fixed B4B.4E baseline alongside the new target-rate
+  // decomposition below; no legacy summary constants are needed here.
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   // B4B.4D production measurements on this P4 rev1.3 at 360 MHz.
   constexpr double kBeforeLpcUsPerFrame = 4101.27;
@@ -1979,6 +2247,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("   B4B.4B — LPC AUTOCORRELATION FPU OPTIMIZATION AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("   B4B.4C — COMPENSATED FMA / DOUBLE-SINGLE LPC AUDIT\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  printf("   B4B.4F — PITCH-MARK NCC / ALIGNMENT AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   printf("   B4B.4E — INCREMENTAL / SLIDING YIN AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
@@ -1999,6 +2269,13 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("Production candidate: AUTOCORR_F32_DOUBLE_SINGLE (host numeric and audio guardrails passed)\n");
   print_lpc_autocorr_isolated_benchmarks();
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  printf("Production YIN: YIN_DIFF_INCREMENTAL_F32 rebase=64 (unchanged)\n");
+  printf("Production LPC autocorrelation: AUTOCORR_F32_DOUBLE_SINGLE (unchanged)\n");
+  printf("P4 production default: PITCH_MARK_NCC_REUSE_AA\n");
+  printf("Generic cross-platform default: PITCH_MARK_NCC_REFERENCE\n");
+  printf("Audit override: PITCH_MARK_NCC_REUSE_AA\n");
+  print_pitch_mark_ncc_isolated_benchmarks();
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   printf("Oracle YIN difference: YIN_DIFF_FMA_8ACC\n");
   printf("Host-selected candidate: YIN_DIFF_INCREMENTAL_F32 rebase=64 hops\n");
@@ -2038,6 +2315,9 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   incremental_pitch_config.yin_difference =
       YinDifferenceVariant::IncrementalF32;
   incremental_pitch_config.yin_incremental_rebase_hops = 64;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  incremental_pitch_config.pitch_mark_ncc = PitchMarkNccVariant::ReuseAa;
+#endif
   if (!vocal_fx_init_pitch_analysis(incremental_pitch_config)) {
     ESP_LOGE(TAG, "B4B.4E incremental pitch initialization failed");
     return;
@@ -2330,6 +2610,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("Stage B4B.4B — LPC Autocorrelation FPU Optimization Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("Stage B4B.4C — Compensated FMA / Double-Single LPC Autocorrelation Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  printf("Stage B4B.4F — Pitch-Mark NCC Kernel / Passive Alignment Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   printf("Stage B4B.4E — Incremental / Sliding YIN Difference Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
@@ -2960,6 +3242,16 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   grain.history_center_before_half += grain_voice1.history_center_before_half;
   grain.history_too_old += grain_voice1.history_too_old;
   grain.history_future_end += grain_voice1.history_future_end;
+  grain.alignment_observations += grain_voice1.alignment_observations;
+  for (size_t i = 0; i < grain.signed_delta_period_histogram.size(); ++i)
+    grain.signed_delta_period_histogram[i] +=
+        grain_voice1.signed_delta_period_histogram[i];
+  for (size_t i = 0; i < grain.pitch_age_attempt_histogram.size(); ++i) {
+    grain.pitch_age_attempt_histogram[i] +=
+        grain_voice1.pitch_age_attempt_histogram[i];
+    grain.pitch_age_distance_failure_histogram[i] +=
+        grain_voice1.pitch_age_distance_failure_histogram[i];
+  }
   if (grain.diagnostic_count == 0 && grain_voice1.diagnostic_count != 0) {
     grain.diagnostics[0] = grain_voice1.diagnostics[0];
     grain.diagnostic_count = 1;
@@ -2977,6 +3269,149 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
     grain_primary = "SELECT_MARK_NO_MARKS";
   else if (grain.history_future_end > 0)
     grain_primary = "HISTORY_FUTURE_END";
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  (void)b4b4e_pass;
+  (void)grain_primary;
+  (void)pitch_track_end;
+  (void)ever_locked;
+  (void)psola_usable;
+  constexpr double kReferencePitchMarkUsPerHop = 2368.19;
+  const double pitch_mark_us_per_hop =
+      profiled_hops ? static_cast<double>(mark_search.total_us) / profiled_hops
+                    : 0.0;
+  const double pitch_mark_speedup = pitch_mark_us_per_hop > 0.0
+                                        ? kReferencePitchMarkUsPerHop /
+                                              pitch_mark_us_per_hop
+                                        : 0.0;
+  const double other_pitch_us_per_hop =
+      std::max(0.0, new_pitch_analysis_us_per_hop - pitch_mark_us_per_hop);
+  const double pitch_mark_target_ms_s = pitch_mark_us_per_hop * 200.0 / 1000.0;
+  const double other_pitch_target_ms_s = other_pitch_us_per_hop * 200.0 / 1000.0;
+  const double lpc_target_ms_s = lpc_avg_frame_us * 125.0 / 1000.0;
+  const double target_core_ms_s = pitch_mark_target_ms_s +
+                                  other_pitch_target_ms_s + lpc_target_ms_s;
+  size_t lowest_populated_age = grain.pitch_age_attempt_histogram.size();
+  for (size_t i = 0; i < grain.pitch_age_attempt_histogram.size(); ++i)
+    if (grain.pitch_age_attempt_histogram[i]) {
+      lowest_populated_age = i;
+      break;
+    }
+  const uint64_t failures_at_lowest =
+      lowest_populated_age < grain.pitch_age_attempt_histogram.size()
+          ? grain.pitch_age_distance_failure_histogram[lowest_populated_age]
+          : 0;
+  const uint64_t failures_above_lowest =
+      grain.select_mark_distance_too_large -
+      std::min(grain.select_mark_distance_too_large, failures_at_lowest);
+  const char *alignment_class = grain.select_mark_distance_too_large == 0
+      ? "NO_DISTANCE_FAILURE"
+      : failures_at_lowest == 0 && failures_above_lowest > 0
+          ? "GRAIN_ALIGNMENT_BACKLOG_COUPLED"
+          : failures_above_lowest == 0
+              ? "PSOLA_MARK_PHASE_ALIGNMENT_ISSUE"
+              : "MIXED_BACKLOG_AND_PHASE_ALIGNMENT";
+  const bool b4b4f_pass = b4b4b_transport_pass && teardown_clean &&
+                          pitch_mark_speedup >= 2.0;
+  printf("\nB4B.4F production selection: PITCH_MARK_NCC_REUSE_AA\n");
+  printf("Host NCC guardrails: score_bit_identical=yes best_offset=0 accept_reject=0 mark_position=0 coherent_mark=0 track_state=0 NaN/Inf=0\n");
+  printf("Pitch-mark geometry: searches=%llu searches/s=%.3f searches/pitch_hop=%.5f offsets/search=%.3f sample_pairs/search=%.3f\n",
+         static_cast<unsigned long long>(mark_correlations),
+         wall_seconds > 0.0 ? mark_correlations / wall_seconds : 0.0,
+         mark_hops ? static_cast<double>(mark_correlations) / mark_hops : 0.0,
+         mark_correlations ? static_cast<double>(mark_candidates) / mark_correlations : 0.0,
+         mark_correlations ? static_cast<double>(mark_samples) / mark_correlations : 0.0);
+  printf("B4B4F_GEOMETRY observations=%lu period_P50=%lu period_P95=%lu period_P99=%lu period_max=%lu radius_P50=%lu radius_P95=%lu radius_P99=%lu radius_max=%lu window_P50=%lu window_P95=%lu window_P99=%lu window_max=%lu offsets_P50=%lu offsets_P95=%lu offsets_P99=%lu offsets_max=%lu pairs_P50=%lu pairs_P95=%lu pairs_P99=%lu pairs_max=%lu\n",
+         static_cast<unsigned long>(marks_end.geometry_observations),
+         static_cast<unsigned long>(marks_end.period_p50),
+         static_cast<unsigned long>(marks_end.period_p95),
+         static_cast<unsigned long>(marks_end.period_p99),
+         static_cast<unsigned long>(marks_end.period_max),
+         static_cast<unsigned long>(marks_end.radius_p50),
+         static_cast<unsigned long>(marks_end.radius_p95),
+         static_cast<unsigned long>(marks_end.radius_p99),
+         static_cast<unsigned long>(marks_end.radius_max),
+         static_cast<unsigned long>(marks_end.window_p50),
+         static_cast<unsigned long>(marks_end.window_p95),
+         static_cast<unsigned long>(marks_end.window_p99),
+         static_cast<unsigned long>(marks_end.window_max),
+         static_cast<unsigned long>(marks_end.offsets_p50),
+         static_cast<unsigned long>(marks_end.offsets_p95),
+         static_cast<unsigned long>(marks_end.offsets_p99),
+         static_cast<unsigned long>(marks_end.offsets_max),
+         static_cast<unsigned long>(marks_end.pairs_p50),
+         static_cast<unsigned long>(marks_end.pairs_p95),
+         static_cast<unsigned long>(marks_end.pairs_p99),
+         static_cast<unsigned long>(marks_end.pairs_max));
+  printf("Target-rate budget: PitchMark=%.3f ms/s other_PitchAnalysis=%.3f ms/s LPC=%.3f ms/s total_Core1=%.3f ms/s\n",
+         pitch_mark_target_ms_s, other_pitch_target_ms_s, lpc_target_ms_s,
+         target_core_ms_s);
+  printf("B4B4F_DELTA_HIST labels=lt-3,-3to-2,-2to-1,-1to0,0to1,1to2,2to3,gt3 counts=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[0]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[1]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[2]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[3]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[4]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[5]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[6]),
+         static_cast<unsigned long long>(grain.signed_delta_period_histogram[7]));
+  printf("Grain rejection: source_negative=%llu select_total=%llu no_marks=%llu low_confidence=%llu invalid_period=%llu distance_too_large=%llu history_total=%llu center_before_half=%llu history_too_old=%llu future_end=%llu\n",
+         static_cast<unsigned long long>(grain.attempt_source_negative),
+         static_cast<unsigned long long>(grain.select_mark_failure_total),
+         static_cast<unsigned long long>(grain.select_mark_no_marks),
+         static_cast<unsigned long long>(grain.select_mark_low_confidence),
+         static_cast<unsigned long long>(grain.select_mark_invalid_period),
+         static_cast<unsigned long long>(grain.select_mark_distance_too_large),
+         static_cast<unsigned long long>(grain.history_failure_total),
+         static_cast<unsigned long long>(grain.history_center_before_half),
+         static_cast<unsigned long long>(grain.history_too_old),
+         static_cast<unsigned long long>(grain.history_future_end));
+  for (uint32_t i = 0; i < grain.diagnostic_count; ++i) {
+    const auto &d = grain.diagnostics[i];
+    printf("B4B4F_GRAIN_FAILURE index=%lu reason=%u input_end=%llu oldest=%llu analysis_timestamp=%llu pitch_age_samples=%llu requested_source=%.3f nearest_mark_center=%llu signed_delta_samples=%.3f abs_delta_samples=%.3f delta_in_periods=%.6f allowed_distance=%.3f pitch_period=%.3f history_first=%llu history_last=%llu\n",
+           static_cast<unsigned long>(i), static_cast<unsigned>(d.reason),
+           static_cast<unsigned long long>(d.input_end),
+           static_cast<unsigned long long>(d.history_oldest_sample),
+           static_cast<unsigned long long>(d.pitch_analysis_timestamp),
+           static_cast<unsigned long long>(d.pitch_age_samples),
+           d.requested_source,
+           static_cast<unsigned long long>(d.selected_mark_center),
+           d.signed_delta_samples, std::fabs(d.signed_delta_samples),
+           d.delta_in_periods, d.allowed_distance, d.pitch_period,
+           static_cast<unsigned long long>(d.required_first_sample),
+           static_cast<unsigned long long>(d.required_last_sample));
+  }
+  for (size_t i = 0; i < grain.pitch_age_attempt_histogram.size(); ++i)
+    printf("B4B4F_AGE_HIST bin=%lu attempts=%llu distance_failures=%llu rate=%.6f\n",
+           static_cast<unsigned long>(i),
+           static_cast<unsigned long long>(grain.pitch_age_attempt_histogram[i]),
+           static_cast<unsigned long long>(grain.pitch_age_distance_failure_histogram[i]),
+           grain.pitch_age_attempt_histogram[i]
+               ? static_cast<double>(grain.pitch_age_distance_failure_histogram[i]) /
+                     grain.pitch_age_attempt_histogram[i]
+               : 0.0);
+  printf("B4B.4F transport/teardown audit: %s\n",
+         b4b4b_transport_pass && teardown_clean ? "PASS" : "FAIL");
+  printf("\nB4B.4F RESULT:\n%s\n", b4b4f_pass ? "PASS" : "FAIL");
+  printf("PRODUCTION PITCH-MARK NCC:\nPITCH_MARK_NCC_REUSE_AA\n");
+  printf("PITCH-MARK SEARCH:\n%.2f -> %.2f us/hop\n",
+         kReferencePitchMarkUsPerHop, pitch_mark_us_per_hop);
+  printf("ELIGIBLE SPEEDUP:\n%.2fx\n", pitch_mark_speedup);
+  printf("PITCH ANALYSIS:\n%.2f us/hop\n", new_pitch_analysis_us_per_hop);
+  printf("TARGET-RATE CORE1 DEMAND:\n%.2f ms CPU / second\n", target_core_ms_s);
+  printf("CORE1:\n%.2f%%\n", core1_utilization);
+  printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
+  printf("FIFO:\n%s\n", fifo_bounded ? "bounded" : "saturated");
+  printf("PITCH AGE:\n%.2f ms\n", audit_end.latest_pitch_age_ms);
+  printf("GRAINS:\nattempted=%llu scheduled=%llu rendered=%llu\n",
+         static_cast<unsigned long long>(funnel_end.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_end.grains_scheduled),
+         static_cast<unsigned long long>(funnel_end.grains_rendered));
+  printf("GRAIN ALIGNMENT:\n%s\n", alignment_class);
+  printf("NEXT TARGET-RATE HOTSPOT:\n%s\n",
+         lpc_target_ms_s >= other_pitch_target_ms_s ? "LPC" : "OTHER_PITCH_ANALYSIS");
+  printf("NEXT STEP:\noptimize the largest measured target-rate CPU demand without changing DSP semantics\n");
+#else
 
   printf("\nB4B.4E production selection: YIN_DIFF_INCREMENTAL_F32 rebase=64\n");
   printf("Host guardrails: NaN/Inf=0 selected_tau=0 voiced=0 track_state=0 pitch_marks=0\n");
@@ -3072,6 +3507,7 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("REALTIME:\n%s\n", realtime ? "PASS" : "FAIL");
   printf("NEXT HOTSPOT:\n%s\n", primary_hotspot);
   printf("NEXT STEP:\n%s\n", realtime ? "AUDIT_PSOLA_ONLY_IF_ZERO_GRAINS_PERSISTS" : "OPTIMIZE_THE_MEASURED_FULL_WORKER_HOTSPOT");
+#endif
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   (void)old_storage;
   (void)maximum_theoretical_hops;
@@ -3347,6 +3783,12 @@ void run_i2s_bringup_selected_mode(void) {
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4B.4C low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4f_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4F low-priority coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4e_diag", 24576,

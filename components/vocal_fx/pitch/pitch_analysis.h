@@ -2,6 +2,7 @@
 #include "analysis_fifo.h"
 #include "decimator.h"
 #include "profiling.h"
+#include "pitch_mark_ncc.h"
 #include "vocal_fx_config.h"
 #include "vocal_fx_types.h"
 #include "yin_detector.h"
@@ -136,4 +137,11 @@ private:
   std::atomic<uint64_t> mark_correlation_searches_{0},
       mark_candidate_offsets_{0}, mark_sample_pairs_{0},
       mark_mac_like_operations_{0};
+  static constexpr size_t kMarkGeometryCapacity = 64;
+  std::array<uint16_t, kMarkGeometryCapacity> mark_windows_{},
+      mark_offsets_per_search_{};
+  // Low 20 bits: sample pairs. High 12 bits: rounded period. This keeps the
+  // passive geometry reservoir at its original 512-byte footprint.
+  std::array<uint32_t, kMarkGeometryCapacity> mark_pairs_per_search_{};
+  uint32_t mark_geometry_count_ = 0;
 };

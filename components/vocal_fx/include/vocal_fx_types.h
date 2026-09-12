@@ -381,6 +381,9 @@ struct GrainFailureDiagnostic {
   uint64_t required_first_sample = 0;
   uint64_t required_last_sample = 0;
   float source_to_nearest_mark = 0.0f;
+  float signed_delta_samples = 0.0f;
+  float delta_in_periods = 0.0f;
+  float pitch_period = 0.0f;
   float allowed_distance = 0.0f;
   GrainFailureReason reason = GrainFailureReason::None;
 };
@@ -401,6 +404,12 @@ struct GrainRejectionTelemetry {
   float history_size_ms = 0.0f;
   uint64_t input_end = 0;
   uint64_t oldest_available = 0;
+  uint64_t alignment_observations = 0;
+  // <-3, [-3,-2), [-2,-1), [-1,0), [0,1), [1,2), [2,3], >3.
+  std::array<uint64_t, 8> signed_delta_period_histogram{};
+  // [0,20), [20,40), [40,60), [60,100), [100,150), [150,250), >=250 ms.
+  std::array<uint64_t, 7> pitch_age_attempt_histogram{};
+  std::array<uint64_t, 7> pitch_age_distance_failure_histogram{};
   uint32_t diagnostic_count = 0;
   std::array<GrainFailureDiagnostic, kDiagnosticCapacity> diagnostics{};
 };
@@ -546,6 +555,12 @@ struct PitchMarkForensicTelemetry {
   uint64_t candidate_offsets_evaluated = 0;
   uint64_t sample_pairs_correlated = 0;
   uint64_t mac_like_operations = 0;
+  uint32_t geometry_observations = 0;
+  uint32_t period_p50 = 0, period_p95 = 0, period_p99 = 0, period_max = 0;
+  uint32_t radius_p50 = 0, radius_p95 = 0, radius_p99 = 0, radius_max = 0;
+  uint32_t window_p50 = 0, window_p95 = 0, window_p99 = 0, window_max = 0;
+  uint32_t offsets_p50 = 0, offsets_p95 = 0, offsets_p99 = 0, offsets_max = 0;
+  uint32_t pairs_p50 = 0, pairs_p95 = 0, pairs_p99 = 0, pairs_max = 0;
 };
 
 struct VocalFxInputIdentity {

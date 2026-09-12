@@ -8,7 +8,7 @@ add_library(vocal_fx_dsp
  ${VF}/src/vocal_fx.cpp ${VF}/reverb/diffuser.cpp ${VF}/reverb/fdn_reverb.cpp
  ${VF}/platform/profiling.cpp ${VF}/platform/audio_i2s.cpp)
 target_sources(vocal_fx_dsp PRIVATE ${VF}/pitch/decimator.cpp
- ${VF}/pitch/yin_detector.cpp ${VF}/pitch/pitch_analysis.cpp ${VF}/shift/td_psola.cpp
+ ${VF}/pitch/yin_detector.cpp ${VF}/pitch/pitch_mark_ncc.cpp ${VF}/pitch/pitch_analysis.cpp ${VF}/shift/td_psola.cpp
  ${VF}/formant/lpc.cpp
  ${VF}/harmony/scale.cpp ${VF}/harmony/midi_harmony.cpp ${VF}/harmony/harmony_engine.cpp ${VF}/harmony/harmony_articulation_envelope.cpp ${VF}/harmony/harmony_unvoiced_articulation.cpp ${VF}/harmony/harmony_plosive_bridge.cpp)
 target_include_directories(vocal_fx_dsp PUBLIC ${VF}/include ${VF}/src ${VF}/dsp ${VF}/dynamics ${VF}/delay ${VF}/reverb ${VF}/platform ${VF}/pitch ${VF}/shift ${VF}/harmony ${VF}/formant)
@@ -29,6 +29,11 @@ add_test(NAME yin_kernel_audit COMMAND yin_kernel_audit --verify)
 add_executable(yin_incremental_tests test_yin_incremental.cpp)
 target_link_libraries(yin_incremental_tests PRIVATE vocal_fx_dsp)
 add_test(NAME yin_incremental_tests COMMAND yin_incremental_tests)
+add_executable(pitch_mark_ncc_audit pitch_mark_ncc_audit.cpp)
+target_link_libraries(pitch_mark_ncc_audit PRIVATE vocal_fx_dsp)
+target_compile_definitions(pitch_mark_ncc_audit PRIVATE
+ VOXP4_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME pitch_mark_ncc_audit COMMAND pitch_mark_ncc_audit --verify)
 add_executable(psola_tests test_psola.cpp)
 target_link_libraries(psola_tests PRIVATE vocal_fx_dsp)
 add_test(NAME psola_tests COMMAND psola_tests)
