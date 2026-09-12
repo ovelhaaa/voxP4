@@ -68,6 +68,13 @@ config VOXP4_MODE_I2S_B4B_4A_LPC_RING_BUFFER_AUDIT
         Repeats the 10-second B4B.3 hardware audit after the algorithm-preserving
         LPC circular-frame storage optimization and reports before/after costs.
 
+config VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT
+    bool "Stage B4B.4B: LPC Autocorrelation Precision & FPU Audit"
+    help
+        Benchmarks double-reference, float-scalar, and float-multiacc LPC
+        autocorrelation on identical frames, then repeats the 10-second B4B.4A
+        full-worker audit without changing LPC cadence or scheduling.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

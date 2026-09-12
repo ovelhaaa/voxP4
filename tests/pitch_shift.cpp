@@ -22,7 +22,7 @@ static void put32(std::ofstream &f, uint32_t v) {
 }
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
+    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--autocorr reference|float-scalar|float-multiacc] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
     return 2;
   }
   std::ifstream f(argv[1], std::ios::binary);
@@ -71,6 +71,13 @@ int main(int argc, char **argv) {
     if(option=="--formants" && i+1<argc){const std::string value=argv[++i];if(value=="lpc")formants=FormantMode::Lpc;else if(value!="off"){std::fprintf(stderr,"invalid formant mode\n");return 2;}}
     else if(option=="--formant-amount"&&i+1<argc)amount=std::stof(argv[++i]);
     else if(option=="--lpc-order"&&i+1<argc)c.lpc.order=static_cast<uint16_t>(std::stoi(argv[++i]));
+    else if(option=="--autocorr"&&i+1<argc){
+      const std::string value=argv[++i];
+      if(value=="reference")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrReferenceDouble;
+      else if(value=="float-scalar")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrFloatScalar;
+      else if(value=="float-multiacc")c.lpc.autocorrelation=LpcAutocorrelationVariant::AutocorrFloatMultiacc;
+      else{std::fprintf(stderr,"invalid autocorrelation variant: %s\n",value.c_str());return 2;}
+    }
     else if(option=="--history-offset-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.history_offset_samples=static_cast<uint32_t>(std::lround(ms*48.0f));}
     else if(option=="--debug-csv"&&i+1<argc)debug_path=argv[++i];
     else if(option=="--sample-telemetry"&&i+1<argc)sample_telemetry_path=argv[++i];
@@ -181,12 +188,15 @@ int main(int argc, char **argv) {
   const auto t = vocal_fx_pitch_shift_telemetry();
   std::fprintf(stderr,
                "latency=%u samples grains=%llu max/block=%u fallback=%llu "
-               "mark_underflow=%llu history_underflow=%llu\n",
+               "mark_underflow=%llu history_underflow=%llu "
+               "formant_frames=%llu formant_resets=%llu max_restored=%.9g\n",
                vocal_fx_pitch_shift_latency_samples(),
                (unsigned long long)t.grains, t.max_grains_per_block,
                (unsigned long long)t.fallback_frames,
                (unsigned long long)t.pitch_mark_underflows,
-               (unsigned long long)t.audio_history_underflows);
+               (unsigned long long)t.audio_history_underflows,
+               (unsigned long long)t.formant_frames,
+               (unsigned long long)t.formant_resets, t.max_restored);
   const auto lt=vocal_fx_lpc_telemetry();
   std::fprintf(stderr,"lpc_frames=%llu invalid=%llu fallback=%llu max_error=%.6f\n",(unsigned long long)lt.lpc_frames,(unsigned long long)lt.lpc_invalid_frames,(unsigned long long)lt.lpc_fallback_frames,lt.max_prediction_error);
 }

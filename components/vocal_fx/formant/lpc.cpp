@@ -9,6 +9,48 @@ ProfileSection section(LpcProfileSection s) {
   return static_cast<ProfileSection>(static_cast<size_t>(ProfileSection::LpcFifoDrain) +
                                      static_cast<size_t>(s));
 }
+
+#if defined(__GNUC__)
+#define VF_LPC_NOINLINE __attribute__((noinline))
+#else
+#define VF_LPC_NOINLINE
+#endif
+
+VF_LPC_NOINLINE void autocorr_reference_double(const float *y, size_t n,
+                                                uint16_t order, double *r) {
+  for (size_t k = 0; k <= order; ++k)
+    for (size_t i = k; i < n; ++i)
+      r[k] += double(y[i]) * y[i - k];
+}
+
+VF_LPC_NOINLINE void autocorr_float_scalar(const float *y, size_t n,
+                                           uint16_t order, double *r) {
+  for (size_t k = 0; k <= order; ++k) {
+    float sum = 0.0f;
+    for (size_t i = k; i < n; ++i)
+      sum += y[i] * y[i - k];
+    r[k] = static_cast<double>(sum);
+  }
+}
+
+VF_LPC_NOINLINE void autocorr_float_multiacc(const float *y, size_t n,
+                                             uint16_t order, double *r) {
+  for (size_t k = 0; k <= order; ++k) {
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+    size_t i = k;
+    for (; i + 3 < n; i += 4) {
+      s0 += y[i] * y[i - k];
+      s1 += y[i + 1] * y[i + 1 - k];
+      s2 += y[i + 2] * y[i + 2 - k];
+      s3 += y[i + 3] * y[i + 3 - k];
+    }
+    for (; i < n; ++i)
+      s0 += y[i] * y[i - k];
+    // Fixed pairwise reduction order is part of this variant's definition.
+    const float sum = (s0 + s1) + (s2 + s3);
+    r[k] = static_cast<double>(sum);
+  }
+}
 }
 
 bool SharedLpcAnalysis::init(float rate, const LpcConfig &c) {
@@ -37,6 +79,38 @@ void SharedLpcAnalysis::tap(const float *x, size_t n) {
 bool SharedLpcAnalysis::solve(const float *x, size_t n, uint16_t order,
                               float pre, SharedLpcModel *out,
                               Profiler *profiler) {
+  return solve_with_autocorrelation(
+      x, n, order, pre,
+      LpcAutocorrelationVariant::AutocorrReferenceDouble, out, profiler);
+}
+
+bool SharedLpcAnalysis::autocorrelate(
+    const float *y, size_t n, uint16_t order,
+    LpcAutocorrelationVariant variant, double *r) {
+  if (!y || !r || n == 0 || n < static_cast<size_t>(order) + 1 ||
+      order > VOCAL_FX_LPC_MAX_ORDER)
+    return false;
+  std::fill_n(r, static_cast<size_t>(order) + 1, 0.0);
+  switch (variant) {
+  case LpcAutocorrelationVariant::AutocorrReferenceDouble:
+    autocorr_reference_double(y, n, order, r);
+    break;
+  case LpcAutocorrelationVariant::AutocorrFloatScalar:
+    autocorr_float_scalar(y, n, order, r);
+    break;
+  case LpcAutocorrelationVariant::AutocorrFloatMultiacc:
+    autocorr_float_multiacc(y, n, order, r);
+    break;
+  default:
+    return false;
+  }
+  return true;
+}
+
+bool SharedLpcAnalysis::solve_with_autocorrelation(
+    const float *x, size_t n, uint16_t order, float pre,
+    LpcAutocorrelationVariant variant, SharedLpcModel *out,
+    Profiler *profiler) {
   if (!x || !out || n > 1024 || n < static_cast<size_t>(order) + 2 ||
       order > VOCAL_FX_LPC_MAX_ORDER)
     return false;
@@ -57,10 +131,13 @@ bool SharedLpcAnalysis::solve(const float *x, size_t n, uint16_t order,
     return false;
   }
   std::array<double,VOCAL_FX_LPC_MAX_ORDER+1> r{},a{},next{};
-  // O(N*order) hotspot: candidate for ESP32-P4 Xai/SIMD after target profiling.
   if (profiler)
     profiler->begin(section(LpcProfileSection::Autocorrelation));
-  for(size_t k=0;k<=order;++k) for(size_t i=k;i<n;++i) r[k]+=double(y[i])*y[i-k];
+  if (!autocorrelate(y.data(), n, order, variant, r.data())) {
+    if (profiler) profiler->end(section(LpcProfileSection::Autocorrelation));
+    if (profiler) profiler->end(section(LpcProfileSection::SolveTotal));
+    return false;
+  }
   // Tiny diagonal loading prevents perfectly periodic synthetic frames from
   // producing a singular Toeplitz system without materially flattening speech.
   r[0] *= 1.000001;
@@ -303,7 +380,10 @@ size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
                 linear_frame_.begin() + first_count);
       VF_PROFILE_END(profiler_, section(LpcProfileSection::FrameLinearization), 0);
       const bool voiced=pitch.voiced && pitch.confidence>.25f;
-      m.valid=config_.enabled && voiced && solve(linear_frame_.data(),config_.window_size,config_.order,config_.preemphasis,&m,&profiler_);
+      m.valid=config_.enabled && voiced &&
+          solve_with_autocorrelation(
+              linear_frame_.data(), config_.window_size, config_.order,
+              config_.preemphasis, config_.autocorrelation, &m, &profiler_);
       m.confidence*=std::clamp(pitch.confidence,0.0f,1.0f);
       if(!m.valid)++telemetry_.lpc_invalid_frames;
       telemetry_.max_prediction_error=std::max(telemetry_.max_prediction_error,m.prediction_error);

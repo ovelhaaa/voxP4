@@ -1520,6 +1520,138 @@ struct OldSlidingStorageBenchmark {
   float checksum = 0.0f;
 };
 
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+struct AutocorrIsolatedBenchmark {
+  uint32_t count = 0;
+  uint64_t autocorr_total_us = 0;
+  uint64_t autocorr_total_cycles = 0;
+  uint64_t lpc_total_us = 0;
+  uint32_t autocorr_p50_us = 0;
+  uint32_t autocorr_p95_us = 0;
+  uint32_t autocorr_p99_us = 0;
+  uint32_t autocorr_max_us = 0;
+  uint32_t lpc_max_us = 0;
+  uint32_t valid_frames = 0;
+  double checksum = 0.0;
+};
+
+const char *autocorr_variant_name(LpcAutocorrelationVariant variant) {
+  switch (variant) {
+  case LpcAutocorrelationVariant::AutocorrReferenceDouble:
+    return "AUTOCORR_REFERENCE_DOUBLE";
+  case LpcAutocorrelationVariant::AutocorrFloatScalar:
+    return "AUTOCORR_FLOAT_SCALAR";
+  case LpcAutocorrelationVariant::AutocorrFloatMultiacc:
+    return "AUTOCORR_FLOAT_MULTIACC";
+  }
+  return "UNKNOWN";
+}
+
+AutocorrIsolatedBenchmark benchmark_lpc_autocorrelation(
+    LpcAutocorrelationVariant variant) {
+  constexpr size_t kWindow = 1024;
+  constexpr uint16_t kOrder = 16;
+  constexpr size_t kWarmupFrames = 4;
+  constexpr size_t kMeasuredFrames = 128;
+  constexpr float kPreemphasis = 0.97f;
+  constexpr float kPi = 3.14159265358979323846f;
+  std::array<float, kWindow> frame{};
+  std::array<double, kOrder + 1> autocorrelation{};
+  std::array<uint32_t, kMeasuredFrames> autocorr_us{};
+  AutocorrIsolatedBenchmark result{};
+  for (size_t frame_index = 0;
+       frame_index < kWarmupFrames + kMeasuredFrames; ++frame_index) {
+    const size_t first_sample = frame_index * 384;
+    for (size_t i = 0; i < kWindow; ++i) {
+      const float phase =
+          2.0f * kPi * 220.0f * static_cast<float>(first_sample + i) /
+          48000.0f;
+      frame[i] = 0.12589254f * std::sin(phase);
+    }
+    const uint64_t lpc_start_us = esp_timer_get_time();
+    SharedLpcModel model{};
+    const bool valid = SharedLpcAnalysis::solve_with_autocorrelation(
+        frame.data(), frame.size(), kOrder, kPreemphasis, variant, &model);
+    const uint32_t lpc_us = static_cast<uint32_t>(
+        esp_timer_get_time() - lpc_start_us);
+
+    // Convert the same raw frame to the exact preemphasis + Hann input used by
+    // solve(). Reverse traversal preserves each unmodified predecessor.
+    for (size_t i = kWindow - 1; i > 0; --i) {
+      const float window =
+          .5f - .5f * std::cos(2.0f * kPi * i / (kWindow - 1));
+      frame[i] = (frame[i] - kPreemphasis * frame[i - 1]) * window;
+    }
+    frame[0] = 0.0f;
+    const uint64_t autocorr_start_us = esp_timer_get_time();
+    const uint32_t autocorr_start_cycles = esp_cpu_get_cycle_count();
+    SharedLpcAnalysis::autocorrelate(frame.data(), frame.size(), kOrder,
+                                     variant, autocorrelation.data());
+    const uint32_t autocorr_cycles = static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - autocorr_start_cycles);
+    const uint32_t elapsed_autocorr_us = static_cast<uint32_t>(
+        esp_timer_get_time() - autocorr_start_us);
+    if (frame_index < kWarmupFrames)
+      continue;
+    const size_t measured_index = frame_index - kWarmupFrames;
+    autocorr_us[measured_index] = elapsed_autocorr_us;
+    result.autocorr_total_us += elapsed_autocorr_us;
+    result.autocorr_total_cycles += autocorr_cycles;
+    result.lpc_total_us += lpc_us;
+    result.autocorr_max_us =
+        std::max(result.autocorr_max_us, elapsed_autocorr_us);
+    result.lpc_max_us = std::max(result.lpc_max_us, lpc_us);
+    result.valid_frames += valid ? 1U : 0U;
+    result.checksum += autocorrelation[frame_index % (kOrder + 1)];
+    // The coordinator is pinned to Core 1. Yield outside both timed regions so
+    // IDLE1 can service the normal task watchdog during the isolated audit.
+    vTaskDelay(1);
+  }
+  result.count = kMeasuredFrames;
+  std::sort(autocorr_us.begin(), autocorr_us.end());
+  result.autocorr_p50_us =
+      percentile_sorted(autocorr_us.data(), autocorr_us.size(), 50);
+  result.autocorr_p95_us =
+      percentile_sorted(autocorr_us.data(), autocorr_us.size(), 95);
+  result.autocorr_p99_us =
+      percentile_sorted(autocorr_us.data(), autocorr_us.size(), 99);
+  return result;
+}
+
+void print_lpc_autocorr_isolated_benchmarks() {
+  constexpr double kProductsPerFrame = 17272.0;
+  const std::array<LpcAutocorrelationVariant, 3> variants{{
+      LpcAutocorrelationVariant::AutocorrReferenceDouble,
+      LpcAutocorrelationVariant::AutocorrFloatScalar,
+      LpcAutocorrelationVariant::AutocorrFloatMultiacc,
+  }};
+  printf("B4B4B_THEORY window_size=1024 order=16 products/frame=17272\n");
+  for (const auto variant : variants) {
+    const auto stats = benchmark_lpc_autocorrelation(variant);
+    const double average_us = stats.count
+                                  ? static_cast<double>(stats.autocorr_total_us) /
+                                        stats.count
+                                  : 0.0;
+    const double average_cycles =
+        stats.count ? static_cast<double>(stats.autocorr_total_cycles) /
+                          stats.count
+                    : 0.0;
+    printf("B4B4B_ISOLATED variant=%s frames=%lu autocorrelation_avg_us/frame=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/frame=%.2f cycles/product=%.5f LPC_total_us/frame=%.2f LPC_max_us=%lu valid_frames=%lu products/frame=17272 checksum=%.9g\n",
+           autocorr_variant_name(variant),
+           static_cast<unsigned long>(stats.count), average_us,
+           static_cast<unsigned long>(stats.autocorr_p50_us),
+           static_cast<unsigned long>(stats.autocorr_p95_us),
+           static_cast<unsigned long>(stats.autocorr_p99_us),
+           static_cast<unsigned long>(stats.autocorr_max_us), average_cycles,
+           average_cycles / kProductsPerFrame,
+           stats.count ? static_cast<double>(stats.lpc_total_us) / stats.count
+                       : 0.0,
+           static_cast<unsigned long>(stats.lpc_max_us),
+           static_cast<unsigned long>(stats.valid_frames), stats.checksum);
+  }
+}
+#endif
+
 OldSlidingStorageBenchmark benchmark_old_lpc_sliding_storage() {
   constexpr uint32_t kSamples = 48000;
   // This benchmark runs only after both real-time tasks have confirmed stop.
@@ -1575,11 +1707,24 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   constexpr double kBeforeCombinedUsPerHop = 46852.56;
   constexpr double kBeforeCore1Percent = 99.33;
   constexpr double kBeforePitchHopsPerSecond = 21.19;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  // B4B.4A measurements on this same ESP32-P4 rev1.3 at 360 MHz.
+  constexpr double kBeforeLpcUsPerFrame = 14855.20;
+  constexpr double kBeforeWindowHandlingUsPerFrame = 246.18;
+  constexpr double kBeforeAutocorrelationUsPerFrame = 13150.37;
+  constexpr double kBeforeLevinsonUsPerFrame = 181.42;
+  constexpr double kBeforeYinDifferenceUsPerHop = 4127.86;
+  constexpr double kBeforePitchAnalysisUsPerHop = 5136.14;
+  constexpr double kBeforeCombinedUsPerHop = 19111.35;
+  constexpr double kBeforeCore1Percent = 98.26;
+  constexpr double kBeforePitchHopsPerSecond = 51.39;
 #endif
 
   printf("\n=======================================================\n");
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4A_LPC_RING_BUFFER_AUDIT)
   printf("   B4B.4A — LPC RING BUFFER OPTIMIZATION AUDIT\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  printf("   B4B.4B — LPC AUTOCORRELATION FPU OPTIMIZATION AUDIT\n");
 #else
   printf("   B4B_3_PITCH_ANALYSIS_HOTSPOT_AUDIT\n");
 #endif
@@ -1590,6 +1735,10 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("Pitch priority: configMAX_PRIORITIES - 5 (unchanged)\n");
   printf("CPU frequency: 360 MHz\n");
   printf("No DSP algorithm or analysis parameter is changed by this audit.\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  printf("Production autocorrelation: AUTOCORR_REFERENCE_DOUBLE (float candidates rejected by host numeric guardrails)\n");
+  print_lpc_autocorr_isolated_benchmarks();
+#endif
 
   static VocalFxConfig config;
   config = {};
@@ -1878,6 +2027,8 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("\n=======================================================================\n");
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4A_LPC_RING_BUFFER_AUDIT)
   printf("Stage B4B.4A — LPC Ring Buffer Optimization Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  printf("Stage B4B.4B — LPC Autocorrelation FPU Optimization Report\n");
 #else
   printf("Stage B4B.3 — Pitch Analysis Compute Hotspot Audit Report\n");
 #endif
@@ -2058,6 +2209,25 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
       lpc_frame_cost.count > 0 &&
       new_window_handling_us_per_frame < kBeforeWindowDrainUsPerFrame &&
       lpc_avg_frame_us < kBeforeLpcUsPerFrame;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  const bool no_transport_regression =
+      transport_end.rx_dma_errors == transport_start.rx_dma_errors &&
+      transport_end.tx_dma_errors == transport_start.tx_dma_errors &&
+      transport_end.read_failures == transport_start.read_failures &&
+      transport_end.write_failures == transport_start.write_failures &&
+      transport_end.rx_dropped_frames == transport_start.rx_dropped_frames &&
+      transport_end.tx_dropped_frames == transport_start.tx_dropped_frames;
+  const double new_pitch_analysis_us_per_hop =
+      completed_hops
+          ? static_cast<double>(pitch_total.total_us) / completed_hops
+          : 0.0;
+  const double new_yin_difference_us_per_hop =
+      completed_hops
+          ? static_cast<double>(yin_difference.total_us) / completed_hops
+          : 0.0;
+  const bool b4b4b_transport_pass =
+      audit_pass && no_transport_regression && lpc_frames > 0 &&
+      lpc_frame_cost.count > 0;
 #endif
   printf("LPC frame metrics: frames=%llu samples_drained=%llu avg_us/frame=%.2f P50_upper_bound=%lu P95_upper_bound=%lu P99_upper_bound=%lu max=%lu recorded_frames=%lu quantile_bin_us=100\n",
          static_cast<unsigned long long>(lpc_frames),
@@ -2280,6 +2450,96 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("CORE1 AFTER:\n%.2f%%\n", core1_utilization);
   printf("NEXT PRIMARY HOTSPOT:\n%s\n", primary_hotspot);
   printf("NEXT RECOMMENDED STEP:\nB4B.4B\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  (void)old_storage;
+  printf("\nLPC memory placement:\n");
+  for (const char *requested : {"LpcCircularFrame", "LpcLinearFrame",
+                                "LpcFifo"}) {
+    const VocalFxBufferAudit *found = nullptr;
+    for (size_t i = 0; i < buffer_audit_count; ++i) {
+      if (std::string_view(buffer_audits[i].name) == requested) {
+        found = &buffer_audits[i];
+        break;
+      }
+    }
+    if (found) {
+      const char *placement = found->is_psram
+                                  ? "PSRAM"
+                                  : (found->is_sram ? "internal SRAM" : "other");
+      printf("  %s: ptr=%p bytes=%zu placement=%s\n", found->name,
+             found->ptr, found->size_bytes, placement);
+    }
+  }
+  printf("\nB4B.4B production selection: AUTOCORR_REFERENCE_DOUBLE\n");
+  printf("Candidate classification: FLOAT_AUTOCORR_NUMERICALLY_UNACCEPTABLE\n");
+  printf("No float candidate was installed in the full worker. The full-worker run below is the retained double reference.\n");
+  printf("\nSECTION                                  B4B.4A        B4B.4B        SPEEDUP\n");
+  printf("LPC window handling (us/frame)          %9.2f %14.2f %11.2fx\n",
+         kBeforeWindowHandlingUsPerFrame, new_window_handling_us_per_frame,
+         new_window_handling_us_per_frame > 0.0
+             ? kBeforeWindowHandlingUsPerFrame /
+                   new_window_handling_us_per_frame
+             : 0.0);
+  printf("LPC autocorrelation (us/frame)          %9.2f %14.2f %11.2fx\n",
+         kBeforeAutocorrelationUsPerFrame, autocorrelation_avg_frame_us,
+         autocorrelation_avg_frame_us > 0.0
+             ? kBeforeAutocorrelationUsPerFrame /
+                   autocorrelation_avg_frame_us
+             : 0.0);
+  printf("LPC Levinson-Durbin (us/frame)          %9.2f %14.2f %11.2fx\n",
+         kBeforeLevinsonUsPerFrame, levinson_avg_frame_us,
+         levinson_avg_frame_us > 0.0
+             ? kBeforeLevinsonUsPerFrame / levinson_avg_frame_us
+             : 0.0);
+  printf("LPC total (us/frame)                    %9.2f %14.2f %11.2fx\n",
+         kBeforeLpcUsPerFrame, lpc_avg_frame_us,
+         lpc_avg_frame_us > 0.0 ? kBeforeLpcUsPerFrame / lpc_avg_frame_us
+                                : 0.0);
+  printf("YinDifference (us/pitch hop)            %9.2f %14.2f %11.2fx\n",
+         kBeforeYinDifferenceUsPerHop, new_yin_difference_us_per_hop,
+         new_yin_difference_us_per_hop > 0.0
+             ? kBeforeYinDifferenceUsPerHop / new_yin_difference_us_per_hop
+             : 0.0);
+  printf("PitchAnalysis total (us/pitch hop)      %9.2f %14.2f %11.2fx\n",
+         kBeforePitchAnalysisUsPerHop, new_pitch_analysis_us_per_hop,
+         new_pitch_analysis_us_per_hop > 0.0
+             ? kBeforePitchAnalysisUsPerHop /
+                   new_pitch_analysis_us_per_hop
+             : 0.0);
+  printf("Combined worker cost (us/pitch hop)     %9.2f %14.2f %11.2fx\n",
+         kBeforeCombinedUsPerHop, average_hop_us,
+         average_hop_us > 0.0 ? kBeforeCombinedUsPerHop / average_hop_us
+                              : 0.0);
+  printf("Core 1 utilization (percent)             %8.2f %14.2f %11.2fx\n",
+         kBeforeCore1Percent, core1_utilization,
+         core1_utilization > 0.0 ? kBeforeCore1Percent / core1_utilization
+                                 : 0.0);
+  printf("Pitch throughput (hops/s)                %8.2f %14.2f %11.2fx\n",
+         kBeforePitchHopsPerSecond, pitch_hops_per_second,
+         kBeforePitchHopsPerSecond > 0.0
+             ? pitch_hops_per_second / kBeforePitchHopsPerSecond
+             : 0.0);
+  printf("FIFO/backlog retained-double: current=%lu max=%lu drops=%llu backlog_current_ms=%.3f backlog_max_ms=%.3f pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
+         static_cast<unsigned long>(audit_end.fifo_current_occupancy),
+         static_cast<unsigned long>(audit_end.fifo_maximum_occupancy),
+         static_cast<unsigned long long>(audit_end.fifo_drops -
+                                         audit_start.fifo_drops),
+         audit_end.analysis_backlog_ms, audit_end.analysis_backlog_max_ms,
+         audit_end.latest_pitch_age_ms, audit_end.pitch_age_average_ms,
+         audit_end.pitch_age_p95_ms, audit_end.pitch_age_p99_ms,
+         audit_end.pitch_age_max_ms);
+  printf("B4B.4B transport/teardown audit: %s\n",
+         b4b4b_transport_pass ? "PASS" : "FAIL");
+  printf("\nB4B.4B RESULT:\nFAIL\n");
+  printf("AUTOCORR DOUBLE:\n%.2f us/frame\n", autocorrelation_avg_frame_us);
+  printf("AUTOCORR OPTIMIZED:\nnot adopted\n");
+  printf("AUTOCORR SPEEDUP:\nnot applicable\n");
+  printf("LPC TOTAL:\n%.2f -> %.2f us/frame (double retained)\n",
+         kBeforeLpcUsPerFrame, lpc_avg_frame_us);
+  printf("CORE1:\n%.2f%%\n", core1_utilization);
+  printf("PITCH THROUGHPUT:\n%.2f hops/s\n", pitch_hops_per_second);
+  printf("NEXT PRIMARY HOTSPOT:\n%s\n", primary_hotspot);
+  printf("NEXT STEP:\nalgorithm-preserving non-float autocorrelation investigation\n");
 #else
 
   printf("\nThroughput maximum theoretical: %.2f hops/s\n",
@@ -2415,6 +2675,12 @@ void run_i2s_bringup_selected_mode(void) {
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4B.4A low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4b_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4B low-priority coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4C_REAL_ANALOG)
   run_i2s_stage_b4c_real_analog();

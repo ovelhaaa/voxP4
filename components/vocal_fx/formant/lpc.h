@@ -9,13 +9,23 @@
 
 constexpr size_t VOCAL_FX_LPC_MAX_ORDER = 20;
 
+enum class LpcAutocorrelationVariant : uint8_t {
+  AutocorrReferenceDouble,
+  AutocorrFloatScalar,
+  AutocorrFloatMultiacc,
+};
+
 struct LpcConfig {
   bool enabled = true;
+  LpcAutocorrelationVariant autocorrelation =
+      LpcAutocorrelationVariant::AutocorrReferenceDouble;
   uint16_t order = 16;
   uint16_t window_size = 1024;
   uint16_t hop_size = 384;
   float preemphasis = 0.97f;
 };
+static_assert(sizeof(LpcConfig) == 12,
+              "LPC autocorrelation selector must use existing padding");
 
 struct SharedLpcModel {
   std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> coefficients{};
@@ -86,6 +96,14 @@ public:
   static bool solve(const float *frame, size_t count, uint16_t order,
                     float preemphasis, SharedLpcModel *model,
                     Profiler *profiler = nullptr);
+  static bool solve_with_autocorrelation(
+      const float *frame, size_t count, uint16_t order, float preemphasis,
+      LpcAutocorrelationVariant variant, SharedLpcModel *model,
+      Profiler *profiler = nullptr);
+  static bool autocorrelate(const float *windowed, size_t count,
+                            uint16_t order,
+                            LpcAutocorrelationVariant variant,
+                            double *result);
   static bool warp_polynomial(const float *a_in, uint16_t order, float lambda,
                               float gamma, float *a_out);
   static float lambda_from_semitones(float semitones);
