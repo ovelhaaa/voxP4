@@ -103,6 +103,20 @@ config VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT
         equivalent candidates, then runs the eligible kernel in the unchanged
         full-worker audit while observing source-to-mark grain alignment.
 
+config VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT
+    bool "Stage B4B.4G: LPC Windowing & Energy Kernel Audit"
+    help
+        Benchmarks the preserved runtime-Hann oracle, cached-Hann candidate,
+        compensated F32 energy, and diagnostic autocorrelation-r0 energy, then
+        runs the eligible windowing kernel in the unchanged full-worker audit.
+
+config VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION
+    bool "Stage B4B.4H: LPC Compensated F32 Energy Qualification"
+    help
+        Qualifies compensated-F32 frame-energy accumulation against the
+        retained precomputed-Hann/double-energy production oracle, then runs
+        the eligible candidate in the unchanged 10-second full-worker audit.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

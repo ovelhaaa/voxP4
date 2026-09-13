@@ -18,17 +18,34 @@ enum class LpcAutocorrelationVariant : uint8_t {
   AutocorrF32DoubleSingle,
 };
 
+// Stage B4B.4G keeps the original per-frame Hann implementation as an oracle.
+// The production variant changes only Hann coefficient generation/lookup; the
+// experimental variants change only how the already-windowed frame energy is
+// accumulated or sourced.
+enum class LpcWindowVariant : uint8_t {
+  Reference,
+  PrecomputedHannDoubleEnergy,
+  PrecomputedHannCompensatedEnergy,
+  EnergyFromAutocorrR0,
+};
+
+const char *lpc_window_variant_name(LpcWindowVariant variant);
+
 struct LpcConfig {
   bool enabled = true;
   LpcAutocorrelationVariant autocorrelation =
       LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
+  // B4B.4H qualifies compensated F32 energy against the retained double
+  // oracle. Keep this selectable so host renders can exercise both paths.
+  LpcWindowVariant windowing =
+      LpcWindowVariant::PrecomputedHannCompensatedEnergy;
   uint16_t order = 16;
   uint16_t window_size = 1024;
   uint16_t hop_size = 384;
   float preemphasis = 0.97f;
 };
-static_assert(sizeof(LpcConfig) == 12,
-              "LPC autocorrelation selector must use existing padding");
+static_assert(sizeof(LpcConfig) == 16,
+              "Unexpected LPC configuration layout");
 
 struct SharedLpcModel {
   std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> coefficients{};
@@ -94,6 +111,8 @@ public:
   size_t frame_bytes() const { return sizeof(circular_frame_); }
   const void* linear_frame_ptr() const { return linear_frame_.data(); }
   size_t linear_frame_bytes() const { return sizeof(linear_frame_); }
+  const void* hann_ptr() const { return hann_.data(); }
+  size_t hann_bytes() const { return sizeof(hann_); }
 
   // Public for deterministic host tests of the numerical core.
   static bool solve(const float *frame, size_t count, uint16_t order,
@@ -103,6 +122,17 @@ public:
       const float *frame, size_t count, uint16_t order, float preemphasis,
       LpcAutocorrelationVariant variant, SharedLpcModel *model,
       Profiler *profiler = nullptr);
+  static bool solve_with_kernels(
+      const float *frame, size_t count, uint16_t order, float preemphasis,
+      LpcAutocorrelationVariant autocorrelation,
+      LpcWindowVariant windowing, const float *precomputed_hann,
+      SharedLpcModel *model, Profiler *profiler = nullptr,
+      double *frame_energy = nullptr);
+  static bool prepare_hann(float *hann, size_t count);
+  static bool window_frame(const float *frame, size_t count,
+                           float preemphasis, LpcWindowVariant variant,
+                           const float *precomputed_hann, float *windowed,
+                           double *energy);
   static bool autocorrelate(const float *windowed, size_t count,
                             uint16_t order,
                             LpcAutocorrelationVariant variant,
@@ -136,6 +166,10 @@ private:
   AnalysisFifo<2049, LpcSample> fifo_{};
   std::array<float, 1024> circular_frame_{};
   std::array<float, 1024> linear_frame_{};
+  // One fixed table is sufficient because B4B.4G freezes a single 1024-sample
+  // LPC analyzer. Its P4 definition is placed in fast internal TCM, never
+  // PSRAM; the host definition remains ordinary fixed storage.
+  static std::array<float, 1024> hann_;
   size_t write_index_ = 0, valid_count_ = 0, since_frame_ = 0;
   uint64_t last_position_ = 0;
   std::array<PublishedModel, kModelCount> models_{};

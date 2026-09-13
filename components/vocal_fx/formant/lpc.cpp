@@ -2,6 +2,15 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+
+#ifdef ESP_PLATFORM
+TCM_DRAM_ATTR std::array<float, 1024> SharedLpcAnalysis::hann_{};
+#else
+std::array<float, 1024> SharedLpcAnalysis::hann_{};
+#endif
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
@@ -96,6 +105,61 @@ inline void two_sum_f32(float a, float b, float *sum, float *error) {
   *sum = s;
 }
 
+inline float runtime_hann(size_t i, size_t n) {
+  // This expression intentionally matches the B4B.4F production loop exactly.
+  return .5f - .5f * std::cos(2 * kPi * i / (n - 1));
+}
+
+VF_LPC_NOINLINE double window_reference(const float *x, size_t n, float pre,
+                                         float *y) {
+  double energy = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const float v = x[i] - (i ? pre * x[i - 1] : 0.0f);
+    const float w = runtime_hann(i, n);
+    y[i] = v * w;
+    energy += double(y[i]) * y[i];
+  }
+  return energy;
+}
+
+VF_LPC_NOINLINE double window_cached_double(const float *x, size_t n,
+                                             float pre, const float *hann,
+                                             float *y) {
+  double energy = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const float v = x[i] - (i ? pre * x[i - 1] : 0.0f);
+    y[i] = v * hann[i];
+    energy += double(y[i]) * y[i];
+  }
+  return energy;
+}
+
+VF_LPC_NOINLINE double window_cached_compensated(
+    const float *x, size_t n, float pre, const float *hann, float *y) {
+  float energy_hi = 0.0f;
+  float energy_lo = 0.0f;
+  for (size_t i = 0; i < n; ++i) {
+    const float v = x[i] - (i ? pre * x[i - 1] : 0.0f);
+    y[i] = v * hann[i];
+    const float product_hi = y[i] * y[i];
+    const float product_lo = std::fma(y[i], y[i], -product_hi);
+    float sum = 0.0f;
+    float sum_error = 0.0f;
+    two_sum_f32(energy_hi, product_hi, &sum, &sum_error);
+    const float tail = (energy_lo + sum_error) + product_lo;
+    two_sum_f32(sum, tail, &energy_hi, &energy_lo);
+  }
+  return static_cast<double>(energy_hi) + static_cast<double>(energy_lo);
+}
+
+VF_LPC_NOINLINE void window_cached_only(const float *x, size_t n, float pre,
+                                         const float *hann, float *y) {
+  for (size_t i = 0; i < n; ++i) {
+    const float v = x[i] - (i ? pre * x[i - 1] : 0.0f);
+    y[i] = v * hann[i];
+  }
+}
+
 VF_LPC_NOINLINE void autocorr_f32_double_single(const float *y, size_t n,
                                                 uint16_t order, double *r) {
   for (size_t k = 0; k <= order; ++k) {
@@ -121,6 +185,20 @@ VF_LPC_NOINLINE void autocorr_f32_double_single(const float *y, size_t n,
 }
 }
 
+const char *lpc_window_variant_name(LpcWindowVariant variant) {
+  switch (variant) {
+  case LpcWindowVariant::Reference:
+    return "LPC_WINDOW_REFERENCE";
+  case LpcWindowVariant::PrecomputedHannDoubleEnergy:
+    return "LPC_WINDOW_HANN_DOUBLE_ENERGY";
+  case LpcWindowVariant::PrecomputedHannCompensatedEnergy:
+    return "LPC_ENERGY_F32_COMPENSATED";
+  case LpcWindowVariant::EnergyFromAutocorrR0:
+    return "LPC_ENERGY_FROM_AUTOCORR_R0";
+  }
+  return "LPC_WINDOW_REFERENCE";
+}
+
 bool SharedLpcAnalysis::init(float rate, const LpcConfig &c) {
   if (!std::isfinite(rate) || rate < 8000 || c.order < 1 ||
       c.order > VOCAL_FX_LPC_MAX_ORDER || c.window_size < c.order + 2 ||
@@ -128,7 +206,12 @@ bool SharedLpcAnalysis::init(float rate, const LpcConfig &c) {
       c.hop_size > c.window_size || !std::isfinite(c.preemphasis) ||
       c.preemphasis < 0 || c.preemphasis >= 1)
     return false;
-  sample_rate_ = rate; config_ = c; reset(); return true;
+  sample_rate_ = rate;
+  config_ = c;
+  if (!prepare_hann(hann_.data(), config_.window_size))
+    return false;
+  reset();
+  return true;
 }
 void SharedLpcAnalysis::reset() {
   fifo_.reset(); circular_frame_.fill(0); linear_frame_.fill(0);
@@ -188,6 +271,49 @@ bool SharedLpcAnalysis::solve_with_autocorrelation(
     const float *x, size_t n, uint16_t order, float pre,
     LpcAutocorrelationVariant variant, SharedLpcModel *out,
     Profiler *profiler) {
+  return solve_with_kernels(
+      x, n, order, pre, variant, LpcWindowVariant::Reference, nullptr, out,
+      profiler);
+}
+
+bool SharedLpcAnalysis::prepare_hann(float *hann, size_t n) {
+  if (!hann || n < 2 || n > 1024)
+    return false;
+  for (size_t i = 0; i < n; ++i)
+    hann[i] = runtime_hann(i, n);
+  return true;
+}
+
+bool SharedLpcAnalysis::window_frame(
+    const float *x, size_t n, float pre, LpcWindowVariant variant,
+    const float *precomputed_hann, float *y, double *energy) {
+  if (!x || !y || !energy || n < 2 || n > 1024 ||
+      (variant != LpcWindowVariant::Reference && !precomputed_hann))
+    return false;
+
+  switch (variant) {
+  case LpcWindowVariant::Reference:
+    *energy = window_reference(x, n, pre, y);
+    return true;
+  case LpcWindowVariant::PrecomputedHannDoubleEnergy:
+    *energy = window_cached_double(x, n, pre, precomputed_hann, y);
+    return true;
+  case LpcWindowVariant::PrecomputedHannCompensatedEnergy:
+    *energy = window_cached_compensated(x, n, pre, precomputed_hann, y);
+    return true;
+  case LpcWindowVariant::EnergyFromAutocorrR0:
+    window_cached_only(x, n, pre, precomputed_hann, y);
+    *energy = 0.0;
+    return true;
+  }
+  return false;
+}
+
+bool SharedLpcAnalysis::solve_with_kernels(
+    const float *x, size_t n, uint16_t order, float pre,
+    LpcAutocorrelationVariant variant, LpcWindowVariant windowing,
+    const float *precomputed_hann, SharedLpcModel *out, Profiler *profiler,
+    double *frame_energy) {
   if (!x || !out || n > 1024 || n < static_cast<size_t>(order) + 2 ||
       order > VOCAL_FX_LPC_MAX_ORDER)
     return false;
@@ -196,14 +322,18 @@ bool SharedLpcAnalysis::solve_with_autocorrelation(
   std::array<float, 1024> y{};
   if (profiler)
     profiler->begin(section(LpcProfileSection::SolveWindowing));
-  double energy=0;
-  for(size_t i=0;i<n;++i){
-    const float v=x[i]-(i?pre*x[i-1]:0.0f);
-    const float w=.5f-.5f*std::cos(2*kPi*i/(n-1)); y[i]=v*w; energy+=double(y[i])*y[i];
+  double energy = 0.0;
+  if (!window_frame(x, n, pre, windowing, precomputed_hann, y.data(),
+                    &energy)) {
+    if (profiler) profiler->end(section(LpcProfileSection::SolveWindowing));
+    if (profiler) profiler->end(section(LpcProfileSection::SolveTotal));
+    return false;
   }
   if (profiler)
     profiler->end(section(LpcProfileSection::SolveWindowing));
-  if (!(energy > 1e-8) || !std::isfinite(energy)) {
+  if (windowing != LpcWindowVariant::EnergyFromAutocorrR0 &&
+      (!(energy > 1e-8) || !std::isfinite(energy))) {
+    if (frame_energy) *frame_energy = energy;
     if (profiler) profiler->end(section(LpcProfileSection::SolveTotal));
     return false;
   }
@@ -215,6 +345,16 @@ bool SharedLpcAnalysis::solve_with_autocorrelation(
     if (profiler) profiler->end(section(LpcProfileSection::SolveTotal));
     return false;
   }
+  if (windowing == LpcWindowVariant::EnergyFromAutocorrR0) {
+    energy = r[0];
+    if (!(energy > 1e-8) || !std::isfinite(energy)) {
+      if (frame_energy) *frame_energy = energy;
+      if (profiler) profiler->end(section(LpcProfileSection::Autocorrelation));
+      if (profiler) profiler->end(section(LpcProfileSection::SolveTotal));
+      return false;
+    }
+  }
+  if (frame_energy) *frame_energy = energy;
   // Tiny diagonal loading prevents perfectly periodic synthetic frames from
   // producing a singular Toeplitz system without materially flattening speech.
   r[0] *= 1.000001;
@@ -458,9 +598,11 @@ size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
       VF_PROFILE_END(profiler_, section(LpcProfileSection::FrameLinearization), 0);
       const bool voiced=pitch.voiced && pitch.confidence>.25f;
       m.valid=config_.enabled && voiced &&
-          solve_with_autocorrelation(
+          solve_with_kernels(
               linear_frame_.data(), config_.window_size, config_.order,
-              config_.preemphasis, config_.autocorrelation, &m, &profiler_);
+              config_.preemphasis, config_.autocorrelation,
+              config_.windowing, hann_.data(), &m,
+              &profiler_);
       m.confidence*=std::clamp(pitch.confidence,0.0f,1.0f);
       if(!m.valid)++telemetry_.lpc_invalid_frames;
       telemetry_.max_prediction_error=std::max(telemetry_.max_prediction_error,m.prediction_error);

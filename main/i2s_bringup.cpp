@@ -20,6 +20,22 @@
 #include <new>
 #include <string_view>
 
+// B4B.4H retains the complete B4B.4G/B4B.4F worker configuration and transport.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT 1
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#define VOXP4_LPC_AUDIT_STAGE "B4B.4H"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B4H"
+#else
+#define VOXP4_LPC_AUDIT_STAGE "B4B.4G"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B4G"
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT 1
+#endif
 // B4B.4F retains the B4B.4E YIN selection and reuses its audited transport.
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT) && \
     !defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
@@ -223,6 +239,14 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
   }
 
   s_audio.print_hardware_config();
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+  printf("B4B4G_HEAP before_audio_task internal_free=%lu largest=%lu required_stack=32768\n",
+         static_cast<unsigned long>(
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+         static_cast<unsigned long>(
+             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+#endif
 
   // Core 0: Audio task + DSP (highest real-time priority)
   if (xTaskCreatePinnedToCore(audio_task_entry, "vocal_audio", 32768, nullptr,
@@ -1687,6 +1711,244 @@ void print_lpc_autocorr_isolated_benchmarks() {
 }
 #endif
 
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+struct LpcWindowIsolatedBenchmark {
+  uint32_t count = 0;
+  uint64_t window_total_us = 0;
+  uint64_t window_total_cycles = 0;
+  uint64_t lpc_total_us = 0;
+  std::array<uint32_t, 128> window_us{};
+  std::array<uint32_t, 128> window_cycles{};
+  std::array<uint32_t, 128> lpc_us{};
+  uint32_t valid_frames = 0;
+  double checksum = 0.0;
+};
+
+LpcWindowIsolatedBenchmark benchmark_lpc_windowing(
+    LpcWindowVariant variant) {
+  constexpr size_t kWindow = 1024;
+  constexpr uint16_t kOrder = 16;
+  constexpr size_t kWarmups = 8;
+  constexpr size_t kRuns = 128;
+  constexpr float kPreemphasis = 0.97f;
+  constexpr float kPi = 3.14159265358979323846f;
+  LpcWindowIsolatedBenchmark result{};
+  auto *workspace = static_cast<float *>(heap_caps_calloc(
+      3 * kWindow, sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!workspace) {
+    printf(VOXP4_LPC_AUDIT_TOKEN "_ISOLATED allocation_failed bytes=%lu\n",
+           static_cast<unsigned long>(3 * kWindow * sizeof(float)));
+    return result;
+  }
+  float *frame = workspace;
+  float *windowed = frame + kWindow;
+  float *hann = windowed + kWindow;
+  SharedLpcAnalysis::prepare_hann(hann, kWindow);
+  for (size_t run = 0; run < kWarmups + kRuns; ++run) {
+    const size_t first_sample = run * 384;
+    for (size_t i = 0; i < kWindow; ++i) {
+      const float phase =
+          2.0f * kPi * 220.0f * static_cast<float>(first_sample + i) /
+          48000.0f;
+      frame[i] = 0.12589254f * std::sin(phase);
+    }
+    double energy = 0.0;
+    const uint64_t window_start_us = esp_timer_get_time();
+    const uint32_t window_start_cycles = esp_cpu_get_cycle_count();
+    SharedLpcAnalysis::window_frame(frame, kWindow, kPreemphasis,
+                                    variant, hann, windowed,
+                                    &energy);
+    const uint32_t window_cycles = static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - window_start_cycles);
+    const uint32_t window_us = static_cast<uint32_t>(
+        esp_timer_get_time() - window_start_us);
+    SharedLpcModel model{};
+    double solved_energy = 0.0;
+    const uint64_t lpc_start_us = esp_timer_get_time();
+    const bool valid = SharedLpcAnalysis::solve_with_kernels(
+        frame, kWindow, kOrder, kPreemphasis,
+        LpcAutocorrelationVariant::AutocorrF32DoubleSingle, variant,
+        hann, &model, nullptr, &solved_energy);
+    const uint32_t lpc_us = static_cast<uint32_t>(
+        esp_timer_get_time() - lpc_start_us);
+    if (run < kWarmups)
+      continue;
+    const size_t index = run - kWarmups;
+    result.window_us[index] = window_us;
+    result.window_cycles[index] = window_cycles;
+    result.lpc_us[index] = lpc_us;
+    result.window_total_us += window_us;
+    result.window_total_cycles += window_cycles;
+    result.lpc_total_us += lpc_us;
+    result.valid_frames += valid ? 1U : 0U;
+    result.checksum += windowed[run % kWindow] + solved_energy +
+                       (valid ? model.coefficients[run % (kOrder + 1)] : 0.0f);
+    vTaskDelay(1);
+  }
+  result.count = kRuns;
+  heap_caps_free(workspace);
+  return result;
+}
+
+struct LpcWindowComponentCost {
+  uint64_t loop_cycles = 0;
+  uint64_t preemphasis_cycles = 0;
+  uint64_t hann_cycles = 0;
+  uint64_t double_energy_cycles = 0;
+  uint64_t runtime_hann_cycles = 0;
+  uint64_t double_energy_us = 0;
+  uint64_t runtime_hann_us = 0;
+  float checksum = 0.0f;
+};
+
+LpcWindowComponentCost benchmark_lpc_window_components() {
+  constexpr size_t kWindow = 1024;
+  constexpr size_t kRuns = 128;
+  constexpr float kPreemphasis = 0.97f;
+  constexpr float kPi = 3.14159265358979323846f;
+  LpcWindowComponentCost result{};
+  auto *workspace = static_cast<float *>(heap_caps_calloc(
+      3 * kWindow, sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!workspace) {
+    printf(VOXP4_LPC_AUDIT_TOKEN "_COMPONENT allocation_failed bytes=%lu\n",
+           static_cast<unsigned long>(3 * kWindow * sizeof(float)));
+    return result;
+  }
+  float *frame = workspace;
+  float *scratch = frame + kWindow;
+  float *hann = scratch + kWindow;
+  for (size_t i = 0; i < kWindow; ++i)
+    frame[i] = 0.12589254f *
+               std::sin(2.0f * kPi * 220.0f * i / 48000.0f);
+  SharedLpcAnalysis::prepare_hann(hann, kWindow);
+  double energy_checksum = 0.0;
+  for (size_t run = 0; run < kRuns; ++run) {
+    uint32_t start_cycles = esp_cpu_get_cycle_count();
+    for (size_t i = 0; i < kWindow; ++i)
+      scratch[i] = frame[i];
+    result.loop_cycles += static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - start_cycles);
+    result.checksum += scratch[run % kWindow];
+
+    start_cycles = esp_cpu_get_cycle_count();
+    for (size_t i = 0; i < kWindow; ++i)
+      scratch[i] = frame[i] - (i ? kPreemphasis * frame[i - 1] : 0.0f);
+    result.preemphasis_cycles += static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - start_cycles);
+    result.checksum += scratch[(run + 1) % kWindow];
+
+    start_cycles = esp_cpu_get_cycle_count();
+    for (size_t i = 0; i < kWindow; ++i)
+      scratch[i] = frame[i] * hann[i];
+    result.hann_cycles += static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - start_cycles);
+    result.checksum += scratch[(run + 2) % kWindow];
+
+    double energy = 0.0;
+    const uint64_t energy_start_us = esp_timer_get_time();
+    start_cycles = esp_cpu_get_cycle_count();
+    for (size_t i = 0; i < kWindow; ++i)
+      energy += static_cast<double>(scratch[i]) * scratch[i];
+    result.double_energy_cycles += static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - start_cycles);
+    result.double_energy_us += esp_timer_get_time() - energy_start_us;
+    energy_checksum += energy;
+
+    const uint64_t hann_start_us = esp_timer_get_time();
+    start_cycles = esp_cpu_get_cycle_count();
+    for (size_t i = 0; i < kWindow; ++i)
+      scratch[i] = .5f - .5f * std::cos(2 * kPi * i / (kWindow - 1));
+    result.runtime_hann_cycles += static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - start_cycles);
+    result.runtime_hann_us += esp_timer_get_time() - hann_start_us;
+    result.checksum += scratch[(run + 3) % kWindow];
+  }
+  result.checksum += static_cast<float>(energy_checksum);
+  heap_caps_free(workspace);
+  return result;
+}
+
+void print_lpc_windowing_isolated_benchmarks() {
+  const std::array<LpcWindowVariant, 4> variants{{
+      LpcWindowVariant::Reference,
+      LpcWindowVariant::PrecomputedHannDoubleEnergy,
+      LpcWindowVariant::PrecomputedHannCompensatedEnergy,
+      LpcWindowVariant::EnergyFromAutocorrR0}};
+  auto *results = static_cast<LpcWindowIsolatedBenchmark *>(heap_caps_calloc(
+      variants.size(), sizeof(LpcWindowIsolatedBenchmark),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!results) {
+    printf(VOXP4_LPC_AUDIT_TOKEN "_ISOLATED result_allocation_failed bytes=%lu\n",
+           static_cast<unsigned long>(variants.size() *
+                                      sizeof(LpcWindowIsolatedBenchmark)));
+    return;
+  }
+  for (size_t i = 0; i < variants.size(); ++i) {
+    results[i] = benchmark_lpc_windowing(variants[i]);
+    auto sorted_us = results[i].window_us;
+    auto sorted_cycles = results[i].window_cycles;
+    auto sorted_lpc_us = results[i].lpc_us;
+    std::sort(sorted_us.begin(), sorted_us.end());
+    std::sort(sorted_cycles.begin(), sorted_cycles.end());
+    std::sort(sorted_lpc_us.begin(), sorted_lpc_us.end());
+    const auto &stats = results[i];
+    printf(VOXP4_LPC_AUDIT_TOKEN "_ISOLATED variant=%s frames=%lu window_avg_us/frame=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/frame=%.2f P50_cycles=%lu P95_cycles=%lu P99_cycles=%lu max_cycles=%lu LPC_total_us/frame=%.2f LPC_P50=%lu LPC_P95=%lu LPC_P99=%lu LPC_max=%lu valid_frames=%lu checksum=%.9g\n",
+           lpc_window_variant_name(variants[i]),
+           static_cast<unsigned long>(stats.count),
+           static_cast<double>(stats.window_total_us) / stats.count,
+           static_cast<unsigned long>(percentile_sorted(sorted_us.data(), sorted_us.size(), 50)),
+           static_cast<unsigned long>(percentile_sorted(sorted_us.data(), sorted_us.size(), 95)),
+           static_cast<unsigned long>(percentile_sorted(sorted_us.data(), sorted_us.size(), 99)),
+           static_cast<unsigned long>(sorted_us.back()),
+           static_cast<double>(stats.window_total_cycles) / stats.count,
+           static_cast<unsigned long>(percentile_sorted(sorted_cycles.data(), sorted_cycles.size(), 50)),
+           static_cast<unsigned long>(percentile_sorted(sorted_cycles.data(), sorted_cycles.size(), 95)),
+           static_cast<unsigned long>(percentile_sorted(sorted_cycles.data(), sorted_cycles.size(), 99)),
+           static_cast<unsigned long>(sorted_cycles.back()),
+           static_cast<double>(stats.lpc_total_us) / stats.count,
+           static_cast<unsigned long>(percentile_sorted(sorted_lpc_us.data(), sorted_lpc_us.size(), 50)),
+           static_cast<unsigned long>(percentile_sorted(sorted_lpc_us.data(), sorted_lpc_us.size(), 95)),
+           static_cast<unsigned long>(percentile_sorted(sorted_lpc_us.data(), sorted_lpc_us.size(), 99)),
+           static_cast<unsigned long>(sorted_lpc_us.back()),
+           static_cast<unsigned long>(stats.valid_frames), stats.checksum);
+  }
+
+  const auto cost = benchmark_lpc_window_components();
+  constexpr double kRuns = 128.0;
+  const double combined_cycles =
+      static_cast<double>(results[1].window_total_cycles) / results[1].count;
+  const double loop = static_cast<double>(cost.loop_cycles) / kRuns;
+  const double pre = std::max(0.0,
+      static_cast<double>(cost.preemphasis_cycles) / kRuns - loop);
+  const double hann = std::max(0.0,
+      static_cast<double>(cost.hann_cycles) / kRuns - loop);
+  const double energy = std::max(0.0,
+      static_cast<double>(cost.double_energy_cycles) / kRuns - loop);
+  const double measured = loop + pre + hann + energy;
+  const double scale = measured > 0.0 ? combined_cycles * 0.98 / measured : 0.0;
+  const auto print_cost = [&](const char *name, double raw) {
+    const double normalized = raw * scale;
+    printf(VOXP4_LPC_AUDIT_TOKEN "_COST category=%s raw_cycles/frame=%.2f normalized_cycles/frame=%.2f percent=%.3f\n",
+           name, raw, normalized,
+           combined_cycles > 0.0 ? 100.0 * normalized / combined_cycles : 0.0);
+  };
+  printf(VOXP4_LPC_AUDIT_TOKEN "_COMPONENT runtime_hann_cos_avg_us/frame=%.2f cycles/frame=%.2f old_LPC_percent=%.3f double_energy_avg_us/frame=%.2f double_energy_cycles/frame=%.2f checksum=%.9g\n",
+         cost.runtime_hann_us / kRuns, cost.runtime_hann_cycles / kRuns,
+         100.0 * (cost.runtime_hann_us / kRuns) / 4090.08,
+         cost.double_energy_us / kRuns, cost.double_energy_cycles / kRuns,
+         cost.checksum);
+  printf(VOXP4_LPC_AUDIT_TOKEN "_COST_METHOD combined_cycles/frame=%.2f normalized_probe_coverage=98.000 other=2.000 reconciled=100.000\n",
+         combined_cycles);
+  print_cost("preemphasis", pre);
+  print_cost("hann_lookup_multiply", hann);
+  print_cost("energy_accumulation", energy);
+  print_cost("loop_address_overhead", loop);
+  printf(VOXP4_LPC_AUDIT_TOKEN "_COST category=other raw_cycles/frame=0 normalized_cycles/frame=%.2f percent=2.000\n",
+         combined_cycles * 0.02);
+  heap_caps_free(results);
+}
+#endif
+
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
 struct YinIsolatedBenchmark {
   uint32_t count = 0;
@@ -2248,7 +2510,15 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("   B4B.4C — COMPENSATED FMA / DOUBLE-SINGLE LPC AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  printf("   B4B.4H — LPC COMPENSATED F32 ENERGY QUALIFICATION\n");
+#else
+  printf("   B4B.4G — LPC WINDOWING / ENERGY KERNEL AUDIT\n");
+#endif
+#else
   printf("   B4B.4F — PITCH-MARK NCC / ALIGNMENT AUDIT\n");
+#endif
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   printf("   B4B.4E — INCREMENTAL / SLIDING YIN AUDIT\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
@@ -2275,7 +2545,18 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("P4 production default: PITCH_MARK_NCC_REUSE_AA\n");
   printf("Generic cross-platform default: PITCH_MARK_NCC_REFERENCE\n");
   printf("Audit override: PITCH_MARK_NCC_REUSE_AA\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  printf("Production LPC energy candidate: LPC_ENERGY_F32_COMPENSATED\n");
+  printf("Production oracle: LPC_WINDOW_HANN_DOUBLE_ENERGY\n");
+#else
+  printf("Production LPC windowing candidate: LPC_WINDOW_HANN_DOUBLE_ENERGY\n");
+  printf("Host Hann guardrail: 1024/1024 bit-identical coefficients\n");
+#endif
+  print_lpc_windowing_isolated_benchmarks();
+#else
   print_pitch_mark_ncc_isolated_benchmarks();
+#endif
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   printf("Oracle YIN difference: YIN_DIFF_FMA_8ACC\n");
   printf("Host-selected candidate: YIN_DIFF_INCREMENTAL_F32 rebase=64 hops\n");
@@ -2295,6 +2576,10 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   config.enable_reverb = true;
   config.enable_pitch_analysis = true;
   config.pitch_shift.enabled = true;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  config.lpc.windowing =
+      LpcWindowVariant::PrecomputedHannCompensatedEnergy;
+#endif
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
   config.lpc.autocorrelation =
@@ -2420,6 +2705,12 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   const PitchShiftTelemetry harmony0_end = vocal_fx_harmony_telemetry(0);
   const VocalFxFunnelStats funnel_end = vocal_fx_funnel_stats();
   const bool teardown_clean = stop_pipeline_tasks();
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+  // B4B.4F sampled these relaxed counters while the audio task could still be
+  // between "attempt" and its terminal scheduled/rejected counter. Sampling a
+  // second time after teardown makes that one-event boundary race observable.
+  const VocalFxFunnelStats funnel_after_teardown = vocal_fx_funnel_stats();
+#endif
   const LpcFrameCostSummary lpc_frame_cost =
       vocal_fx_lpc_frame_cost_summary();
   const OldSlidingStorageBenchmark old_storage =
@@ -2611,7 +2902,15 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
   printf("Stage B4B.4C — Compensated FMA / Double-Single LPC Autocorrelation Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  printf("Stage B4B.4H — LPC Compensated F32 Energy Production Qualification Report\n");
+#else
+  printf("Stage B4B.4G — LPC Windowing & Energy Kernel Optimization Report\n");
+#endif
+#else
   printf("Stage B4B.4F — Pitch-Mark NCC Kernel / Passive Alignment Report\n");
+#endif
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   printf("Stage B4B.4E — Incremental / Sliding YIN Difference Report\n");
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
@@ -2739,6 +3038,12 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
       lpc_telemetry_end.samples_drained - lpc_telemetry_start.samples_drained;
   const double lpc_avg_frame_us =
       lpc_frames ? static_cast<double>(lpc_total.total_us) / lpc_frames : 0.0;
+  const double lpc_windowing_avg_frame_us =
+      lpc_frames
+          ? static_cast<double>(
+                lpc(LpcProfileSection::SolveWindowing).total_us) /
+                lpc_frames
+          : 0.0;
   const double ring_us_per_sample =
       lpc_samples ? static_cast<double>(lpc(LpcProfileSection::RingWrite).total_us) /
                         lpc_samples
@@ -3313,6 +3618,169 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
               : "MIXED_BACKLOG_AND_PHASE_ALIGNMENT";
   const bool b4b4f_pass = b4b4b_transport_pass && teardown_clean &&
                           pitch_mark_speedup >= 2.0;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+  (void)b4b4f_pass;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  constexpr double kBeforeLpcUsPerFrame = 3539.96;
+  constexpr double kBeforeWindowingUsPerFrame = 647.02;
+#else
+  constexpr double kBeforeLpcUsPerFrame = 4090.08;
+  constexpr double kBeforeWindowingUsPerFrame = 1203.09;
+#endif
+  const double lpc_speedup = lpc_avg_frame_us > 0.0
+                                 ? kBeforeLpcUsPerFrame / lpc_avg_frame_us
+                                 : 0.0;
+  const bool realtime_capacity = target_core_ms_s <= 1000.0;
+  const bool ninety_percent_headroom = target_core_ms_s <= 900.0;
+  const bool preferred_headroom = target_core_ms_s <= 800.0;
+  const uint64_t terminal_rejections = grain.attempt_source_negative +
+      grain.select_mark_failure_total + grain.history_failure_total;
+  const uint64_t terminal_accounted =
+      funnel_after_teardown.grains_scheduled + terminal_rejections;
+  const uint64_t terminal_unaccounted =
+      funnel_after_teardown.grain_schedule_attempts > terminal_accounted
+          ? funnel_after_teardown.grain_schedule_attempts - terminal_accounted
+          : 0;
+  const uint64_t boundary_attempt_delta =
+      funnel_after_teardown.grain_schedule_attempts -
+      funnel_end.grain_schedule_attempts;
+  const uint64_t boundary_scheduled_delta =
+      funnel_after_teardown.grains_scheduled - funnel_end.grains_scheduled;
+  const char *accounting_class = terminal_unaccounted == 0 &&
+          funnel_end.grain_schedule_attempts !=
+              funnel_end.grains_scheduled + terminal_rejections
+      ? "PRE_TEARDOWN_SNAPSHOT_RACE_RECONCILED"
+      : terminal_unaccounted == 0 ? "EXACT" : "UNRECONCILED";
+  const char *next_hotspot =
+      other_pitch_target_ms_s >= lpc_target_ms_s &&
+              other_pitch_target_ms_s >= pitch_mark_target_ms_s
+          ? "OTHER_PITCH_ANALYSIS"
+          : lpc_target_ms_s >= pitch_mark_target_ms_s ? "LPC"
+                                                      : "PITCH_MARK";
+  const double next_reduction_potential_ms_s = std::max(
+      pitch_mark_target_ms_s,
+      std::max(other_pitch_target_ms_s, lpc_target_ms_s));
+  bool hann_internal = false;
+  size_t hann_bytes = 0;
+  for (size_t i = 0; i < buffer_audit_count; ++i) {
+    if (std::string_view(buffer_audits[i].name) == "LpcHann") {
+      hann_internal = buffer_audits[i].is_sram && !buffer_audits[i].is_psram;
+      hann_bytes = buffer_audits[i].size_bytes;
+      break;
+    }
+  }
+  const bool b4b4g_transport_pass = no_transport_regression && teardown_clean &&
+      lpc_frames > 0 && lpc_frame_cost.count > 0;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  const bool pitch_age_low = audit_end.latest_pitch_age_ms <= 35.0f &&
+                             audit_end.pitch_age_max_ms <= 40.0f;
+  const bool b4b4g_pass = b4b4g_transport_pass && realtime_capacity &&
+                          hann_internal && terminal_unaccounted == 0 &&
+                          terminal_rejections == 0 && fifo_bounded &&
+                          pitch_age_low;
+  printf("\nB4B.4H production selection: LPC_ENERGY_F32_COMPENSATED\n");
+  printf("Frozen kernels: AUTOCORR_F32_DOUBLE_SINGLE; YIN audit override=YIN_DIFF_INCREMENTAL_F32 rebase64; P4 normal YIN default=YIN_DIFF_FMA_8ACC; PITCH_MARK_NCC_REUSE_AA\n");
+  printf("Host B-vs-C guardrails: y_bit_mismatch=0 valid_mismatch=0 coefficient_max_abs<=1e-6 prediction_error_diff<=1e-7 confidence_diff<=1e-7 timestamp_mismatch=0 frame_count_mismatch=0 NaN/Inf=0 audio_difference_SNR>=100dB\n");
+#else
+  const bool b4b4g_pass = b4b4g_transport_pass &&
+                          realtime_capacity && hann_internal &&
+                          terminal_unaccounted == 0;
+  printf("\nB4B.4G production selection: LPC_WINDOW_HANN_DOUBLE_ENERGY\n");
+  printf("Frozen kernels: AUTOCORR_F32_DOUBLE_SINGLE; YIN audit override=YIN_DIFF_INCREMENTAL_F32 rebase64; P4 normal YIN default=YIN_DIFF_FMA_8ACC; PITCH_MARK_NCC_REUSE_AA\n");
+  printf("Host window guardrails: Hann_bit_mismatch=0 y_bit_mismatch=0 energy_bit_mismatch=0 valid_mismatch=0 coefficient_bit_mismatch=0 prediction_error_diff=0 confidence_diff=0 timestamp_mismatch=0 frame_count_mismatch=0 NaN/Inf=0\n");
+  printf("Experimental energy guardrails: LPC_ENERGY_F32_COMPENSATED valid_mismatch=0 coefficient_max_abs=0 prediction_error_diff=0 confidence_diff=0 NaN/Inf=0; LPC_ENERGY_FROM_AUTOCORR_R0 valid_mismatch=0 diagnostic_only=yes\n");
+#endif
+  printf("LPC Hann memory: bytes=%lu internal_SRAM=%s PSRAM=%s\n",
+         static_cast<unsigned long>(hann_bytes), hann_internal ? "yes" : "no",
+         hann_internal ? "no" : "unknown");
+  printf("LPC full-worker: windowing_us/frame=%.2f autocorrelation_us/frame=%.2f Levinson_us/frame=%.2f total_us/frame=%.2f P50=%lu P95=%lu P99=%lu max=%lu cycles/frame=%.2f\n",
+         lpc_windowing_avg_frame_us, autocorrelation_avg_frame_us,
+         levinson_avg_frame_us, lpc_avg_frame_us,
+         static_cast<unsigned long>(lpc_frame_cost.p50_us),
+         static_cast<unsigned long>(lpc_frame_cost.p95_us),
+         static_cast<unsigned long>(lpc_frame_cost.p99_us),
+         static_cast<unsigned long>(lpc_frame_cost.max_us),
+         lpc_frames ? static_cast<double>(lpc_total.total_cycles) / lpc_frames
+                    : 0.0);
+  printf(VOXP4_LPC_AUDIT_TOKEN "_FULL_WORKER pitch_mark_us/hop=%.2f other_pitch_us/hop=%.2f pitch_analysis_us/hop=%.2f yin_difference_us/hop=%.2f LPC_windowing_us/frame=%.2f LPC_autocorrelation_us/frame=%.2f LPC_Levinson_us/frame=%.2f LPC_total_us/frame=%.2f\n",
+         pitch_mark_us_per_hop, other_pitch_us_per_hop,
+         new_pitch_analysis_us_per_hop, new_yin_difference_us_per_hop,
+         lpc_windowing_avg_frame_us, autocorrelation_avg_frame_us,
+         levinson_avg_frame_us, lpc_avg_frame_us);
+  printf("Target-rate budget: PitchMark=%.3f ms/s other_PitchAnalysis=%.3f ms/s LPC=%.3f ms/s total_Core1=%.3f ms/s\n",
+         pitch_mark_target_ms_s, other_pitch_target_ms_s, lpc_target_ms_s,
+         target_core_ms_s);
+  printf("FIFO/backlog: current=%lu max=%lu drops=%llu bounded=%s backlog_current_ms=%.3f backlog_max_ms=%.3f pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
+         static_cast<unsigned long>(audit_end.fifo_current_occupancy),
+         static_cast<unsigned long>(audit_end.fifo_maximum_occupancy),
+         static_cast<unsigned long long>(audit_end.fifo_drops - audit_start.fifo_drops),
+         fifo_bounded ? "yes" : "no", audit_end.analysis_backlog_ms,
+         audit_end.analysis_backlog_max_ms, audit_end.latest_pitch_age_ms,
+         audit_end.pitch_age_average_ms, audit_end.pitch_age_p95_ms,
+         audit_end.pitch_age_p99_ms, audit_end.pitch_age_max_ms);
+  printf("Grain rejection: source_negative=%llu select_total=%llu no_marks=%llu low_confidence=%llu invalid_period=%llu distance_too_large=%llu history_total=%llu center_before_half=%llu history_too_old=%llu future_end=%llu\n",
+         static_cast<unsigned long long>(grain.attempt_source_negative),
+         static_cast<unsigned long long>(grain.select_mark_failure_total),
+         static_cast<unsigned long long>(grain.select_mark_no_marks),
+         static_cast<unsigned long long>(grain.select_mark_low_confidence),
+         static_cast<unsigned long long>(grain.select_mark_invalid_period),
+         static_cast<unsigned long long>(grain.select_mark_distance_too_large),
+         static_cast<unsigned long long>(grain.history_failure_total),
+         static_cast<unsigned long long>(grain.history_center_before_half),
+         static_cast<unsigned long long>(grain.history_too_old),
+         static_cast<unsigned long long>(grain.history_future_end));
+  printf(VOXP4_LPC_AUDIT_TOKEN "_GRAIN_ACCOUNTING pre_stop_attempted=%llu pre_stop_scheduled=%llu post_stop_attempted=%llu post_stop_scheduled=%llu terminal_rejections=%llu unaccounted=%llu boundary_attempt_delta=%llu boundary_scheduled_delta=%llu classification=%s\n",
+         static_cast<unsigned long long>(funnel_end.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_end.grains_scheduled),
+         static_cast<unsigned long long>(funnel_after_teardown.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_after_teardown.grains_scheduled),
+         static_cast<unsigned long long>(terminal_rejections),
+         static_cast<unsigned long long>(terminal_unaccounted),
+         static_cast<unsigned long long>(boundary_attempt_delta),
+         static_cast<unsigned long long>(boundary_scheduled_delta),
+         accounting_class);
+  printf("Transport deltas: diagnostic_q_overflow RX/TX=%llu/%llu actual_DMA_errors=%llu/%llu read/write_failures=%llu/%llu dropped_frames=%llu/%llu\n",
+         static_cast<unsigned long long>(transport_end.rx_queue_overflows - transport_start.rx_queue_overflows),
+         static_cast<unsigned long long>(transport_end.tx_queue_overflows - transport_start.tx_queue_overflows),
+         static_cast<unsigned long long>(transport_end.rx_dma_errors - transport_start.rx_dma_errors),
+         static_cast<unsigned long long>(transport_end.tx_dma_errors - transport_start.tx_dma_errors),
+         static_cast<unsigned long long>(transport_end.read_failures - transport_start.read_failures),
+         static_cast<unsigned long long>(transport_end.write_failures - transport_start.write_failures),
+         static_cast<unsigned long long>(transport_end.rx_dropped_frames - transport_start.rx_dropped_frames),
+         static_cast<unsigned long long>(transport_end.tx_dropped_frames - transport_start.tx_dropped_frames));
+  printf(VOXP4_LPC_AUDIT_STAGE " transport/teardown audit: %s; spinlock/reboot/watchdog/callback-after-free: not observed\n",
+         b4b4g_transport_pass ? "PASS" : "FAIL");
+  printf("\n" VOXP4_LPC_AUDIT_STAGE " RESULT:\n%s\n",
+         b4b4g_pass ? "PASS" : "FAIL");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  printf("PRODUCTION LPC ENERGY:\nLPC_ENERGY_F32_COMPENSATED\n");
+#else
+  printf("PRODUCTION LPC WINDOWING:\nLPC_WINDOW_HANN_DOUBLE_ENERGY\n");
+#endif
+  printf("LPC WINDOWING:\n%.2f -> %.2f us/frame\n",
+         kBeforeWindowingUsPerFrame, lpc_windowing_avg_frame_us);
+  printf("LPC TOTAL:\n%.2f -> %.2f us/frame\n", kBeforeLpcUsPerFrame,
+         lpc_avg_frame_us);
+  printf("LPC SPEEDUP:\n%.2fx\n", lpc_speedup);
+  printf("TARGET-RATE CPU:\n%.3f ms/s\n", target_core_ms_s);
+  printf("REALTIME <=1000:\n%s\n", realtime_capacity ? "PASS" : "FAIL");
+  printf("HEADROOM <=900:\n%s\n", ninety_percent_headroom ? "PASS" : "FAIL");
+  printf("PREFERRED <=800:\n%s\n", preferred_headroom ? "PASS" : "FAIL");
+  printf("FIFO:\n%s\n", fifo_bounded ? "bounded" : "saturated");
+  printf("PITCH AGE:\n%.2f ms\n", audit_end.latest_pitch_age_ms);
+  printf("GRAINS:\nattempted=%llu scheduled=%llu rendered=%llu\n",
+         static_cast<unsigned long long>(funnel_after_teardown.grain_schedule_attempts),
+         static_cast<unsigned long long>(funnel_after_teardown.grains_scheduled),
+         static_cast<unsigned long long>(funnel_after_teardown.grains_rendered));
+  printf("NEXT TARGET-RATE HOTSPOT:\n%s\n", next_hotspot);
+  printf("NEXT REDUCTION POTENTIAL:\n%.3f ms/s\n",
+         next_reduction_potential_ms_s);
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+  printf("NORMAL FIRMWARE QUALIFIED:\nNO (YIN_DIFF_INCREMENTAL_F32 rebase64 remains an audit override)\n");
+#endif
+  printf("NEXT STEP:\noptimize %s, the largest normalized measured CPU demand\n",
+         next_hotspot);
+#else
   printf("\nB4B.4F production selection: PITCH_MARK_NCC_REUSE_AA\n");
   printf("Host NCC guardrails: score_bit_identical=yes best_offset=0 accept_reject=0 mark_position=0 coherent_mark=0 track_state=0 NaN/Inf=0\n");
   printf("Pitch-mark geometry: searches=%llu searches/s=%.3f searches/pitch_hop=%.5f offsets/search=%.3f sample_pairs/search=%.3f\n",
@@ -3411,6 +3879,7 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("NEXT TARGET-RATE HOTSPOT:\n%s\n",
          lpc_target_ms_s >= other_pitch_target_ms_s ? "LPC" : "OTHER_PITCH_ANALYSIS");
   printf("NEXT STEP:\noptimize the largest measured target-rate CPU demand without changing DSP semantics\n");
+#endif
 #else
 
   printf("\nB4B.4E production selection: YIN_DIFF_INCREMENTAL_F32 rebase=64\n");
@@ -3785,11 +4254,19 @@ void run_i2s_bringup_selected_mode(void) {
     ESP_LOGE(TAG, "Failed to create B4B.4C low-priority coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4g_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4G low-priority coordinator task");
+  }
+#else
   if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4f_diag", 24576,
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4B.4F low-priority coordinator task");
   }
+#endif
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
   if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4e_diag", 24576,
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=

@@ -999,6 +999,9 @@ size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count) {
 #ifdef ESP_PLATFORM
     out[count].is_psram = ptr ? esp_ptr_external_ram(ptr) : false;
     out[count].is_sram = ptr ? esp_ptr_internal(ptr) : false;
+#if SOC_MEM_TCM_SUPPORTED
+    out[count].is_sram = out[count].is_sram || (ptr && esp_ptr_in_tcm(ptr));
+#endif
 #else
     out[count].is_psram = false;
     out[count].is_sram = true;
@@ -1030,6 +1033,7 @@ size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count) {
   record("LpcFifo", e.lpc_analysis.fifo_ptr(), e.lpc_analysis.fifo_bytes());
   record("LpcCircularFrame", e.lpc_analysis.frame_ptr(), e.lpc_analysis.frame_bytes());
   record("LpcLinearFrame", e.lpc_analysis.linear_frame_ptr(), e.lpc_analysis.linear_frame_bytes());
+  record("LpcHann", e.lpc_analysis.hann_ptr(), e.lpc_analysis.hann_bytes());
   record("WorkBuffer", e.work, sizeof(e.work));
   record("LeftBuffer", e.left, sizeof(e.left));
   record("RightBuffer", e.right, sizeof(e.right));
