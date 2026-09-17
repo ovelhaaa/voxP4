@@ -1,12 +1,15 @@
 #include "audio_i2s.h"
+#include "profiling.h"
 #include "vocal_fx.h"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #ifdef ESP_PLATFORM
 #include "driver/i2s_std.h"
 #include "esp_check.h"
+#include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -17,6 +20,27 @@
 #endif
 
 namespace vocal_fx_platform {
+
+namespace {
+// PSRAM on target, plain heap on host (lets host tests exercise the same
+// accounting paths).
+#ifdef ESP_PLATFORM
+[[maybe_unused]] void *b4c6a_calloc(size_t n, size_t size) {
+  return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+[[maybe_unused]] void b4c6a_free(void *p) {
+  if (!p) return;
+  heap_caps_free(p);
+}
+#else
+[[maybe_unused]] void *b4c6a_calloc(size_t n, size_t size) {
+  return std::calloc(n, size);
+}
+[[maybe_unused]] void b4c6a_free(void *p) {
+  std::free(p);
+}
+#endif
+} // namespace
 
 namespace {
 #ifdef ESP_PLATFORM
@@ -145,16 +169,69 @@ bool AudioI2s::init(const AudioI2sConfig &cfg, size_t bs) {
   config_ = cfg;
   block_size_ = bs;
   counters_.reset();
-  outlier_count_ = 0;
+    outlier_count_ = 0;
+    reset_b4c6a_stats();
+#ifdef ESP_PLATFORM
+    if (!b4c6a_timing_ && cfg.mode == AudioI2sMode::B4C6ATimingForensics) {
+      b4c6a_timing_ = static_cast<B4C6ATimingRecord *>(b4c6a_calloc(
+          kB4C6ATimingRecordCapacity, sizeof(B4C6ATimingRecord)));
+      b4c6a_timing_capacity_ =
+          b4c6a_timing_ ? kB4C6ATimingRecordCapacity : 0;
+    }
+    // Legacy dsp/cycle/wake histograms are PSRAM in every mode: they are
+    // written on every block by record_timing but read only by old prints.
+    {
+      uint32_t **legacy_slots[] = {&dsp_hist_, &cycle_hist_, &wake_hist_};
+      for (uint32_t **s : legacy_slots) {
+        if (!*s) {
+          *s = static_cast<uint32_t *>(b4c6a_calloc(
+              kHistBins, sizeof(uint32_t)));
+        }
+      }
+    }
+    if (!b4c7_blocks_ && (cfg.mode == AudioI2sMode::B4C7HarmonizerAudit ||
+                          cfg.mode == AudioI2sMode::B4D1Qualification)) {
+      b4c7_blocks_ = static_cast<B4C7BlockRecord *>(b4c6a_calloc(
+          kB4C7BlockRecordCapacity, sizeof(B4C7BlockRecord)));
+      b4c7_block_capacity_ =
+          b4c7_blocks_ ? kB4C7BlockRecordCapacity : 0;
+      if (!b4c7_totals_) {
+        b4c7_totals_ = static_cast<B4C7DecompTotals *>(b4c6a_calloc(
+            1, sizeof(B4C7DecompTotals)));
+      }
+      if (!b4c6a_timing_) {
+        b4c6a_timing_ = static_cast<B4C6ATimingRecord *>(b4c6a_calloc(
+            kB4C6ATimingRecordCapacity, sizeof(B4C6ATimingRecord)));
+        b4c6a_timing_capacity_ =
+            b4c6a_timing_ ? kB4C6ATimingRecordCapacity : 0;
+      }
+    }
+#endif
+  // B4C.6A distribution histograms: PSRAM-backed (B4C.7 link budget),
+  // allocated in every mode so telemetry stays uniform; the big per-block
+  // rings above stay mode-gated. Host-capable via b4c6a_calloc.
+  {
+    uint32_t **slots[] = {&b4c6a_loop_hist_, &b4c6a_period_hist_,
+                          &b4c6a_dsp_hist_, &b4c6a_rx_hist_,
+                          &b4c6a_tx_hist_, &b4c6a_gap_hist_};
+    for (uint32_t **s : slots) {
+      if (!*s) {
+        *s = static_cast<uint32_t *>(b4c6a_calloc(kB4C6AHistBins,
+                                                  sizeof(uint32_t)));
+      }
+    }
+  }
   dsp_total_us_ = 0;
   cycle_total_us_ = 0;
   dsp_worst_us_ = 0;
   cycle_worst_us_ = 0;
   wake_total_us_ = 0;
   wake_worst_us_ = 0;
-  std::fill_n(dsp_hist_, kHistBins, 0);
-  std::fill_n(cycle_hist_, kHistBins, 0);
-  std::fill_n(wake_hist_, kHistBins, 0);
+  {
+    uint32_t *legacy[] = {dsp_hist_, cycle_hist_, wake_hist_};
+    for (uint32_t *h : legacy)
+      if (h) std::fill_n(h, kHistBins, 0);
+  }
   synth_sample_idx_ = 0;
   synth_phase_ = 0.0f;
   current_synth_f0_ = 110.0f;
@@ -340,6 +417,38 @@ void AudioI2s::deinit() {
     i2s_del_channel(static_cast<i2s_chan_handle_t>(tx_chan_));
     tx_chan_ = nullptr;
   }
+  if (b4c6a_timing_) {
+    b4c6a_free(b4c6a_timing_);
+    b4c6a_timing_ = nullptr;
+    b4c6a_timing_capacity_ = 0;
+  }
+  if (b4c7_blocks_) {
+    b4c6a_free(b4c7_blocks_);
+    b4c7_blocks_ = nullptr;
+    b4c7_block_capacity_ = 0;
+  }
+  if (b4c7_totals_) {
+    b4c6a_free(b4c7_totals_);
+    b4c7_totals_ = nullptr;
+  }
+  if (b4d1_records_) {
+    b4c6a_free(b4d1_records_);
+    b4d1_records_ = nullptr;
+    b4d1_record_capacity_ = 0;
+    b4d1_record_count_ = 0;
+  }
+  {
+    uint32_t **slots[] = {&b4c6a_loop_hist_, &b4c6a_period_hist_,
+                          &b4c6a_dsp_hist_, &b4c6a_rx_hist_,
+                          &b4c6a_tx_hist_, &b4c6a_gap_hist_,
+                          &dsp_hist_, &cycle_hist_, &wake_hist_};
+    for (uint32_t **s : slots) {
+      if (*s) {
+        b4c6a_free(*s);
+        *s = nullptr;
+      }
+    }
+  }
 #endif
 }
 
@@ -367,25 +476,37 @@ void AudioI2s::record_timing(uint64_t dsp_us, uint64_t cycle_us,
   if (wake_us > wake_worst_us_) wake_worst_us_ = wake_us;
 
   size_t dsp_bin = std::min(static_cast<size_t>(dsp_us / kBinWidthUs), kHistBins - 1);
-  dsp_hist_[dsp_bin]++;
+  if (dsp_hist_) dsp_hist_[dsp_bin]++;
 
   size_t cycle_bin = std::min(static_cast<size_t>(cycle_us / kBinWidthUs), kHistBins - 1);
-  cycle_hist_[cycle_bin]++;
+  if (cycle_hist_) cycle_hist_[cycle_bin]++;
 
   size_t wake_bin = std::min(static_cast<size_t>(wake_us / kBinWidthUs), kHistBins - 1);
-  wake_hist_[wake_bin]++;
+  if (wake_hist_) wake_hist_[wake_bin]++;
 
-  // Deadline: DSP execution must remain under 1333 us (block duration).
-  if (dsp_us > 1333) {
+  // Deadline: DSP execution must remain under one block duration, which
+  // follows the configured sample rate (B4D.3S: rate-specific).
+  const double deadline_us = block_deadline_us();
+  const uint64_t deadline_us_u = static_cast<uint64_t>(deadline_us);
+  if (dsp_us > deadline_us) {
     counters_.dsp_deadline_misses.fetch_add(1, std::memory_order_relaxed);
     counters_.audio_deadline_misses.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t lateness = dsp_us - deadline_us_u;
+    counters_.cumulative_lateness_us.fetch_add(lateness, std::memory_order_relaxed);
+    uint64_t old_max = counters_.max_single_block_lateness_us.load(std::memory_order_relaxed);
+    while (lateness > old_max && !counters_.max_single_block_lateness_us.compare_exchange_weak(old_max, lateness, std::memory_order_relaxed)) {}
+    const uint64_t consec = counters_.current_consecutive_late_blocks.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint64_t old_consec_max = counters_.max_consecutive_late_blocks.load(std::memory_order_relaxed);
+    while (consec > old_consec_max && !counters_.max_consecutive_late_blocks.compare_exchange_weak(old_consec_max, consec, std::memory_order_relaxed)) {}
+  } else {
+    counters_.current_consecutive_late_blocks.store(0, std::memory_order_relaxed);
   }
   // Cycle timing represents interval between consecutive reads; flag transport miss if > 2000 us.
   if (cycle_us > 2000) {
     counters_.transport_deadline_misses.fetch_add(1, std::memory_order_relaxed);
   }
 
-  if (dsp_us > 1333 || cycle_us > 2000) {
+  if (dsp_us > deadline_us || cycle_us > 2000) {
     if (outlier_count_ < kMaxOutlierRecords) {
       outliers_[outlier_count_] = {
 #ifdef ESP_PLATFORM
@@ -398,7 +519,7 @@ void AudioI2s::record_timing(uint64_t dsp_us, uint64_t cycle_us,
           cycle_us,
           wake_us,
           rx_gap_us,
-          (dsp_us > 1333) ? "DspDeadlineMiss" : "TransportOrSchedulerMiss",
+          (dsp_us > deadline_us) ? "DspDeadlineMiss" : "TransportOrSchedulerMiss",
           snapshot_active_.load(std::memory_order_relaxed),
           telemetry_formatting_active_.load(std::memory_order_relaxed),
           serial_printing_active_.load(std::memory_order_relaxed),
@@ -408,7 +529,531 @@ void AudioI2s::record_timing(uint64_t dsp_us, uint64_t cycle_us,
       outlier_count_++;
     }
   }
+
+  // B4D.1 cleaned-qualification per-block capture: whole-DSP time, whole-loop
+  // time and the harmonizer model-change flag from the SAME block, so the
+  // MC x deadline-miss contingency uses observed blocks only.
+  if (b4d1_record_enabled_.load(std::memory_order_acquire) && b4d1_records_) {
+    const size_t slot =
+        b4d1_record_count_.fetch_add(1, std::memory_order_acq_rel);
+    if (slot < b4d1_record_capacity_) {
+      B4D1BlockRecord &rec = b4d1_records_[slot];
+      rec.block_id = b4d1_record_origin_ + static_cast<uint32_t>(block_idx);
+      rec.dsp_us = dsp_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(dsp_us);
+      rec.loop_us =
+          cycle_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(cycle_us);
+      rec.model_changed = vocal_fx_last_block_model_changed() ? 1 : 0;
+      rec.dsp_miss = dsp_us > deadline_us ? 1 : 0;
+      rec.loop_miss = cycle_us > deadline_us ? 1 : 0;
+      const VocalFxLastBlockStats vls = vocal_fx_last_block_stats();
+      rec.new_grains = vls.new_grains;
+      rec.exp_warp = vls.exp_warp;
+      rec.active_desc = vls.active_desc;
+      rec.slices = vls.slices;
+      rec.f0 = vls.f0;
+      rec.source_grains = vls.source_grains;
+      rec.reserved = 0;
+    }
+  }
 }
+
+// -----------------------------------------------------------------------------
+// B4C.6A whole-loop timing helpers. DSP remains frozen; only accounting here.
+// Section map (non-overlapping, measured with esp_timer_get_time):
+//   A rx_wait      : t_rx_done   - t_iter_begin   (i2s_channel_read call)
+//   B rx_copy      : t_conv_done - t_rx_done      (forensic memcpy + PCM24->float)
+//   F fixture      : t_fix_done  - t_conv_done    (generate_b4b6_mono)
+//   C dsp          : t_dsp_done  - t_fix_done     (vocal_fx_process / transport copy)
+//   D tx_prep      : t_tx_before - t_dsp_done     (ramp + sanity + float->PCM32)
+//   E tx_wait      : t_tx_done   - t_tx_before    (i2s_channel_write call)
+//   G bookkeeping  : t_iter_end  - t_tx_done      (counters/histograms/record)
+//   H other        : loop_total  - sum(A..G)      (residual inside iteration)
+//   I loop_total   : t_iter_end  - t_iter_begin   (hardware cycles + us)
+// Inter-iteration gap (scheduler/yield/other between loops):
+//   gap = next_iter_begin - prev_iter_end (NOT inside I).
+// Reconciliation = sum(A..G) / I; residual H must be < 2% (>= 98%).
+// Loop period (AUDIO_LOOP_PERIOD_US) = next_iter_begin - iter_begin.
+// -----------------------------------------------------------------------------
+void AudioI2s::reset_b4c6a_stats() {
+  b4c6a_totals_ = B4C6ASectionTotals{};
+  // Histograms are PSRAM-backed (may be null before init alloc).
+  uint32_t *hists[] = {b4c6a_loop_hist_, b4c6a_period_hist_, b4c6a_dsp_hist_,
+                       b4c6a_rx_hist_, b4c6a_tx_hist_, b4c6a_gap_hist_};
+  for (uint32_t *h : hists)
+    if (h) std::fill_n(h, kB4C6AHistBins, 0);
+  b4c6a_timing_count_ = 0;
+  b4c6a_timing_dropped_ = 0;
+  b4c6a_rx_partial_ = 0;
+  b4c6a_tx_partial_ = 0;
+  b4c6a_rx_zero_ = 0;
+  b4c6a_tx_zero_ = 0;
+  b4c6a_last_end_us_ = 0;
+  b4c6a_last_begin_us_ = 0;
+  b4c6a_prev_late_ = false;
+  b4c6a_recover_run_ = 0;
+}
+
+void AudioI2s::b4c6a_hist_add(uint32_t *hist, uint64_t us) {
+  if (!hist) return;
+  size_t bin = static_cast<size_t>(us / kB4C6ABinWidthUs);
+  if (bin >= kB4C6AHistBins) bin = kB4C6AHistBins - 1;
+  hist[bin]++;
+}
+
+TimingPercentiles AudioI2s::b4c6a_hist_percentiles(const uint32_t *hist,
+                                                   uint64_t total_us,
+                                                   uint64_t max_us,
+                                                   uint64_t samples) const {
+  TimingPercentiles p{};
+  p.samples = samples;
+  if (!samples || !hist) return p;
+  p.avg_us = static_cast<double>(total_us) / static_cast<double>(samples);
+  p.max_us = max_us;
+  const uint64_t t50 = static_cast<uint64_t>(samples * 0.50);
+  const uint64_t t90 = static_cast<uint64_t>(samples * 0.90);
+  const uint64_t t95 = static_cast<uint64_t>(samples * 0.95);
+  const uint64_t t99 = static_cast<uint64_t>(samples * 0.99);
+  const uint64_t t999 = static_cast<uint64_t>(samples * 0.999);
+  uint64_t cumulative = 0;
+  for (size_t i = 0; i < kB4C6AHistBins; ++i) {
+    cumulative += hist[i];
+    const uint64_t bin_us = (i + 1) * kB4C6ABinWidthUs;
+    if (p.p50_us == 0 && cumulative >= t50) p.p50_us = std::min(bin_us, max_us);
+    if (p.p90_us == 0 && cumulative >= t90) p.p90_us = std::min(bin_us, max_us);
+    if (p.p95_us == 0 && cumulative >= t95) p.p95_us = std::min(bin_us, max_us);
+    if (p.p99_us == 0 && cumulative >= t99) {
+      p.p99_bucket_upper_bound_us = bin_us;
+      p.p99_us = std::min(bin_us, max_us);
+    }
+    if (p.p99_9_us == 0 && cumulative >= t999)
+      p.p99_9_us = std::min(bin_us, max_us);
+  }
+  return p;
+}
+
+double AudioI2s::b4c6a_reconciliation_pct(uint64_t accounted_us,
+                                          uint64_t total_us) {
+  if (!total_us) return 0.0;
+  return 100.0 * static_cast<double>(accounted_us) /
+         static_cast<double>(total_us);
+}
+
+double AudioI2s::b4c6a_effective_fs(double frames, double wall_s) {
+  if (wall_s <= 0.0) return 0.0;
+  return frames / wall_s;
+}
+
+double AudioI2s::b4c6a_timeline_lost_s(double wall_s, double effective_fs) {
+  return wall_s * (1.0 - effective_fs / 48000.0);
+}
+
+double AudioI2s::b4c6a_expected_blocks(double wall_s) {
+  return wall_s * 48000.0 / 64.0;
+}
+
+TimingPercentiles AudioI2s::b4c6a_loop_percentiles() const {
+  return b4c6a_hist_percentiles(b4c6a_loop_hist_, b4c6a_totals_.loop_total_us,
+                                b4c6a_totals_.loop_total_max_us,
+                                b4c6a_totals_.samples);
+}
+
+TimingPercentiles AudioI2s::b4c6a_period_percentiles() const {
+  return b4c6a_hist_percentiles(b4c6a_period_hist_, b4c6a_totals_.loop_period_us,
+                                b4c6a_totals_.loop_period_max_us,
+                                b4c6a_totals_.samples > 1
+                                    ? b4c6a_totals_.samples - 1
+                                    : 0);
+}
+
+TimingPercentiles AudioI2s::b4c6a_dsp_forensic_percentiles() const {
+  return b4c6a_hist_percentiles(b4c6a_dsp_hist_, b4c6a_totals_.dsp_us,
+                                b4c6a_totals_.dsp_max_us,
+                                b4c6a_totals_.samples);
+}
+
+TimingPercentiles AudioI2s::b4c6a_rx_percentiles() const {
+  return b4c6a_hist_percentiles(b4c6a_rx_hist_, b4c6a_totals_.rx_wait_us,
+                                b4c6a_totals_.rx_wait_max_us,
+                                b4c6a_totals_.samples);
+}
+
+TimingPercentiles AudioI2s::b4c6a_tx_percentiles() const {
+  return b4c6a_hist_percentiles(b4c6a_tx_hist_, b4c6a_totals_.tx_wait_us,
+                                b4c6a_totals_.tx_wait_max_us,
+                                b4c6a_totals_.samples);
+}
+
+TimingPercentiles AudioI2s::b4c6a_gap_percentiles() const {
+  return b4c6a_hist_percentiles(b4c6a_gap_hist_, b4c6a_totals_.inter_gap_us,
+                                b4c6a_totals_.inter_gap_max_us,
+                                b4c6a_totals_.samples > 1
+                                    ? b4c6a_totals_.samples - 1
+                                    : 0);
+}
+
+void AudioI2s::b4c6a_note_iteration(uint32_t rx_wait, uint32_t rx_copy,
+                                    uint32_t fixture, uint32_t dsp,
+                                    uint32_t tx_prep, uint32_t tx_wait,
+                                    uint32_t book, uint32_t other,
+                                    uint32_t loop_total, uint32_t loop_period,
+                                    uint32_t inter_gap, uint32_t loop_cycles,
+                                    uint32_t rx_bytes, uint32_t tx_bytes,
+                                    uint16_t rx_frames, uint16_t tx_frames,
+                                    int rx_rc, int tx_rc, uint64_t begin_us,
+                                    uint64_t end_us, bool success) {
+  if (!success) return;
+  auto &t = b4c6a_totals_;
+  t.samples++;
+  t.rx_wait_us += rx_wait;
+  t.rx_copy_us += rx_copy;
+  t.fixture_us += fixture;
+  t.dsp_us += dsp;
+  t.tx_prep_us += tx_prep;
+  t.tx_wait_us += tx_wait;
+  t.bookkeeping_us += book;
+  t.other_us += other;
+  t.loop_total_us += loop_total;
+  if (loop_total > t.loop_total_max_us) t.loop_total_max_us = loop_total;
+  t.loop_total_cycles += loop_cycles;
+  if (rx_wait > t.rx_wait_max_us) t.rx_wait_max_us = rx_wait;
+  if (tx_wait > t.tx_wait_max_us) t.tx_wait_max_us = tx_wait;
+  if (dsp > t.dsp_max_us) t.dsp_max_us = dsp;
+  if (inter_gap || t.samples > 1) {
+    t.inter_gap_us += inter_gap;
+    if (inter_gap > t.inter_gap_max_us) t.inter_gap_max_us = inter_gap;
+    if (loop_period) {
+      t.loop_period_us += loop_period;
+      if (loop_period > t.loop_period_max_us)
+        t.loop_period_max_us = loop_period;
+    }
+  }
+  b4c6a_hist_add(b4c6a_loop_hist_, loop_total);
+  b4c6a_hist_add(b4c6a_dsp_hist_, dsp);
+  b4c6a_hist_add(b4c6a_rx_hist_, rx_wait);
+  b4c6a_hist_add(b4c6a_tx_hist_, tx_wait);
+  if (t.samples > 1) {
+    b4c6a_hist_add(b4c6a_gap_hist_, inter_gap);
+    b4c6a_hist_add(b4c6a_period_hist_, loop_period);
+  }
+  const uint32_t kDeadlineUs = static_cast<uint32_t>(block_deadline_us());
+  if (loop_total > kDeadlineUs) {
+    t.positive_lateness_us += (loop_total - kDeadlineUs);
+    t.late_loop_blocks++;
+  }
+  // Catch-up: a late block followed by a block with near-zero RX wait means
+  // the queued DMA sample was consumed back-to-back without blocking.
+  if (b4c6a_prev_late_) {
+    if (rx_wait <= 50) {
+      t.catchup_rx_near_zero++;
+      b4c6a_recover_run_++;
+    } else {
+      if (b4c6a_recover_run_) {
+        t.recover_blocks_sum += b4c6a_recover_run_;
+        t.recover_events++;
+        b4c6a_recover_run_ = 0;
+      }
+    }
+  }
+  b4c6a_prev_late_ = (loop_total > kDeadlineUs);
+  if (!b4c6a_prev_late_ && b4c6a_recover_run_) {
+    t.recover_blocks_sum += b4c6a_recover_run_;
+    t.recover_events++;
+    b4c6a_recover_run_ = 0;
+  }
+  if (b4c6a_timing_ && b4c6a_timing_capacity_ &&
+      b4c6a_timing_count_ < b4c6a_timing_capacity_) {
+    B4C6ATimingRecord &row = b4c6a_timing_[b4c6a_timing_count_++];
+    row.iteration_begin_us = begin_us;
+    row.iteration_end_us = end_us;
+    row.loop_total_us = loop_total;
+    row.loop_period_us = loop_period;
+    row.loop_total_cycles = loop_cycles;
+    row.rx_wait_us = rx_wait;
+    row.rx_copy_us = rx_copy;
+    row.fixture_us = fixture;
+    row.dsp_us = dsp;
+    row.tx_prep_us = tx_prep;
+    row.tx_wait_us = tx_wait;
+    row.bookkeeping_us = book;
+    row.other_us = other;
+    row.inter_gap_us = inter_gap;
+    row.rx_bytes = rx_bytes;
+    row.tx_bytes = tx_bytes;
+    row.rx_frames = rx_frames;
+    row.tx_frames = tx_frames;
+    row.rx_rc = static_cast<int16_t>(rx_rc);
+    row.tx_rc = static_cast<int16_t>(tx_rc);
+    row.rx_partial = (rx_bytes != 512);
+    row.tx_partial = (tx_bytes != 512);
+    row.rx_ok = (rx_rc == 0);
+    row.tx_ok = (tx_rc == 0);
+  } else if (b4c6a_timing_capacity_) {
+    b4c6a_timing_dropped_++;
+  }
+  (void)rx_frames;
+  (void)tx_frames;
+}
+
+// -----------------------------------------------------------------------------
+// B4C.7 decomposition section tables (§19). Leaf sections sum without double
+// counting (Pipeline/Harmony/Master/Input parents excluded from the leaf sum;
+// V0/V1 voice Totals carry the per-voice cost).
+// -----------------------------------------------------------------------------
+static const VocalFxProfileSection kB4C7Globals[20] = {
+    VocalFxProfileSection::Pipeline,
+    VocalFxProfileSection::PitchLpcTap,
+    VocalFxProfileSection::ParameterQueue,
+    VocalFxProfileSection::Input,
+    VocalFxProfileSection::InputHpf,
+    VocalFxProfileSection::InputGate,
+    VocalFxProfileSection::Compressor,
+    VocalFxProfileSection::PitchMarkSync,
+    VocalFxProfileSection::Harmony,
+    VocalFxProfileSection::DryAlignment,
+    VocalFxProfileSection::HarmonySlewPan,
+    VocalFxProfileSection::HarmonyLimiter,
+    VocalFxProfileSection::BusMixing,
+    VocalFxProfileSection::DelayPrep,
+    VocalFxProfileSection::Delay,
+    VocalFxProfileSection::ReverbPrep,
+    VocalFxProfileSection::Reverb,
+    VocalFxProfileSection::Master,
+    VocalFxProfileSection::MasterMix,
+    VocalFxProfileSection::MasterLimiter,
+};
+
+static const PitchShiftProfileSection kB4C7VoiceSubs[20] = {
+    PitchShiftProfileSection::MarkSelection,
+    PitchShiftProfileSection::GrainScheduling,
+    PitchShiftProfileSection::GrainHistoryLookup,
+    PitchShiftProfileSection::PlainWindowOLA,
+    PitchShiftProfileSection::LpcResidualFIR,
+    PitchShiftProfileSection::LpcModelLookup,
+    PitchShiftProfileSection::LpcModelWarpPolynomial,
+    PitchShiftProfileSection::LpcModelWarpGainNorm,
+    PitchShiftProfileSection::LpcWindowOLA,
+    PitchShiftProfileSection::LpcSynthesisAllPole,
+    PitchShiftProfileSection::LpcStateShift,
+    PitchShiftProfileSection::FormantGainMatcher,
+    PitchShiftProfileSection::FormantSoftClip,
+    PitchShiftProfileSection::FormantBlend,
+    PitchShiftProfileSection::Fallback,
+    PitchShiftProfileSection::Articulation,
+    PitchShiftProfileSection::PlosiveBridge,
+    PitchShiftProfileSection::Telemetry,
+    PitchShiftProfileSection::Other,
+    PitchShiftProfileSection::Total,
+};
+
+// B4C.7 extra subsection names (indices 20-24 in the decomp tables),
+// backed by TdPsola plain accumulators (see vocal_fx_voice_b4c7_cycles).
+static const char *kB4C7ExtraNames[5] = {
+    "desc_setup", "hist_fetch", "hann_win", "ola_norm", "recov_xfade",
+};
+
+static const char *kB4C7GlobalNames[20] = {
+    "pipeline", "tap", "param_q", "input", "hpf", "gate", "comp",
+    "pitch_sync", "harmony", "dry_align", "slew_pan", "harm_limiter",
+    "bus_mix", "delay_prep", "delay", "reverb_prep", "reverb", "master",
+    "master_mix", "master_limiter",
+};
+
+static const char *kB4C7VoiceNames[25] = {
+    "mark_sel", "sched", "hist_lookup", "plain_ola", "resid_fir",
+    "model_lookup", "warp_poly", "gain_norm", "lpc_win_ola", "synth_iir",
+    "state_shift", "gain_match", "soft_clip", "blend", "fallback",
+    "articul", "plosive", "telem", "other", "voice_total",
+    "desc_setup", "hist_fetch", "hann_win", "ola_norm", "recov_xfade",
+};
+
+// Leaf indices into kB4C7Globals (parents Pipeline/Input/Harmony/Master out).
+static const uint8_t kB4C7LeafGlobals[] = {1, 2, 4, 5, 6, 7, 9, 10, 11, 12,
+                                           13, 14, 15, 16, 18, 19};
+static constexpr uint8_t kB4C7VoiceTotalSub = 19;  // Total in kB4C7VoiceSubs
+
+void AudioI2s::reset_b4c7_stats() {
+  if (b4c7_totals_) *b4c7_totals_ = B4C7DecompTotals{};
+  b4c7_block_count_ = 0;
+  b4c7_block_dropped_ = 0;
+  b4c7_block_seq_ = 0;
+  b4c7_pre_overruns_ = 0;
+  // Per-case audit baselines (§22/§18 deltas). The coordinator calls
+  // vocal_fx_reset_profiling_epoch() + reset_slice_audit() before this, so
+  // these snapshots are the window start. Residual-cache stats are
+  // deliberately NOT reset (warm cache); deltas come from snapshots.
+  b4c7_audit_start_ = vocal_fx_get_psola_source_grain_audit();
+  b4c7_slice_start_ = vocal_fx_slice_audit_snapshot();
+  b4c7_fir_start_[0] = vocal_fx_get_psola_residual_cache_stats(0);
+  b4c7_fir_start_[1] = vocal_fx_get_psola_residual_cache_stats(1);
+}
+
+// ── B4D.1 cleaned-qualification per-block recorder ──────────────────────
+bool AudioI2s::b4d1_recorder_init(size_t capacity) {
+  if (!b4d1_records_) {
+    b4d1_records_ = static_cast<B4D1BlockRecord *>(
+        b4c6a_calloc(capacity, sizeof(B4D1BlockRecord)));
+    b4d1_record_capacity_ = b4d1_records_ ? capacity : 0;
+  }
+  b4d1_record_count_.store(0, std::memory_order_release);
+  b4d1_record_origin_ = 0;
+  return b4d1_records_ != nullptr;
+}
+
+void AudioI2s::b4d1_recorder_free() {
+  if (b4d1_records_) {
+    b4c6a_free(b4d1_records_);
+    b4d1_records_ = nullptr;
+  }
+  b4d1_record_capacity_ = 0;
+  b4d1_record_count_.store(0, std::memory_order_release);
+  b4d1_record_origin_ = 0;
+  b4d1_record_enabled_.store(false, std::memory_order_release);
+}
+
+void AudioI2s::b4d1_recorder_reset(uint32_t origin_block_id) {
+  b4d1_record_count_.store(0, std::memory_order_release);
+  b4d1_record_origin_ = origin_block_id;
+}
+
+bool AudioI2s::b4d1_recorder_get(size_t index, B4D1BlockRecord *out) const {
+  if (!out || !b4d1_records_ ||
+      index >= b4d1_record_count_.load(std::memory_order_acquire))
+    return false;
+  *out = b4d1_records_[index];
+  return true;
+}
+
+#ifdef ESP_PLATFORM
+void AudioI2s::b4c7_process_block(
+    float *mono, float *l, float *r, size_t n, int64_t *t_dsp_start,
+    int64_t *t_dsp_done, uint64_t *pure_dsp_us, uint8_t *block_class,
+    uint32_t *v0_us, uint32_t *v1_us, uint32_t *glob_us, uint16_t *slices0,
+    uint16_t *slices1, uint16_t *sched0, uint16_t *sched1) {
+  // Per-block profiler deltas. The two snapshots bracket vocal_fx_process
+  // tightly; their own cost lands in fixture (pre) / tx_prep (post) and is
+  // documented, keeping DSP_PROCESS_US exactly vocal_fx_process().
+  uint64_t before_g[B4C7DecompTotals::kGlobals];
+  uint64_t before_v0[B4C7DecompTotals::kVoiceSubs];
+  uint64_t before_v1[B4C7DecompTotals::kVoiceSubs];
+  for (size_t i = 0; i < B4C7DecompTotals::kGlobals; ++i)
+    before_g[i] = vocal_fx_profile_stats(kB4C7Globals[i]).total_cycles;
+  for (size_t i = 0; i < 20; ++i) {
+    before_v0[i] =
+        vocal_fx_voice_profile_stats(0, kB4C7VoiceSubs[i]).total_cycles;
+    before_v1[i] =
+        vocal_fx_voice_profile_stats(1, kB4C7VoiceSubs[i]).total_cycles;
+  }
+  // Indices 20-24: plain B4C.7 accumulators (no profiler sections).
+  for (size_t j = 0; j < 5; ++j) {
+    before_v0[20 + j] = vocal_fx_voice_b4c7_cycles(0, j);
+    before_v1[20 + j] = vocal_fx_voice_b4c7_cycles(1, j);
+  }
+  vocal_fx_next_slice_audit_block();
+  *t_dsp_start = esp_timer_get_time();
+  vocal_fx_process(mono, l, r, n);
+  *t_dsp_done = esp_timer_get_time();
+  *pure_dsp_us = static_cast<uint64_t>(*t_dsp_done - *t_dsp_start);
+
+  // Classifier (§17): ACTIVE = rendered >= 1 deferred slice this block.
+  HarmonizerBlockTraceRecord tr{};
+  uint16_t s0 = 0, s1 = 0, g0 = 0, g1 = 0;
+  if (vocal_fx_latest_harmonizer_trace(&tr)) {
+    s0 = tr.deferred_slices_rendered_v0;
+    s1 = tr.deferred_slices_rendered_v1;
+    g0 = tr.new_grains_scheduled_v0;
+    g1 = tr.new_grains_scheduled_v1;
+  }
+  const uint8_t cls = (s0 > 0 && s1 > 0)
+                          ? static_cast<uint8_t>(B4C7BlockClass::BothActive)
+                      : (s0 > 0) ? static_cast<uint8_t>(B4C7BlockClass::V0Only)
+                      : (s1 > 0) ? static_cast<uint8_t>(B4C7BlockClass::V1Only)
+                                 : static_cast<uint8_t>(B4C7BlockClass::NeitherActive);
+  *block_class = cls;
+  *slices0 = s0;
+  *slices1 = s1;
+  *sched0 = g0;
+  *sched1 = g1;
+
+  const uint32_t cpus = Profiler::cycles_per_us();
+  B4C7DecompTotals *tp = b4c7_totals_;
+  if (tp) tp->count[cls]++;
+  uint64_t leaf_d = 0;
+  for (size_t i = 0; i < B4C7DecompTotals::kGlobals; ++i) {
+    const uint64_t d =
+        vocal_fx_profile_stats(kB4C7Globals[i]).total_cycles - before_g[i];
+    if (tp) tp->global[cls][i] += d;
+  }
+  // Leaf-sum reconciliation (§19): leaf globals + both voice Totals, in us.
+  for (uint8_t gi : kB4C7LeafGlobals) {
+    const uint64_t d =
+        vocal_fx_profile_stats(kB4C7Globals[gi]).total_cycles - before_g[gi];
+    leaf_d += d;
+  }
+  uint64_t v0t = 0, v1t = 0;
+  for (size_t i = 0; i < 20; ++i) {
+    const uint64_t d0 =
+        vocal_fx_voice_profile_stats(0, kB4C7VoiceSubs[i]).total_cycles -
+        before_v0[i];
+    const uint64_t d1 =
+        vocal_fx_voice_profile_stats(1, kB4C7VoiceSubs[i]).total_cycles -
+        before_v1[i];
+    if (tp) {
+      tp->voice[cls][0][i] += d0;
+      tp->voice[cls][1][i] += d1;
+    }
+    if (i == kB4C7VoiceTotalSub) {
+      v0t = d0;
+      v1t = d1;
+    }
+  }
+  for (size_t j = 0; j < 5; ++j) {
+    const uint64_t e0 =
+        vocal_fx_voice_b4c7_cycles(0, j) - before_v0[20 + j];
+    const uint64_t e1 =
+        vocal_fx_voice_b4c7_cycles(1, j) - before_v1[20 + j];
+    if (tp) {
+      tp->voice[cls][0][20 + j] += e0;
+      tp->voice[cls][1][20 + j] += e1;
+    }
+  }
+  *v0_us = static_cast<uint32_t>(v0t / cpus);
+  *v1_us = static_cast<uint32_t>(v1t / cpus);
+  // Global column: Harmony voice-parent (informational; excluded from recon).
+  const uint64_t hg =
+      vocal_fx_profile_stats(VocalFxProfileSection::Harmony).total_cycles -
+      before_g[8];
+  *glob_us = static_cast<uint32_t>(hg / cpus);
+
+  const uint64_t acct_us = (leaf_d + v0t + v1t) / cpus;
+  if (tp) tp->acct_sum[cls] += acct_us;
+
+  if (tp && cls == static_cast<uint8_t>(B4C7BlockClass::BothActive)) {
+    const uint32_t dsp_u = static_cast<uint32_t>(*pure_dsp_us);
+    tp->both_samples++;
+    tp->both_total_us += dsp_u;
+    if (dsp_u > tp->both_max_us) tp->both_max_us = dsp_u;
+    b4c6a_hist_add(tp->both_hist, dsp_u);
+  }
+
+  const uint64_t seq = b4c7_block_seq_++;
+  if (b4c7_blocks_ && b4c7_block_capacity_ &&
+      b4c7_block_count_ < b4c7_block_capacity_) {
+    B4C7BlockRecord &row = b4c7_blocks_[b4c7_block_count_++];
+    row.block = static_cast<uint32_t>(seq);
+    row.block_class = cls;
+    row.dsp_us = static_cast<uint32_t>(*pure_dsp_us);
+    row.v0_us = *v0_us;
+    row.v1_us = *v1_us;
+    row.global_us = *glob_us;
+    row.slices_v0 = s0;
+    row.slices_v1 = s1;
+    row.sched_v0 = g0;
+    row.sched_v1 = g1;
+  } else if (b4c7_block_capacity_) {
+    b4c7_block_dropped_++;
+  }
+}
+#endif
 
 void AudioI2s::generate_synthetic_voiced_mono(float *mono, size_t frames) {
   constexpr float kFrequencies[] = {110.0f, 147.0f, 220.0f, 330.0f, 440.0f};
@@ -522,6 +1167,209 @@ void AudioI2s::generate_b4b2_pure_sine(float *mono, size_t frames) {
     sum_sq += static_cast<double>(mono[i]) * mono[i];
     uint32_t bits = 0;
     std::memcpy(&bits, &mono[i], sizeof(bits));
+    checksum = (checksum ^ bits) * 16777619U;
+  }
+  current_stimulus_rms_ =
+      frames ? static_cast<float>(std::sqrt(sum_sq / frames)) : 0.0f;
+  current_block_checksum_ = checksum;
+}
+
+void AudioI2s::configure_b4b6_stimulus(B4B6StimulusKind kind, float f0_hz,
+                                       const uint8_t *vocal_mulaw,
+                                       size_t vocal_samples) {
+  b4b6_stimulus_ = kind;
+  b4b6_f0_hz_ = f0_hz;
+  b4b6_vocal_mulaw_ = vocal_mulaw;
+  b4b6_vocal_samples_ = vocal_samples;
+  b4b6_noise_state_ = 0x6d2b79f5U;
+  synth_sample_idx_ = 0;
+  synth_phase_ = 0.0f;
+  current_synth_f0_ = f0_hz;
+  current_synth_voiced_ = false;
+  current_stimulus_state_ = StimulusState::Silence;
+  current_stimulus_rms_ = 0.0f;
+  current_block_checksum_ = 0;
+}
+
+void AudioI2s::generate_b4b6_mono(float *mono, size_t frames) {
+  // B4D.3S: stimulus timing follows the configured sample rate.
+  const float kFs = static_cast<float>(config_.sample_rate);
+  constexpr float kTwoPi = 6.28318530717958647692f;
+  constexpr float kAmplitude = 0.12589254f; // -18 dBFS peak
+  constexpr float kHarmonicNorm = 1.875f;
+  double sum_sq = 0.0;
+  uint32_t checksum = 2166136261U;
+
+  const auto noise_sample = [&]() {
+    b4b6_noise_state_ = b4b6_noise_state_ * 1664525U + 1013904223U;
+    const int32_t centered = static_cast<int32_t>(b4b6_noise_state_ >> 8) -
+                             static_cast<int32_t>(1U << 23);
+    return static_cast<float>(centered) * (1.0f / 8388608.0f);
+  };
+  const auto mulaw_decode = [](uint8_t byte) {
+    const uint8_t value = static_cast<uint8_t>(~byte);
+    const int sign = value & 0x80;
+    const int exponent = (value >> 4) & 0x07;
+    const int mantissa = value & 0x0f;
+    int sample = ((mantissa << 3) + 0x84) << exponent;
+    sample -= 0x84;
+    return static_cast<float>(sign ? -sample : sample) * (1.0f / 32768.0f);
+  };
+
+  for (size_t i = 0; i < frames; ++i) {
+    const uint64_t index = synth_sample_idx_++;
+    const float seconds = static_cast<float>(index) / kFs;
+    float f0 = b4b6_f0_hz_;
+    float envelope = std::min(1.0f, seconds / 0.020f);
+    bool voiced = true;
+    bool harmonic = false;
+    bool use_noise = false;
+    float noise_mix = 0.0f;
+
+    switch (b4b6_stimulus_) {
+    case B4B6StimulusKind::HarmonicVoiced:
+      harmonic = true;
+      break;
+    case B4B6StimulusKind::BroadbandNoise:
+      voiced = false;
+      use_noise = true;
+      noise_mix = 1.0f;
+      break;
+    case B4B6StimulusKind::BreathyVoiced:
+      harmonic = true;
+      use_noise = true;
+      noise_mix = 0.55f;
+      break;
+    case B4B6StimulusKind::Silence:
+      voiced = false;
+      envelope = 0.0f;
+      break;
+    case B4B6StimulusKind::NearSilence:
+      voiced = false;
+      use_noise = true;
+      noise_mix = 0.002f; // about -72 dBFS peak
+      break;
+    case B4B6StimulusKind::Step110To220:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 220.0f : 110.0f;
+      break;
+    case B4B6StimulusKind::Step220To110:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 110.0f : 220.0f;
+      break;
+    case B4B6StimulusKind::Step110To440:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 440.0f : 110.0f;
+      break;
+    case B4B6StimulusKind::Step440To110:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 110.0f : 440.0f;
+      break;
+    case B4B6StimulusKind::Step65To130:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 130.0f : 65.4f;
+      break;
+    case B4B6StimulusKind::Step80To160:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 160.0f : 80.0f;
+      break;
+    case B4B6StimulusKind::Step220To440:
+      harmonic = true;
+      f0 = (static_cast<uint32_t>(seconds / 2.0f) & 1U) ? 440.0f : 220.0f;
+      break;
+    case B4B6StimulusKind::Step147To220To330: {
+      harmonic = true;
+      constexpr float sequence[] = {147.0f, 220.0f, 330.0f};
+      f0 = sequence[static_cast<uint32_t>(seconds / 2.0f) % 3U];
+      break;
+    }
+    case B4B6StimulusKind::Gliss80To440: {
+      harmonic = true;
+      const float progress = std::clamp((seconds - 1.0f) / 10.0f, 0.0f, 1.0f);
+      f0 = 80.0f * std::pow(440.0f / 80.0f, progress);
+      break;
+    }
+    case B4B6StimulusKind::Gliss440To80: {
+      harmonic = true;
+      const float progress = std::clamp((seconds - 1.0f) / 10.0f, 0.0f, 1.0f);
+      f0 = 440.0f * std::pow(80.0f / 440.0f, progress);
+      break;
+    }
+    case B4B6StimulusKind::VibratoOneSemitone:
+    case B4B6StimulusKind::VibratoTwoSemitones: {
+      harmonic = true;
+      const float depth = b4b6_stimulus_ == B4B6StimulusKind::VibratoOneSemitone
+                              ? 1.0f
+                              : 2.0f;
+      f0 = 220.0f * std::pow(2.0f,
+                             depth * std::sin(kTwoPi * 6.0f * seconds) / 12.0f);
+      break;
+    }
+    case B4B6StimulusKind::Staccato: {
+      harmonic = true;
+      constexpr float sequence[] = {110.0f, 220.0f, 440.0f};
+      const uint32_t burst = static_cast<uint32_t>(seconds / 0.40f);
+      const float within = seconds - burst * 0.40f;
+      f0 = sequence[burst % 3U];
+      voiced = within < 0.25f;
+      if (!voiced) {
+        envelope = 0.0f;
+      } else {
+        const float attack = std::min(1.0f, within / 0.005f);
+        const float release = std::min(1.0f, (0.25f - within) / 0.010f);
+        envelope = std::min(attack, release);
+      }
+      break;
+    }
+    case B4B6StimulusKind::VocalReplay:
+      voiced = false;
+      break;
+    case B4B6StimulusKind::PureTone:
+      break;
+    }
+
+    float sample = 0.0f;
+    if (b4b6_stimulus_ == B4B6StimulusKind::VocalReplay &&
+        b4b6_vocal_mulaw_ && b4b6_vocal_samples_) {
+      // Fixture is 8 kHz mu-law. Linear interpolation to the configured
+      // sample rate (B4D.3S: rate-agnostic; at 48 kHz this is exactly the
+      // former 6x path). Identical source time region at every rate.
+      const double src_pos = static_cast<double>(index) * 8000.0 /
+                             static_cast<double>(config_.sample_rate);
+      const uint64_t source_whole = static_cast<uint64_t>(src_pos);
+      const size_t a = static_cast<size_t>(source_whole % b4b6_vocal_samples_);
+      const size_t b = (a + 1U) % b4b6_vocal_samples_;
+      const float fraction =
+          static_cast<float>(src_pos - static_cast<double>(source_whole));
+      sample = mulaw_decode(b4b6_vocal_mulaw_[a]) * (1.0f - fraction) +
+               mulaw_decode(b4b6_vocal_mulaw_[b]) * fraction;
+    } else if (envelope > 0.0f) {
+      const float fundamental = std::sin(synth_phase_);
+      float tonal = fundamental;
+      if (harmonic) {
+        tonal = (fundamental + 0.5f * std::sin(2.0f * synth_phase_) +
+                 0.25f * std::sin(3.0f * synth_phase_) +
+                 0.125f * std::sin(4.0f * synth_phase_)) /
+                kHarmonicNorm;
+      }
+      const float random = use_noise ? noise_sample() : 0.0f;
+      sample = kAmplitude * envelope *
+               ((1.0f - noise_mix) * tonal + noise_mix * random);
+    }
+
+    synth_phase_ += kTwoPi * f0 / kFs;
+    if (synth_phase_ >= kTwoPi)
+      synth_phase_ = std::fmod(synth_phase_, kTwoPi);
+    mono[i] = sample;
+    current_synth_f0_ = f0;
+    current_synth_voiced_ = voiced;
+    current_stimulus_state_ = envelope <= 0.0f
+                                  ? StimulusState::Silence
+                                  : (envelope < 1.0f ? StimulusState::Attack
+                                                     : StimulusState::Tone);
+    sum_sq += static_cast<double>(sample) * sample;
+    uint32_t bits = 0;
+    std::memcpy(&bits, &sample, sizeof(bits));
     checksum = (checksum ^ bits) * 16777619U;
   }
   current_stimulus_rms_ =
@@ -648,21 +1496,46 @@ void AudioI2s::run() {
 
   while (running_.load(std::memory_order_relaxed)) {
     int64_t t_cycle_start = esp_timer_get_time();
+#ifdef ESP_PLATFORM
+    const uint32_t c_cycle_start = esp_cpu_get_cycle_count();
+#else
+    const uint32_t c_cycle_start = 0;
+#endif
     uint64_t block_idx = counters_.audio_blocks_processed.load(std::memory_order_relaxed);
 
     // 1. Read block from RX DMA (Req 4: Real ADC Input Tap)
+    const bool b4c6a = config_.mode == AudioI2sMode::B4C6ATimingForensics;
+    const bool b4d1 = config_.mode == AudioI2sMode::B4D1Qualification;
+    const bool b4c7 = config_.mode == AudioI2sMode::B4C7HarmonizerAudit ||
+                      config_.mode == AudioI2sMode::B4D1Qualification;
+    // B4C.7 shares the whole-loop timing engine; extras gated by detail.
+    const bool b4c6a_on = (b4c6a || b4c7) && b4c6a_detail_ > 0;
+    uint8_t b4c7_cls = static_cast<uint8_t>(B4C7BlockClass::NeitherActive);
     size_t got = 0;
+    const int64_t t_rx_before = t_cycle_start;
     esp_err_t rx_err = i2s_channel_read(rx, in32, byte_count, &got, pdMS_TO_TICKS(100));
+    const int64_t t_rx_after = esp_timer_get_time();
+    if (b4c6a_on) {
+      if (got == 0) ++b4c6a_rx_zero_;
+      if (got != byte_count) ++b4c6a_rx_partial_;
+      if (rx_err == ESP_ERR_TIMEOUT) ++b4c6a_totals_.rx_timeouts;
+    }
     if (rx_err != ESP_OK || got < byte_count) {
       counters_.i2s_read_failures.fetch_add(1, std::memory_order_relaxed);
       counters_.rx_dropped_frames.fetch_add(
           (byte_count - std::min(got, byte_count)) /
               (2 * sizeof(int32_t)),
           std::memory_order_relaxed);
+      counters_.rx_sequence_gaps.fetch_add(1, std::memory_order_relaxed);
       record_transport_error("I2S_RX_READ_FAILURE", block_idx, 0, 0, 0, 0);
       continue;
     }
     counters_.i2s_read_successes.fetch_add(1, std::memory_order_relaxed);
+    if (!b4b6_dsp_paused_.load(std::memory_order_relaxed)) {
+      counters_.rx_bytes_read.fetch_add(got, std::memory_order_relaxed);
+      counters_.rx_frames_read.fetch_add(got / (2 * sizeof(int32_t)), std::memory_order_relaxed);
+      counters_.rx_blocks_read.fetch_add(1, std::memory_order_relaxed);
+    }
     decrement_depth(counters_.rx_event_queue_depth);
 
     int64_t t_wake = esp_timer_get_time();
@@ -685,6 +1558,7 @@ void AudioI2s::run() {
         forensic_data_.captured = true;
       }
     }
+    const int64_t t_after_forensic = esp_timer_get_time();
 
     // 3. Decode input samples (PCM24 in 32-bit container -> float [-1.0, +1.0])
     for (size_t i = 0; i < n; ++i) {
@@ -694,6 +1568,10 @@ void AudioI2s::run() {
       r[i] = right;
       mono[i] = (left + right) * 0.5f;
     }
+    const int64_t t_conversion_done = esp_timer_get_time();
+    int64_t t_fixture_done = t_conversion_done;
+    int64_t t_dsp_start = t_conversion_done;
+    int64_t t_dsp_done = t_conversion_done;
 
     uint64_t pure_dsp_us = 0;
 
@@ -766,6 +1644,101 @@ void AudioI2s::run() {
       }
       break;
     }
+    case AudioI2sMode::B4B6RcValidation: {
+      generate_b4b6_mono(mono, n);
+      if (current_stimulus_state_ == StimulusState::Tone)
+        vocal_fx_funnel_inc_synthetic_tone_blocks();
+      if (b4b6_dsp_paused_.load(std::memory_order_acquire)) {
+        std::fill_n(l, n, 0.0f);
+        std::fill_n(r, n, 0.0f);
+      } else {
+        b4b6_dsp_active_.store(true, std::memory_order_release);
+        const int64_t t_dsp_start = esp_timer_get_time();
+        vocal_fx_process(mono, l, r, n);
+        pure_dsp_us =
+            static_cast<uint64_t>(esp_timer_get_time() - t_dsp_start);
+        b4b6_dsp_active_.store(false, std::memory_order_release);
+      }
+      break;
+    }
+    case AudioI2sMode::B4C1AudioCoreAudit:
+    case AudioI2sMode::B4C2AudioCoreAudit:
+    case AudioI2sMode::B4C3HarmonizerTailAudit:
+    case AudioI2sMode::B4C3AWorkloadAudit:
+    case AudioI2sMode::B4C3BSourceGrainBurst:
+    case AudioI2sMode::B4C4SingleGrainDeferred:
+    case AudioI2sMode::B4C4ADeferredStandalone:
+    case AudioI2sMode::B4C6ATimingForensics: {
+      const int64_t t_fix_start = esp_timer_get_time();
+      generate_b4b6_mono(mono, n);
+      t_fixture_done = esp_timer_get_time();
+      (void)t_fix_start;
+      if (current_stimulus_state_ == StimulusState::Tone)
+        vocal_fx_funnel_inc_synthetic_tone_blocks();
+      if (b4b6_dsp_paused_.load(std::memory_order_acquire)) {
+        std::fill_n(l, n, 0.0f);
+        std::fill_n(r, n, 0.0f);
+        t_dsp_start = t_fixture_done;
+        t_dsp_done = t_fixture_done;
+      } else if (b4c1_transport_only_.load(std::memory_order_acquire)) {
+        t_dsp_start = esp_timer_get_time();
+        for (size_t i = 0; i < n; ++i) {
+          l[i] = mono[i];
+          r[i] = mono[i];
+        }
+        t_dsp_done = esp_timer_get_time();
+        pure_dsp_us = static_cast<uint64_t>(t_dsp_done - t_dsp_start);
+      } else {
+        b4b6_dsp_active_.store(true, std::memory_order_release);
+        t_dsp_start = esp_timer_get_time();
+        vocal_fx_process(mono, l, r, n);
+        t_dsp_done = esp_timer_get_time();
+        pure_dsp_us = static_cast<uint64_t>(t_dsp_done - t_dsp_start);
+        b4b6_dsp_active_.store(false, std::memory_order_release);
+      }
+      break;
+    }
+    case AudioI2sMode::B4C7HarmonizerAudit:
+    case AudioI2sMode::B4D1Qualification: {
+      // Production-equivalent input WITHOUT synchronous fixture synthesis
+      // (§12): Prestaged copies a coordinator-staged PSRAM slice; LiveAdc
+      // uses the converted RX mono directly (true product path).
+      const int64_t t_pre_start = esp_timer_get_time();
+      if (b4c7_input_ == B4C7InputKind::Prestaged && b4c7_pre_buf_ &&
+          b4c7_pre_frames_ >= n) {
+        size_t idx = b4c7_pre_idx_;
+        if (idx + n > b4c7_pre_frames_) {
+          idx = 0;
+          b4c7_pre_overruns_++;
+        }
+        std::memcpy(mono, b4c7_pre_buf_ + idx, n * sizeof(float));
+        b4c7_pre_idx_ = idx + n;
+      }
+      t_fixture_done = esp_timer_get_time();
+      (void)t_pre_start;
+      if (b4b6_dsp_paused_.load(std::memory_order_acquire)) {
+        std::fill_n(l, n, 0.0f);
+        std::fill_n(r, n, 0.0f);
+        t_dsp_start = t_fixture_done;
+        t_dsp_done = t_fixture_done;
+      } else {
+        b4b6_dsp_active_.store(true, std::memory_order_release);
+        uint32_t v0u = 0, v1u = 0, gu = 0;
+        uint16_t s0 = 0, s1 = 0, g0 = 0, g1 = 0;
+        if (b4c6a_detail_ > 0 && !b4d1) {
+          b4c7_process_block(mono, l, r, n, &t_dsp_start, &t_dsp_done,
+                             &pure_dsp_us, &b4c7_cls, &v0u, &v1u, &gu, &s0,
+                             &s1, &g0, &g1);
+        } else {
+          t_dsp_start = esp_timer_get_time();
+          vocal_fx_process(mono, l, r, n);
+          t_dsp_done = esp_timer_get_time();
+          pure_dsp_us = static_cast<uint64_t>(t_dsp_done - t_dsp_start);
+        }
+        b4b6_dsp_active_.store(false, std::memory_order_release);
+      }
+      break;
+    }
     case AudioI2sMode::TxBringUp: {
       generate_tx_tones(l, r, n);
       break;
@@ -801,6 +1774,12 @@ void AudioI2s::run() {
     }
 
     // 5. Soft startup fade-in ramp (avoids initial pops)
+    // B4C.7 TX-prep subsections (§37, measurement only): the sanity+encode
+    // loop is intentionally NOT fissioned — splitting it would reorder the
+    // sum_sq FP accumulation. Subsections measured: ramp / sanity+encode /
+    // rms, gated on B4C.7 detail so B4C.6A timing is bit-comparable.
+    const bool b4c7_txp = b4c7 && b4c6a_detail_ > 0;
+    const int64_t t_sec6_start = b4c7_txp ? esp_timer_get_time() : 0;
     if (ramp_gain_ < 1.0f) {
       ramp_gain_ += 0.01f;
       if (ramp_gain_ > 1.0f) ramp_gain_ = 1.0f;
@@ -809,8 +1788,13 @@ void AudioI2s::run() {
         r[i] *= ramp_gain_;
       }
     }
+    const int64_t t_ramp_done = b4c7_txp ? esp_timer_get_time() : 0;
 
     // 6. Output Sanity Check, Level Tracking & PCM32 encoding
+    // B4D.2: the output RMS accumulator is telemetry-only (it does not feed
+    // DSP behaviour) and can be disabled in production, removing two
+    // multiply-accumulates per sample from the hot path.
+    const bool do_rms = output_rms_enabled_;
     double sum_sq_l = 0.0, sum_sq_r = 0.0;
     for (size_t i = 0; i < n; ++i) {
       if (std::isnan(l[i]) || std::isinf(l[i])) {
@@ -825,39 +1809,143 @@ void AudioI2s::run() {
       float ar = std::fabs(r[i]);
       if (al > out_peak_l_) out_peak_l_ = al;
       if (ar > out_peak_r_) out_peak_r_ = ar;
-      sum_sq_l += l[i] * l[i];
-      sum_sq_r += r[i] * r[i];
+      if (do_rms) {
+        sum_sq_l += l[i] * l[i];
+        sum_sq_r += r[i] * r[i];
+      }
 
       out32[2 * i] = float_to_pcm32(l[i]);
       out32[2 * i + 1] = float_to_pcm32(r[i]);
     }
-    out_rms_l_ = static_cast<float>(std::sqrt(sum_sq_l / n));
-    out_rms_r_ = static_cast<float>(std::sqrt(sum_sq_r / n));
+    const int64_t t_encode_done = b4c7_txp ? esp_timer_get_time() : 0;
+    if (do_rms) {
+      out_rms_l_ = static_cast<float>(std::sqrt(sum_sq_l / n));
+      out_rms_r_ = static_cast<float>(std::sqrt(sum_sq_r / n));
+    }
+    if (b4c7_txp && b4c7_totals_) {
+      const uint32_t ramp_us =
+          static_cast<uint32_t>(t_ramp_done - t_sec6_start);
+      const uint32_t se_us =
+          static_cast<uint32_t>(t_encode_done - t_ramp_done);
+      const uint32_t rms_us = static_cast<uint32_t>(esp_timer_get_time() -
+                                                    t_encode_done);
+      auto &tt = *b4c7_totals_;
+      tt.txp_ramp += ramp_us;
+      tt.txp_sanity_encode += se_us;
+      tt.txp_rms += rms_us;
+      if (ramp_us > tt.txp_ramp_max) tt.txp_ramp_max = ramp_us;
+      if (se_us > tt.txp_sanity_encode_max) tt.txp_sanity_encode_max = se_us;
+      if (rms_us > tt.txp_rms_max) tt.txp_rms_max = rms_us;
+    }
 
-    // 7. Write block to TX DMA
+    // 6b. TX preparation boundary (D): ramp + sanity + float->PCM32 above.
+    const int64_t t_tx_before = esp_timer_get_time();
+    // 7. Write block to TX DMA (E: tx_wait_submit)
     uint64_t rx_gap_us = (last_rx_cb > 0) ? counters_.max_rx_callback_gap_us.load(std::memory_order_relaxed) : 0;
     size_t sent = 0;
     esp_err_t tx_err = i2s_channel_write(tx, out32, byte_count, &sent, pdMS_TO_TICKS(100));
+    const int64_t t_tx_after = esp_timer_get_time();
+    if (b4c6a_on) {
+      if (sent == 0) ++b4c6a_tx_zero_;
+      if (sent != byte_count) ++b4c6a_tx_partial_;
+      if (tx_err == ESP_ERR_TIMEOUT) ++b4c6a_totals_.tx_timeouts;
+    }
     if (tx_err != ESP_OK || sent < byte_count) {
       counters_.i2s_write_failures.fetch_add(1, std::memory_order_relaxed);
       counters_.tx_dropped_frames.fetch_add(
           (byte_count - std::min(sent, byte_count)) /
               (2 * sizeof(int32_t)),
           std::memory_order_relaxed);
+      counters_.tx_sequence_gaps.fetch_add(1, std::memory_order_relaxed);
       record_transport_error("I2S_TX_WRITE_FAILURE", block_idx, pure_dsp_us,
                              rx_gap_us, 0, wake_latency_us);
     } else {
       counters_.i2s_write_successes.fetch_add(1, std::memory_order_relaxed);
+      if (!b4b6_dsp_paused_.load(std::memory_order_relaxed)) {
+        counters_.tx_bytes_written.fetch_add(sent, std::memory_order_relaxed);
+        counters_.tx_frames_written.fetch_add(sent / (2 * sizeof(int32_t)), std::memory_order_relaxed);
+        counters_.tx_blocks_written.fetch_add(1, std::memory_order_relaxed);
+      }
       increment_depth(counters_.tx_event_queue_depth,
                       counters_.tx_event_queue_max_depth);
     }
 
-    // 8. Record cycle timing
-    int64_t t_cycle_end = esp_timer_get_time();
-    uint64_t cycle_us = static_cast<uint64_t>(t_cycle_end - t_cycle_start);
+    // 8. Record cycle timing + B4C.6A whole-loop sections (G/H/I).
+    // G bookkeeping starts here: counters, wake stats, histograms. The
+    // esp_timer reads themselves are ~1 us and stay inside G.
+    const int64_t t_book_start = esp_timer_get_time();
+    uint64_t cycle_us = static_cast<uint64_t>(t_book_start - t_cycle_start);
+    const uint32_t c_cycle_end = esp_cpu_get_cycle_count();
+    const uint32_t loop_cycles =
+        c_cycle_end - c_cycle_start;
 
-    record_timing(pure_dsp_us, cycle_us, wake_latency_us, rx_gap_us, block_idx);
-    counters_.audio_blocks_processed.fetch_add(1, std::memory_order_relaxed);
+    if (b4c6a_on && got == byte_count && sent == byte_count) {
+      // Non-overlapping sections in us (all clamped, never negative).
+      const uint32_t rx_wait =
+          static_cast<uint32_t>(t_rx_after - t_cycle_start);
+      const uint32_t rx_copy =
+          static_cast<uint32_t>(t_conversion_done - t_rx_after);
+      const uint32_t fixture =
+          static_cast<uint32_t>(t_fixture_done - t_conversion_done);
+      const uint32_t dsp = static_cast<uint32_t>(pure_dsp_us);
+      // DSP interval check: t_dsp_done must equal t_fixture_done + pure_dsp
+      // by construction in the B4C6A dispatch branch.
+      const uint32_t tx_prep = static_cast<uint32_t>(
+          t_tx_before > t_dsp_done ? t_tx_before - t_dsp_done : 0);
+      const uint32_t tx_wait =
+          static_cast<uint32_t>(t_tx_after - t_tx_before);
+      // Bookkeeping closes at iteration end; measure it now.
+      const int64_t t_iter_end = esp_timer_get_time();
+      const uint32_t book =
+          static_cast<uint32_t>(t_iter_end - t_tx_after);
+      const uint32_t loop_total =
+          static_cast<uint32_t>(t_iter_end - t_cycle_start);
+      const uint64_t accounted = static_cast<uint64_t>(rx_wait) + rx_copy +
+                                 fixture + dsp + tx_prep + tx_wait + book;
+      const uint32_t other = loop_total > accounted
+                                 ? loop_total - static_cast<uint32_t>(accounted)
+                                 : 0;
+      uint32_t inter_gap = 0;
+      uint32_t loop_period = 0;
+      if (b4c6a_last_end_us_ != 0 &&
+          t_cycle_start > static_cast<int64_t>(b4c6a_last_end_us_)) {
+        inter_gap = static_cast<uint32_t>(
+            static_cast<uint64_t>(t_cycle_start) - b4c6a_last_end_us_);
+      }
+      if (b4c6a_last_begin_us_ != 0 &&
+          static_cast<uint64_t>(t_cycle_start) > b4c6a_last_begin_us_) {
+        loop_period = static_cast<uint32_t>(
+            static_cast<uint64_t>(t_cycle_start) - b4c6a_last_begin_us_);
+      }
+      b4c6a_note_iteration(
+          rx_wait, rx_copy, fixture, dsp, tx_prep, tx_wait, book, other,
+          loop_total, loop_period, inter_gap, loop_cycles,
+          static_cast<uint32_t>(got), static_cast<uint32_t>(sent),
+          static_cast<uint16_t>(got / (2 * sizeof(int32_t))),
+          static_cast<uint16_t>(sent / (2 * sizeof(int32_t))),
+          static_cast<int>(rx_err), static_cast<int>(tx_err),
+          static_cast<uint64_t>(t_cycle_start),
+          static_cast<uint64_t>(t_iter_end), true);
+      b4c6a_last_end_us_ = static_cast<uint64_t>(t_iter_end);
+      b4c6a_last_begin_us_ = static_cast<uint64_t>(t_cycle_start);
+      if (b4c7 && b4c7_totals_ && b4c7_cls < B4C7DecompTotals::kClasses)
+        b4c7_totals_->loop_sum[b4c7_cls] += loop_total;
+      // Keep legacy cycle_us consistent with the closed iteration end.
+      cycle_us = loop_total;
+    } else if (b4c6a || b4c7) {
+      if (b4c6a_last_end_us_ == 0) {
+        b4c6a_last_end_us_ = static_cast<uint64_t>(t_book_start);
+        b4c6a_last_begin_us_ = static_cast<uint64_t>(t_cycle_start);
+      } else {
+        b4c6a_last_end_us_ = static_cast<uint64_t>(t_book_start);
+        b4c6a_last_begin_us_ = static_cast<uint64_t>(t_cycle_start);
+      }
+    }
+
+    if (!b4b6_dsp_paused_.load(std::memory_order_relaxed)) {
+      record_timing(pure_dsp_us, cycle_us, wake_latency_us, rx_gap_us, block_idx);
+      counters_.audio_blocks_processed.fetch_add(1, std::memory_order_relaxed);
+    }
 
     if (warmup_blocks < 100) {
       warmup_blocks++;
@@ -869,16 +1957,28 @@ void AudioI2s::run() {
         counters_.dsp_deadline_misses.store(0, std::memory_order_relaxed);
         counters_.transport_deadline_misses.store(0, std::memory_order_relaxed);
         counters_.nan_inf_count.store(0, std::memory_order_relaxed);
+        counters_.rx_bytes_read.store(0, std::memory_order_relaxed);
+        counters_.tx_bytes_written.store(0, std::memory_order_relaxed);
+        counters_.rx_frames_read.store(0, std::memory_order_relaxed);
+        counters_.tx_frames_written.store(0, std::memory_order_relaxed);
+        counters_.rx_blocks_read.store(0, std::memory_order_relaxed);
+        counters_.tx_blocks_written.store(0, std::memory_order_relaxed);
+        counters_.rx_dropped_frames.store(0, std::memory_order_relaxed);
+        counters_.tx_dropped_frames.store(0, std::memory_order_relaxed);
+        counters_.rx_sequence_gaps.store(0, std::memory_order_relaxed);
+        counters_.tx_sequence_gaps.store(0, std::memory_order_relaxed);
+        counters_.audio_blocks_processed.store(0, std::memory_order_relaxed);
         dsp_total_us_ = 0;
         cycle_total_us_ = 0;
         wake_total_us_ = 0;
         dsp_worst_us_ = 0;
         cycle_worst_us_ = 0;
         wake_worst_us_ = 0;
-        std::fill_n(dsp_hist_, kHistBins, 0);
-        std::fill_n(cycle_hist_, kHistBins, 0);
-        std::fill_n(wake_hist_, kHistBins, 0);
+        uint32_t *legacy_warm[] = {dsp_hist_, cycle_hist_, wake_hist_};
+        for (uint32_t *h : legacy_warm)
+          if (h) std::fill_n(h, kHistBins, 0);
         outlier_count_ = 0;
+        reset_b4c6a_stats();
       }
     }
   }
@@ -888,8 +1988,277 @@ void AudioI2s::run() {
 #endif
 }
 
+void AudioI2s::print_b4c6a_forensics(bool dump_samples) const {
+  // B4C.7 shares the whole-loop timing engine; its per-case loop aggregates
+  // print here (per-block TIMELINE rows stay B4C.6A-only).
+  if (config_.mode != AudioI2sMode::B4C6ATimingForensics &&
+      config_.mode != AudioI2sMode::B4C7HarmonizerAudit)
+    return;
+  const auto &t = b4c6a_totals_;
+  const double count = static_cast<double>(t.samples);
+  const double avg_loop = count ? static_cast<double>(t.loop_total_us) / count : 0.0;
+  const double avg_gap =
+      t.samples > 1 ? static_cast<double>(t.inter_gap_us) / (count - 1.0) : 0.0;
+  const double avg_rx = count ? static_cast<double>(t.rx_wait_us) / count : 0.0;
+  const double avg_tx = count ? static_cast<double>(t.tx_wait_us) / count : 0.0;
+  const double avg_copy = count ? static_cast<double>(t.rx_copy_us) / count : 0.0;
+  const double avg_fix = count ? static_cast<double>(t.fixture_us) / count : 0.0;
+  const double avg_dsp = count ? static_cast<double>(t.dsp_us) / count : 0.0;
+  const double avg_prep = count ? static_cast<double>(t.tx_prep_us) / count : 0.0;
+  const double avg_book = count ? static_cast<double>(t.bookkeeping_us) / count : 0.0;
+  const double avg_other = count ? static_cast<double>(t.other_us) / count : 0.0;
+  const uint64_t accounted = t.rx_wait_us + t.rx_copy_us + t.fixture_us +
+                             t.dsp_us + t.tx_prep_us + t.tx_wait_us +
+                             t.bookkeeping_us;
+  const double recon = b4c6a_reconciliation_pct(accounted, t.loop_total_us);
+  const TimingPercentiles loop_p = b4c6a_loop_percentiles();
+  const TimingPercentiles dsp_p = b4c6a_dsp_forensic_percentiles();
+  const TimingPercentiles rx_p = b4c6a_rx_percentiles();
+  const TimingPercentiles tx_p = b4c6a_tx_percentiles();
+  printf("B4C6A_SUMMARY samples=%llu dropped=%llu avg_loop_us=%.2f max_loop_us=%llu avg_rx_wait_us=%.2f avg_tx_wait_us=%.2f avg_inter_gap_us=%.2f max_inter_gap_us=%llu rx_partial=%llu tx_partial=%llu rx_zero=%llu tx_zero=%llu rx_timeouts=%llu tx_timeouts=%llu\n",
+         static_cast<unsigned long long>(t.samples),
+         static_cast<unsigned long long>(b4c6a_timing_dropped_), avg_loop,
+         static_cast<unsigned long long>(t.loop_total_max_us), avg_rx, avg_tx,
+         avg_gap, static_cast<unsigned long long>(t.inter_gap_max_us),
+         static_cast<unsigned long long>(b4c6a_rx_partial_),
+         static_cast<unsigned long long>(b4c6a_tx_partial_),
+         static_cast<unsigned long long>(b4c6a_rx_zero_),
+         static_cast<unsigned long long>(b4c6a_tx_zero_),
+         static_cast<unsigned long long>(t.rx_timeouts),
+         static_cast<unsigned long long>(t.tx_timeouts));
+  printf("B4C6A_LOOP loop_avg=%.2f loop_p50=%llu loop_p90=%llu loop_p95=%llu loop_p99=%llu loop_p999=%llu loop_max=%llu dsp_avg=%.2f dsp_p99=%llu dsp_max=%llu rx_max=%llu tx_max=%llu gap_max=%llu\n",
+         loop_p.avg_us, static_cast<unsigned long long>(loop_p.p50_us),
+         static_cast<unsigned long long>(loop_p.p90_us),
+         static_cast<unsigned long long>(loop_p.p95_us),
+         static_cast<unsigned long long>(loop_p.p99_us),
+         static_cast<unsigned long long>(loop_p.p99_9_us),
+         static_cast<unsigned long long>(loop_p.max_us), dsp_p.avg_us,
+         static_cast<unsigned long long>(dsp_p.p99_us),
+         static_cast<unsigned long long>(dsp_p.max_us),
+         static_cast<unsigned long long>(t.rx_wait_max_us),
+         static_cast<unsigned long long>(t.tx_wait_max_us),
+         static_cast<unsigned long long>(t.inter_gap_max_us));
+  printf("B4C6A_RXDIST avg=%.2f p50=%llu p90=%llu p95=%llu p99=%llu p999=%llu max=%llu samples=%llu\n",
+         rx_p.avg_us, static_cast<unsigned long long>(rx_p.p50_us),
+         static_cast<unsigned long long>(rx_p.p90_us),
+         static_cast<unsigned long long>(rx_p.p95_us),
+         static_cast<unsigned long long>(rx_p.p99_us),
+         static_cast<unsigned long long>(rx_p.p99_9_us),
+         static_cast<unsigned long long>(rx_p.max_us),
+         static_cast<unsigned long long>(rx_p.samples));
+  printf("B4C6A_TXDIST avg=%.2f p50=%llu p90=%llu p95=%llu p99=%llu p999=%llu max=%llu samples=%llu\n",
+         tx_p.avg_us, static_cast<unsigned long long>(tx_p.p50_us),
+         static_cast<unsigned long long>(tx_p.p90_us),
+         static_cast<unsigned long long>(tx_p.p95_us),
+         static_cast<unsigned long long>(tx_p.p99_us),
+         static_cast<unsigned long long>(tx_p.p99_9_us),
+         static_cast<unsigned long long>(tx_p.max_us),
+         static_cast<unsigned long long>(tx_p.samples));
+  printf("B4C6A_EQUATION rx_wait=%.2f rx_copy=%.2f fixture=%.2f dsp=%.2f tx_prep=%.2f tx_wait=%.2f book=%.2f other=%.2f loop_total=%.2f reconciliation=%.3f late_loop_blocks=%llu positive_lateness_us=%llu catchup_rx_near_zero=%llu recover_events=%llu recover_blocks_sum=%llu\n",
+         avg_rx, avg_copy, avg_fix, avg_dsp, avg_prep, avg_tx, avg_book,
+         avg_other, avg_loop, recon,
+         static_cast<unsigned long long>(t.late_loop_blocks),
+         static_cast<unsigned long long>(t.positive_lateness_us),
+         static_cast<unsigned long long>(t.catchup_rx_near_zero),
+         static_cast<unsigned long long>(t.recover_events),
+         static_cast<unsigned long long>(t.recover_blocks_sum));
+  printf("B4C6A_BACKLOG rx_queue_max=%llu tx_queue_max=%llu backlog_frames_max=%llu backlog_ms_max=%.3f rx_overruns=%llu tx_underruns=%llu\n",
+         static_cast<unsigned long long>(counters_.rx_event_queue_max_depth.load()),
+         static_cast<unsigned long long>(counters_.tx_event_queue_max_depth.load()),
+         static_cast<unsigned long long>(counters_.rx_event_queue_max_depth.load() * 64),
+         static_cast<double>(counters_.rx_event_queue_max_depth.load() * 64) / 48.0,
+         static_cast<unsigned long long>(counters_.rx_overruns.load()),
+         static_cast<unsigned long long>(counters_.tx_underruns.load()));
+  if (!dump_samples) return;
+  printf("B4C6A_TIMELINE_HEADER iteration_begin_us,rx_done_us,conversion_done_us,fixture_done_us,dsp_done_us,tx_before_us,tx_done_us,iteration_end_us,loop_cycles,rx_bytes,tx_bytes,rx_rc,tx_rc,rx_ok,tx_ok\n");
+  for (uint64_t i = 0; i < b4c6a_timing_count_; ++i) {
+    const auto &r = b4c6a_timing_[i];
+    const uint64_t rx_done = r.iteration_begin_us + r.rx_wait_us;
+    const uint64_t conv_done = rx_done + r.rx_copy_us;
+    const uint64_t fix_done = conv_done + r.fixture_us;
+    const uint64_t dsp_done = fix_done + r.dsp_us;
+    const uint64_t tx_before = dsp_done + r.tx_prep_us;
+    const uint64_t tx_done = tx_before + r.tx_wait_us;
+    printf("B4C6A_TIMELINE %llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%d,%d,%u,%u\n",
+           static_cast<unsigned long long>(r.iteration_begin_us),
+           static_cast<unsigned long long>(rx_done),
+           static_cast<unsigned long long>(conv_done),
+           static_cast<unsigned long long>(fix_done),
+           static_cast<unsigned long long>(dsp_done),
+           static_cast<unsigned long long>(tx_before),
+           static_cast<unsigned long long>(tx_done),
+           static_cast<unsigned long long>(r.iteration_end_us),
+           static_cast<unsigned>(r.loop_total_cycles),
+           static_cast<unsigned>(r.rx_bytes), static_cast<unsigned>(r.tx_bytes),
+           static_cast<int>(r.rx_rc), static_cast<int>(r.tx_rc),
+           static_cast<unsigned>(r.rx_ok), static_cast<unsigned>(r.tx_ok));
+  }
+}
+
+void AudioI2s::print_b4c7_forensics(bool dump_samples) const {
+  if (config_.mode != AudioI2sMode::B4C7HarmonizerAudit) return;
+  if (!b4c7_totals_) {
+    printf("B4C7_CLASS status=NO_TOTALS\n");
+    return;
+  }
+  const auto &t = *b4c7_totals_;
+  static const char *kClassNames[4] = {"BOTH_ACTIVE", "V0_ONLY", "V1_ONLY",
+                                       "NEITHER_ACTIVE"};
+  uint64_t total_blocks = 0;
+  for (uint8_t c = 0; c < 4; ++c) total_blocks += t.count[c];
+  const TimingPercentiles both_p = b4c6a_hist_percentiles(
+      t.both_hist, t.both_total_us, t.both_max_us, t.both_samples);
+  printf("B4C7_CLASS total=%llu both=%llu v0only=%llu v1only=%llu neither=%llu both_pct=%.2f\n",
+         static_cast<unsigned long long>(total_blocks),
+         static_cast<unsigned long long>(t.count[0]),
+         static_cast<unsigned long long>(t.count[1]),
+         static_cast<unsigned long long>(t.count[2]),
+         static_cast<unsigned long long>(t.count[3]),
+         total_blocks ? 100.0 * static_cast<double>(t.count[0]) /
+                            static_cast<double>(total_blocks)
+                      : 0.0);
+  printf("B4C7_BOTH dsp_avg=%.2f dsp_p50=%llu dsp_p90=%llu dsp_p95=%llu dsp_p99=%llu dsp_p999=%llu dsp_max=%llu samples=%llu\n",
+         both_p.avg_us, static_cast<unsigned long long>(both_p.p50_us),
+         static_cast<unsigned long long>(both_p.p90_us),
+         static_cast<unsigned long long>(both_p.p95_us),
+         static_cast<unsigned long long>(both_p.p99_us),
+         static_cast<unsigned long long>(both_p.p99_9_us),
+         static_cast<unsigned long long>(both_p.max_us),
+         static_cast<unsigned long long>(both_p.samples));
+  // Per-class decomposition averages (§19/§20): global[20] + voice[2][20].
+  for (uint8_t c = 0; c < 4; ++c) {
+    const double n = static_cast<double>(t.count[c] ? t.count[c] : 1);
+    const double loop_avg = static_cast<double>(t.loop_sum[c]) / n;
+    const double acct_avg = static_cast<double>(t.acct_sum[c]) / n;
+    printf("B4C7_DECOMP class=%s count=%llu loop_avg=%.2f acct_avg=%.2f recon=%.3f\n",
+           kClassNames[c], static_cast<unsigned long long>(t.count[c]),
+           loop_avg, acct_avg,
+           b4c6a_reconciliation_pct(
+               static_cast<uint64_t>(acct_avg * t.count[c]),
+               t.loop_sum[c]));
+    printf("B4C7_DECOMP_G class=%s", kClassNames[c]);
+    for (size_t i = 0; i < B4C7DecompTotals::kGlobals; ++i)
+      printf(" %s=%.2f", kB4C7GlobalNames[i],
+             static_cast<double>(t.global[c][i]) / n / Profiler::cycles_per_us());
+    printf("\n");
+    for (uint8_t v = 0; v < 2; ++v) {
+      printf("B4C7_DECOMP_V class=%s voice=%u", kClassNames[c],
+             static_cast<unsigned>(v));
+      for (size_t i = 0; i < 20; ++i)
+        printf(" %s=%.2f", kB4C7VoiceNames[i],
+               static_cast<double>(t.voice[c][v][i]) / n / Profiler::cycles_per_us());
+      for (size_t j = 0; j < 5; ++j)
+        printf(" %s=%.2f", kB4C7ExtraNames[j],
+               static_cast<double>(t.voice[c][v][20 + j]) / n / Profiler::cycles_per_us());
+      printf("\n");
+    }
+  }
+  // TX-prep subsections (§37, measurement only).
+  {
+    const double n = static_cast<double>(total_blocks ? total_blocks : 1);
+    printf("B4C7_TXPREP ramp_avg=%.2f sanity_encode_avg=%.2f rms_avg=%.2f ramp_max=%llu sanity_encode_max=%llu rms_max=%llu samples=%llu\n",
+           static_cast<double>(t.txp_ramp) / n,
+           static_cast<double>(t.txp_sanity_encode) / n,
+           static_cast<double>(t.txp_rms) / n,
+           static_cast<unsigned long long>(t.txp_ramp_max),
+           static_cast<unsigned long long>(t.txp_sanity_encode_max),
+           static_cast<unsigned long long>(t.txp_rms_max),
+           static_cast<unsigned long long>(total_blocks));
+  }
+  // LPC-order forensic gate (§33).
+  printf("B4C7_LPC compile_default_order=%u analyzer_order=%u synth_v0=%u synth_v1=%u\n",
+         static_cast<unsigned>(LpcConfig{}.order),
+         static_cast<unsigned>(vocal_fx_lpc_config_order()),
+         static_cast<unsigned>(vocal_fx_synthesis_order(0)),
+         static_cast<unsigned>(vocal_fx_synthesis_order(1)));
+  // Source-slice reuse (§21-23): descriptor audit deltas + exact slice audit.
+  {
+    const PsolaSourceGrainAudit now_a = vocal_fx_get_psola_source_grain_audit();
+    const B4C7SliceAuditSnapshot now_s = vocal_fx_slice_audit_snapshot();
+    const uint64_t req = now_a.source_grains_requested - b4c7_audit_start_.source_grains_requested;
+    const uint64_t uniq = now_a.unique_source_grains - b4c7_audit_start_.unique_source_grains;
+    const uint64_t dup = now_a.duplicate_source_grains - b4c7_audit_start_.duplicate_source_grains;
+    const uint64_t cross = now_a.cross_voice_reuses - b4c7_audit_start_.cross_voice_reuses;
+    const uint64_t same = now_a.same_voice_reuses - b4c7_audit_start_.same_voice_reuses;
+    const uint64_t samp = now_a.total_grain_samples - b4c7_audit_start_.total_grain_samples;
+    const uint64_t rsamp = now_a.reusable_grain_samples - b4c7_audit_start_.reusable_grain_samples;
+    printf("B4C7_REUSE_DESC requested=%llu unique=%llu duplicate=%llu cross=%llu same=%llu samples=%llu reusable_samples=%llu req_pct=%.2f sample_pct=%.2f\n",
+           static_cast<unsigned long long>(req),
+           static_cast<unsigned long long>(uniq),
+           static_cast<unsigned long long>(dup),
+           static_cast<unsigned long long>(cross),
+           static_cast<unsigned long long>(same),
+           static_cast<unsigned long long>(samp),
+           static_cast<unsigned long long>(rsamp),
+           req ? 100.0 * static_cast<double>(cross) / static_cast<double>(req) : 0.0,
+           samp ? 100.0 * static_cast<double>(rsamp) / static_cast<double>(samp) : 0.0);
+    const uint64_t sreq = now_s.slices_requested - b4c7_slice_start_.slices_requested;
+    const uint64_t sdup = now_s.duplicates - b4c7_slice_start_.duplicates;
+    const uint64_t scross = now_s.cross_voice - b4c7_slice_start_.cross_voice;
+    const uint64_t ssame = now_s.same_voice - b4c7_slice_start_.same_voice;
+    const uint64_t ssamp = now_s.samples - b4c7_slice_start_.samples;
+    const uint64_t srsamp = now_s.reusable_samples - b4c7_slice_start_.reusable_samples;
+    const uint64_t taps = now_s.fir_taps - b4c7_slice_start_.fir_taps;
+    const uint64_t rtaps = now_s.reusable_taps - b4c7_slice_start_.reusable_taps;
+    printf("B4C7_REUSE_SLICE requested=%llu duplicate=%llu cross=%llu same=%llu samples=%llu reusable_samples=%llu taps=%llu reusable_taps=%llu entry_drops=%llu req_pct=%.2f sample_pct=%.2f tap_pct=%.2f\n",
+           static_cast<unsigned long long>(sreq),
+           static_cast<unsigned long long>(sdup),
+           static_cast<unsigned long long>(scross),
+           static_cast<unsigned long long>(ssame),
+           static_cast<unsigned long long>(ssamp),
+           static_cast<unsigned long long>(srsamp),
+           static_cast<unsigned long long>(taps),
+           static_cast<unsigned long long>(rtaps),
+           static_cast<unsigned long long>(now_s.entry_drops - b4c7_slice_start_.entry_drops),
+           sreq ? 100.0 * static_cast<double>(scross) / static_cast<double>(sreq) : 0.0,
+           ssamp ? 100.0 * static_cast<double>(srsamp) / static_cast<double>(ssamp) : 0.0,
+           taps ? 100.0 * static_cast<double>(rtaps) / static_cast<double>(taps) : 0.0);
+  }
+  printf("B4C7_PRESTAGED overruns=%llu\n",
+         static_cast<unsigned long long>(b4c7_pre_overruns_));
+  // Deferred residual-cache stats (§22 FIR accounting): per-voice deltas.
+  for (uint8_t v = 0; v < 2; ++v) {
+    const PsolaSourceResidualCacheStats now =
+        vocal_fx_get_psola_residual_cache_stats(v);
+    const PsolaSourceResidualCacheStats &st = b4c7_fir_start_[v];
+    printf("B4C7_FIRCACHE voice=%u lookups=%llu hits=%llu misses=%llu evictions=%llu computed=%llu reused=%llu saved_cycles=%llu lookup_cycles=%llu fir_cycles=%llu dist=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+           static_cast<unsigned>(v),
+           static_cast<unsigned long long>(now.total_lookups - st.total_lookups),
+           static_cast<unsigned long long>(now.hits - st.hits),
+           static_cast<unsigned long long>(now.misses - st.misses),
+           static_cast<unsigned long long>(now.evictions - st.evictions),
+           static_cast<unsigned long long>(now.fir_samples_computed - st.fir_samples_computed),
+           static_cast<unsigned long long>(now.fir_samples_reused - st.fir_samples_reused),
+           static_cast<unsigned long long>(now.fir_cycles_saved - st.fir_cycles_saved),
+           static_cast<unsigned long long>(now.total_lookup_cycles - st.total_lookup_cycles),
+           static_cast<unsigned long long>(now.total_fir_cycles - st.total_fir_cycles),
+           static_cast<unsigned long long>(now.reuse_distance_hist[0] - st.reuse_distance_hist[0]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[1] - st.reuse_distance_hist[1]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[2] - st.reuse_distance_hist[2]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[3] - st.reuse_distance_hist[3]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[4] - st.reuse_distance_hist[4]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[5] - st.reuse_distance_hist[5]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[6] - st.reuse_distance_hist[6]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[7] - st.reuse_distance_hist[7]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[8] - st.reuse_distance_hist[8]),
+           static_cast<unsigned long long>(now.reuse_distance_hist[9] - st.reuse_distance_hist[9]));
+  }
+  if (!dump_samples) return;
+  printf("B4C7_BLOCK_HEADER block,class,dsp_us,v0_us,v1_us,global_us,slices_v0,slices_v1,sched_v0,sched_v1\n");
+  for (uint64_t i = 0; i < b4c7_block_count_; ++i) {
+    const auto &r = b4c7_blocks_[i];
+    printf("B4C7_BLOCK %u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+           static_cast<unsigned>(r.block), static_cast<unsigned>(r.block_class),
+           static_cast<unsigned>(r.dsp_us), static_cast<unsigned>(r.v0_us),
+           static_cast<unsigned>(r.v1_us), static_cast<unsigned>(r.global_us),
+           static_cast<unsigned>(r.slices_v0), static_cast<unsigned>(r.slices_v1),
+           static_cast<unsigned>(r.sched_v0), static_cast<unsigned>(r.sched_v1));
+  }
+}
+
 TimingPercentiles AudioI2s::calculate_dsp_percentiles() const {
   TimingPercentiles p{};
+  if (!dsp_hist_) return p;
   uint64_t total_samples = 0;
   for (size_t i = 0; i < kHistBins; ++i) {
     total_samples += dsp_hist_[i];
@@ -900,6 +2269,8 @@ TimingPercentiles AudioI2s::calculate_dsp_percentiles() const {
   p.avg_us = static_cast<double>(dsp_total_us_) / total_samples;
   p.max_us = dsp_worst_us_;
 
+  uint64_t target_p50 = static_cast<uint64_t>(total_samples * 0.50);
+  uint64_t target_p90 = static_cast<uint64_t>(total_samples * 0.90);
   uint64_t target_p95 = static_cast<uint64_t>(total_samples * 0.95);
   uint64_t target_p99 = static_cast<uint64_t>(total_samples * 0.99);
   uint64_t target_p99_9 = static_cast<uint64_t>(total_samples * 0.999);
@@ -908,6 +2279,8 @@ TimingPercentiles AudioI2s::calculate_dsp_percentiles() const {
   for (size_t i = 0; i < kHistBins; ++i) {
     cumulative += dsp_hist_[i];
     uint64_t bin_us = (i + 1) * kBinWidthUs;
+    if (p.p50_us == 0 && cumulative >= target_p50) p.p50_us = std::min(bin_us, p.max_us);
+    if (p.p90_us == 0 && cumulative >= target_p90) p.p90_us = std::min(bin_us, p.max_us);
     if (p.p95_us == 0 && cumulative >= target_p95) p.p95_us = std::min(bin_us, p.max_us);
     if (p.p99_us == 0 && cumulative >= target_p99) {
       p.p99_bucket_upper_bound_us = bin_us;
@@ -920,6 +2293,7 @@ TimingPercentiles AudioI2s::calculate_dsp_percentiles() const {
 
 TimingPercentiles AudioI2s::calculate_cycle_percentiles() const {
   TimingPercentiles p{};
+  if (!cycle_hist_) return p;
   uint64_t total_samples = 0;
   for (size_t i = 0; i < kHistBins; ++i) {
     total_samples += cycle_hist_[i];
@@ -930,6 +2304,8 @@ TimingPercentiles AudioI2s::calculate_cycle_percentiles() const {
   p.avg_us = static_cast<double>(cycle_total_us_) / total_samples;
   p.max_us = cycle_worst_us_;
 
+  uint64_t target_p50 = static_cast<uint64_t>(total_samples * 0.50);
+  uint64_t target_p90 = static_cast<uint64_t>(total_samples * 0.90);
   uint64_t target_p95 = static_cast<uint64_t>(total_samples * 0.95);
   uint64_t target_p99 = static_cast<uint64_t>(total_samples * 0.99);
   uint64_t target_p99_9 = static_cast<uint64_t>(total_samples * 0.999);
@@ -938,6 +2314,8 @@ TimingPercentiles AudioI2s::calculate_cycle_percentiles() const {
   for (size_t i = 0; i < kHistBins; ++i) {
     cumulative += cycle_hist_[i];
     uint64_t bin_us = (i + 1) * kBinWidthUs;
+    if (p.p50_us == 0 && cumulative >= target_p50) p.p50_us = std::min(bin_us, p.max_us);
+    if (p.p90_us == 0 && cumulative >= target_p90) p.p90_us = std::min(bin_us, p.max_us);
     if (p.p95_us == 0 && cumulative >= target_p95) p.p95_us = std::min(bin_us, p.max_us);
     if (p.p99_us == 0 && cumulative >= target_p99) {
       p.p99_bucket_upper_bound_us = bin_us;
@@ -950,6 +2328,7 @@ TimingPercentiles AudioI2s::calculate_cycle_percentiles() const {
 
 TimingPercentiles AudioI2s::calculate_wake_percentiles() const {
   TimingPercentiles p{};
+  if (!wake_hist_) return p;
   uint64_t total_samples = 0;
   for (size_t i = 0; i < kHistBins; ++i) {
     total_samples += wake_hist_[i];
@@ -960,6 +2339,8 @@ TimingPercentiles AudioI2s::calculate_wake_percentiles() const {
   p.avg_us = static_cast<double>(wake_total_us_) / total_samples;
   p.max_us = wake_worst_us_;
 
+  uint64_t target_p50 = static_cast<uint64_t>(total_samples * 0.50);
+  uint64_t target_p90 = static_cast<uint64_t>(total_samples * 0.90);
   uint64_t target_p95 = static_cast<uint64_t>(total_samples * 0.95);
   uint64_t target_p99 = static_cast<uint64_t>(total_samples * 0.99);
   uint64_t target_p99_9 = static_cast<uint64_t>(total_samples * 0.999);
@@ -968,6 +2349,8 @@ TimingPercentiles AudioI2s::calculate_wake_percentiles() const {
   for (size_t i = 0; i < kHistBins; ++i) {
     cumulative += wake_hist_[i];
     uint64_t bin_us = (i + 1) * kBinWidthUs;
+    if (p.p50_us == 0 && cumulative >= target_p50) p.p50_us = std::min(bin_us, p.max_us);
+    if (p.p90_us == 0 && cumulative >= target_p90) p.p90_us = std::min(bin_us, p.max_us);
     if (p.p95_us == 0 && cumulative >= target_p95) p.p95_us = std::min(bin_us, p.max_us);
     if (p.p99_us == 0 && cumulative >= target_p99) {
       p.p99_bucket_upper_bound_us = bin_us;

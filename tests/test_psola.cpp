@@ -362,8 +362,75 @@ void transition_safety() {
     jump = std::max(jump, std::fabs(out[i] - out[i - 1]));
   require(jump < 1.0f, "voiced/noise/voiced transition has no click burst");
 }
+
+void deferred_grain_slice_equivalence() {
+  constexpr size_t total = 48000 * 2, block = 64;
+  std::vector<float> in(total);
+  const float f = 220.0f, period = kRate / f;
+  for (size_t i = 0; i < total; ++i) {
+    for (int h = 1; h <= 6; ++h) {
+      in[i] += (0.2f / h) * std::sin(2 * kPi * f * h * i / kRate);
+    }
+  }
+
+  for (float semitones : {-5.0f, 0.0f, 4.0f, 7.0f}) {
+    for (PsolaFirKernel kernel : {PsolaFirKernel::ContiguousScalar,
+                                  PsolaFirKernel::Multi2,
+                                  PsolaFirKernel::Multi4,
+                                  PsolaFirKernel::Multi8,
+                                  PsolaFirKernel::MultiFma}) {
+      SharedPitchShiftResources shared_eager, shared_deferred;
+      shared_eager.init();
+      shared_deferred.init();
+
+      TdPsola psola_eager, psola_deferred;
+      PitchShiftConfig cfg{true, semitones, 1.0f, 1.0f};
+      cfg.ola_normalization = OlaNormalizationMode::ColaEnergyHybrid;
+      require(psola_eager.init(kRate, cfg, &shared_eager), "eager init");
+      require(psola_deferred.init(kRate, cfg, &shared_deferred), "deferred init");
+
+      psola_eager.set_grain_render_mode(PsolaGrainRenderMode::Eager);
+      psola_deferred.set_grain_render_mode(PsolaGrainRenderMode::DeferredSlice);
+      psola_deferred.set_fir_kernel(kernel);
+
+      std::vector<float> out_eager(total), out_deferred(total);
+      for (size_t pos = 0; pos < total; pos += block) {
+        std::array<PitchMark, 64> marks{};
+        const uint64_t analyzed = pos > 1100 ? pos - 1100 : 0;
+        const size_t count = marks_for(analyzed, period, marks);
+        PitchResult r{};
+        r.voiced = true;
+        r.confidence = 1.0f;
+        r.frequency_hz = f;
+        r.period_samples = period;
+        r.analysis_timestamp_samples = analyzed;
+
+        const size_t frames = std::min(block, total - pos);
+        psola_eager.process(in.data() + pos, out_eager.data() + pos, frames,
+                            r, PitchTrackState::Locked, marks.data(), count);
+        psola_deferred.process(in.data() + pos, out_deferred.data() + pos, frames,
+                               r, PitchTrackState::Locked, marks.data(), count);
+      }
+
+      float max_diff = 0.0f;
+      double sum_diff_sq = 0.0, sum_eager_sq = 0.0;
+      for (size_t i = 4800; i < total; ++i) {
+        float diff = std::fabs(out_eager[i] - out_deferred[i]);
+        if (diff > max_diff) max_diff = diff;
+        sum_diff_sq += diff * diff;
+        sum_eager_sq += out_eager[i] * out_eager[i];
+      }
+      double snr = (sum_diff_sq < 1e-18) ? 999.0 : 10.0 * std::log10(sum_eager_sq / sum_diff_sq);
+      std::printf("Deferred test st=%+.1f kernel=%d: max_diff=%.2e snr=%.1f dB\n",
+                  semitones, static_cast<int>(kernel), max_diff, snr);
+      require(max_diff < 1e-5f, "deferred slice bit-level equivalence");
+      require(snr > 100.0, "deferred slice SNR requirement");
+    }
+  }
+}
 } // namespace
 int main() {
+  deferred_grain_slice_equivalence();
   energy_normalization_regression();
   ola_ring_wrap_regression();
   component_stem_regression();

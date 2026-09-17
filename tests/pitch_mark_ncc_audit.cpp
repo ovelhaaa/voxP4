@@ -86,11 +86,13 @@ std::vector<float> read_wav(const fs::path &path) {
   return out;
 }
 
-std::array<PitchMarkNccVariant, 6> variants() {
+std::array<PitchMarkNccVariant, 8> variants() {
   return {PitchMarkNccVariant::Reference, PitchMarkNccVariant::ReuseAa,
           PitchMarkNccVariant::Fma4AccDot, PitchMarkNccVariant::Fma8AccDot,
           PitchMarkNccVariant::Fma8SlidingBb,
-          PitchMarkNccVariant::LinearScratch};
+          PitchMarkNccVariant::LinearScratch,
+          PitchMarkNccVariant::ContiguousMulti4,
+          PitchMarkNccVariant::ContiguousMulti8};
 }
 
 void compare_search(const Fixture &fixture, PitchMarkNccVariant variant,
@@ -221,7 +223,10 @@ int main(int argc, char **argv) {
       const bool eligible = s.best_mismatches == 0 && s.accept_mismatches == 0 &&
           s.mark_mismatches == 0 && s.coherent_mismatches == 0 &&
           s.state_mismatches == 0 && s.nonfinite == 0;
-      if (variant == PitchMarkNccVariant::ReuseAa || variant == PitchMarkNccVariant::LinearScratch)
+      if (variant == PitchMarkNccVariant::ReuseAa ||
+          variant == PitchMarkNccVariant::LinearScratch ||
+          variant == PitchMarkNccVariant::ContiguousMulti4 ||
+          variant == PitchMarkNccVariant::ContiguousMulti8)
         guardrails &= eligible && s.score_bit_mismatches == 0;
       eq << "fixture," << fixture.name << ',' << pitch_mark_ncc_variant_name(variant)
          << ',' << s.searches << ',' << s.score_bit_mismatches << ','
@@ -242,13 +247,17 @@ int main(int argc, char **argv) {
                        PitchMarkNccVariant::Fma4AccDot,
                        PitchMarkNccVariant::Fma8AccDot,
                        PitchMarkNccVariant::Fma8SlidingBb,
-                       PitchMarkNccVariant::LinearScratch}) {
+                       PitchMarkNccVariant::LinearScratch,
+                       PitchMarkNccVariant::ContiguousMulti4,
+                       PitchMarkNccVariant::ContiguousMulti8}) {
     Summary s;
     for (uint64_t hop = 0; hop < 120000; ++hop)
       compare_search(long_fixture, variant, 4096 + (hop % 2048), s);
     const bool eligible = !s.best_mismatches && !s.accept_mismatches &&
         !s.mark_mismatches && !s.coherent_mismatches && !s.state_mismatches && !s.nonfinite;
-    guardrails &= variant != PitchMarkNccVariant::ReuseAa ||
+    guardrails &= (variant != PitchMarkNccVariant::ReuseAa &&
+                   variant != PitchMarkNccVariant::ContiguousMulti4 &&
+                   variant != PitchMarkNccVariant::ContiguousMulti8) ||
                   (eligible && s.score_bit_mismatches == 0);
     eq << "long_duration," << long_fixture.name << ','
        << pitch_mark_ncc_variant_name(variant) << ',' << s.searches << ','

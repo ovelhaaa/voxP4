@@ -117,6 +117,58 @@ config VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION
         retained precomputed-Hann/double-energy production oracle, then runs
         the eligible candidate in the unchanged 10-second full-worker audit.
 
+config VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED
+    bool "Stage B4C.4: Single-Grain Cost Attribution & Deferred Grain-Slice Rendering"
+    help
+        Isolates single-grain costs, benchmark kernel alternatives (scalar, multi2, multi4, multi8, multi_fma),
+        and qualifies deferred grain-slice rendering with zero latency and flattened realtime workload.
+
+config VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE
+    bool "Stage B4C.4A: Deferred Harmonizer Standalone Realtime Qualification"
+    help
+        Freezes production deferred grain-slice harmonizer, isolates optional FX,
+        and qualifies standalone harmonizer realtime safety across all pitches and transitions.
+
+config VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS
+    bool "Stage B4C.6A: End-to-End Audio Loop Timing Forensics"
+    help
+        Freezes the DSP path and records wall-clock RX, conversion, DSP, TX,
+        inter-iteration, partial-transfer, and transport timing.  Reports are
+        emitted only after each wall-clock qualification window.
+
+config VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT
+    bool "Stage B4C.7: 2-Voice Throughput, Cross-Voice Reuse & PSRAM 200 MHz"
+    help
+        Prestaged production-equivalent input, BOTH-ACTIVE classification,
+        per-block DSP decomposition, exact source-slice reuse audit, LPC-order
+        gate, and TX-prep decomposition. DSP semantics are frozen; only
+        observability is added.
+
+config VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC
+    bool "Stage B4C.8: Voice-Other Decomposition & Instrumentation-Overhead A/B (Diagnostic)"
+    help
+        Detailed Other-bucket decomposition with per-subcategory cycle counters,
+        slow-block recorder, stall detector, and full section profiling.
+        Uses identical DSP semantics to B4C.7; only observability is changed.
+        Serial volume is high; run short windows only.
+
+config VOXP4_MODE_I2S_B4C_8_QUALIFICATION
+    bool "Stage B4C.8: Voice-Other Decomposition & Instrumentation-Overhead A/B (Qualification)"
+    help
+        Low-overhead qualification build for B4C.8 hardware acceptance.
+        Retains only whole-DSP timer, deadline counter, minimal histogram,
+        transport counters, and activity classifier. No per-sample trace,
+        no detailed section timers, no diagnostic-ring writes.
+
+config VOXP4_MODE_I2S_B4D_1_QUALIFICATION
+    bool "Stage B4D.1: 1V Production Realtime Closure & Full-FX CPU Budget"
+    help
+        Cleaned steady-state qualification window for one harmony voice:
+        explicit warmup, full counter/histogram/miss reset, per-block whole-DSP
+        and whole-loop capture, MC x deadline-miss contingency, TX-prep
+        breakdown, incremental compressor/delay/reverb budgets, Full-FX chain,
+        and the worst-case F0 matrix.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help

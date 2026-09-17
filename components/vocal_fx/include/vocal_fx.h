@@ -5,6 +5,24 @@
 #include "lpc.h"
 #include <cstddef>
 
+struct VocalFxEffectiveDspConfig {
+  YinDifferenceVariant yin_difference = YinDifferenceVariant::Fma8Acc;
+  uint8_t yin_incremental_rebase_hops = 8;
+  YinEnergyVariant yin_energy = YinEnergyVariant::ReferenceDouble;
+  YinCmndVariant yin_cmnd = YinCmndVariant::ReferenceDouble;
+  PitchMarkNccVariant pitch_mark_ncc = PitchMarkNccVariant::Reference;
+  LpcWindowVariant lpc_windowing = LpcWindowVariant::Reference;
+  LpcAutocorrelationVariant lpc_autocorrelation =
+      LpcAutocorrelationVariant::AutocorrReferenceDouble;
+};
+
+// Host-callable factory used by the ESP_PLATFORM production path. Keeping the
+// selection in one function lets regression tests instantiate the exact P4
+// defaults without defining embedded-only macros.
+PitchAnalysisConfig
+vocal_fx_p4_pitch_analysis_defaults(float input_sample_rate = 48000.0f);
+VocalFxEffectiveDspConfig vocal_fx_effective_dsp_config();
+
 bool vocal_fx_init(const VocalFxConfig &config);
 bool vocal_fx_init_pitch_analysis(const PitchAnalysisConfig &config);
 void vocal_fx_reset();
@@ -30,6 +48,13 @@ void vocal_fx_set_dry_alignment(bool enabled, float delay_ms = 32.0f);
 void vocal_fx_set_harmony_attack_ms(float milliseconds);
 void vocal_fx_set_harmony_release_ms(float milliseconds);
 void vocal_fx_set_harmony_limiter(bool enabled, float threshold_db = -3.0f);
+void vocal_fx_set_psola_kernels(PsolaLpcKernel lpc, PsolaOlaKernel ola,
+                                PsolaGrainKernel grain, PsolaSynthesisKernel synth);
+void vocal_fx_set_psola_warp_cache(bool enable_local, bool enable_shared, bool enable_neutral_fast_path);
+PsolaWarpCacheStats vocal_fx_get_psola_warp_cache_stats(size_t voice);
+void vocal_fx_reset_psola_warp_cache_stats();
+size_t vocal_fx_get_harmonizer_trace(HarmonizerBlockTraceRecord *dst, size_t max_count);
+void vocal_fx_reset_harmonizer_trace();
 void vocal_fx_set_spatial_routing(SpatialFxRouting routing);
 void vocal_fx_set_spatial_source(SpatialFxSource source);
 void vocal_fx_set_mute_dry(bool mute);
@@ -58,6 +83,10 @@ bool vocal_fx_harmony_plosive_bridge_sample(size_t voice, size_t frame,
 #endif
 VocalFxProfileStats
 vocal_fx_pitch_shift_profile_stats(PitchShiftProfileSection section);
+VocalFxProfileStats
+vocal_fx_harmony_voice_profile_stats(size_t voice, PitchShiftProfileSection section);
+VocalFxLimiterDiagnostics vocal_fx_limiter_diagnostics();
+void vocal_fx_reset_limiter_diagnostics();
 void vocal_fx_publish_pitch(const PitchResult &result);
 PitchResult vocal_fx_latest_pitch();
 // Single-attempt snapshot for real-time callers. Returns false rather than
@@ -82,11 +111,45 @@ VocalFxInputIdentity vocal_fx_input_identity();
 uint64_t vocal_fx_analysis_latency_samples();
 VocalFxProfileStats
 vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section);
+VocalFxProfileDistribution
+vocal_fx_pitch_profile_distribution(PitchAnalysisProfileSection section);
 size_t vocal_fx_dsp_memory_bytes();
 size_t vocal_fx_delay_memory_bytes();
 size_t vocal_fx_reverb_memory_bytes();
 VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section);
 void vocal_fx_reset_profiler();
+void vocal_fx_reset_voice_profilers();
+void vocal_fx_reset_profiling_epoch();
+PsolaModelWarpAudit vocal_fx_get_psola_model_warp_audit(size_t voice);
+PsolaSourceGrainAudit vocal_fx_get_psola_source_grain_audit();
+PsolaSchedulingSlackAudit vocal_fx_get_psola_scheduling_slack_audit();
+// B4C.7 observability additions (no DSP behavior change).
+bool vocal_fx_latest_harmonizer_trace(HarmonizerBlockTraceRecord *out);
+VocalFxProfileStats vocal_fx_voice_profile_stats(size_t voice,
+                                                 PitchShiftProfileSection section);
+uint16_t vocal_fx_lpc_config_order();
+uint16_t vocal_fx_synthesis_order(size_t voice);
+uint64_t vocal_fx_voice_b4c7_cycles(size_t voice, size_t idx);
+void vocal_fx_set_slice_audit_enabled(bool enabled);
+void vocal_fx_reset_slice_audit();
+void vocal_fx_next_slice_audit_block();
+B4C7SliceAuditSnapshot vocal_fx_slice_audit_snapshot();
+void vocal_fx_configure_psola_residual_cache(size_t voice, size_t entries, bool enable_residual, bool enable_windowed, bool force_psram = false);
+void vocal_fx_set_psola_residual_cache_enabled(size_t voice, bool enabled);
+void vocal_fx_set_psola_windowed_cache_enabled(size_t voice, bool enabled);
+PsolaSourceResidualCacheStats vocal_fx_get_psola_residual_cache_stats(size_t voice);
+void vocal_fx_reset_psola_residual_cache_stats(size_t voice);
+void vocal_fx_set_psola_precompute_enabled(size_t voice, bool enabled, float horizon = 1.0f);
+PsolaPrecomputeStats vocal_fx_get_psola_precompute_stats(size_t voice);
+void vocal_fx_reset_psola_precompute_stats(size_t voice);
+void vocal_fx_set_psola_grain_render_mode(size_t voice, PsolaGrainRenderMode mode);
+void vocal_fx_set_psola_fir_kernel(size_t voice, PsolaFirKernel kernel);
+PsolaDeferredStats vocal_fx_get_psola_deferred_stats(size_t voice);
+void vocal_fx_reset_psola_deferred_stats(size_t voice);
+SingleGrainBenchmarkResult vocal_fx_benchmark_single_grain(
+    size_t grain_length, size_t order, PsolaFirKernel kernel = PsolaFirKernel::Multi8);
+// Audit-only counter reset. DSP/tracker/filter state remains untouched.
+void vocal_fx_reset_measurement_telemetry();
 size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count);
 LpcTelemetry vocal_fx_lpc_telemetry();
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection section);
@@ -100,7 +163,111 @@ float vocal_fx_latest_pitch_age_ms();
 float vocal_fx_effective_harmony_mix(size_t voice);
 PitchSyncDiagnostics vocal_fx_pitch_sync_diagnostics();
 
+// B4C.8 observability (no DSP behavior change).
+uint64_t vocal_fx_voice_other_cycles(size_t voice, size_t cat_index);
+void vocal_fx_init_b4c8_recorders(bool slow_blocks, bool stalls);
+void vocal_fx_free_b4c8_recorders();
+size_t vocal_fx_slow_block_count(size_t voice);
+bool vocal_fx_get_slow_block(size_t voice, size_t index, B4c8SlowBlockRecord *out);
+size_t vocal_fx_stall_event_count();
+bool vocal_fx_get_stall_event(size_t index, B4c8StallEvent *out);
+
+// B4C.8A observability: deferred traversal, loop decomposition, model-change.
+uint64_t vocal_fx_deferred_zero_cycles(size_t voice);
+uint64_t vocal_fx_deferred_zero_calls(size_t voice);
+uint64_t vocal_fx_deferred_active_cycles(size_t voice);
+uint64_t vocal_fx_deferred_active_calls(size_t voice);
+uint64_t vocal_fx_loop_history_fetch_cycles(size_t voice);
+uint64_t vocal_fx_loop_ola_norm_reset_cycles(size_t voice);
+uint64_t vocal_fx_loop_indexing_cycles(size_t voice);
+uint64_t vocal_fx_model_change_blocks(size_t voice);
+uint64_t vocal_fx_model_change_cycles(size_t voice);
+uint64_t vocal_fx_no_model_change_blocks(size_t voice);
+uint64_t vocal_fx_no_model_change_cycles(size_t voice);
+uint64_t vocal_fx_model_change_max_cycles(size_t voice);
+uint64_t vocal_fx_no_model_change_max_cycles(size_t voice);
+
+// B4C.8B observability: per-block recording and MC delta breakdown.
+void vocal_fx_init_b4c8b_recorder();
+void vocal_fx_free_b4c8b_recorder();
+void vocal_fx_print_b4c8b_block_records();
+void vocal_fx_print_b4c8b_mc_delta_breakdown();
+uint32_t vocal_fx_b4c8b_block_count();
+bool vocal_fx_get_b4c8b_block_record(size_t voice, size_t index,
+                                     B4c8bBlockRecord *out);
+
+// B4D.1: 1 when either harmony voice observed a new LPC formant model in the
+// most recently processed DSP block. Sampled by the audio transport in the
+// same block as the whole-DSP timing for the MC x deadline-miss contingency.
+uint8_t vocal_fx_last_block_model_changed();
+
+// B4D.3: per-block voice-0 renderer counters sampled by the audio transport in
+// the same block, so MC/grain/miss contingencies are exact (no index join).
+struct VocalFxLastBlockStats {
+  uint8_t new_grains = 0;
+  uint8_t exp_warp = 0;
+  uint8_t active_desc = 0;
+  uint8_t slices = 0;
+  // B4D.5 paired-block matching inputs (voice 0).
+  float f0 = 0.0f;
+  uint8_t source_grains = 0;
+};
+VocalFxLastBlockStats vocal_fx_last_block_stats();
+
+// B4D.2 reverb observability (no DSP behaviour change). The profile is only
+// accumulated while enabled so the production hot path pays nothing.
+struct VocalFxReverbProfile {
+  uint64_t read_damping_cycles = 0;
+  uint64_t mix_cycles = 0;
+  uint64_t hadamard_cycles = 0;
+  uint64_t diffuser_cycles = 0;
+  uint64_t write_index_cycles = 0;
+  uint64_t wet_mix_cycles = 0;
+  uint64_t total_cycles = 0;
+  uint64_t samples = 0;
+  uint64_t blocks = 0;
+};
+void vocal_fx_set_reverb_profile_enabled(bool enabled);
+void vocal_fx_reset_reverb_profile();
+VocalFxReverbProfile vocal_fx_reverb_profile();
+size_t vocal_fx_reverb_line_bytes(size_t i);
+bool vocal_fx_reverb_line_in_psram(size_t i);
+size_t vocal_fx_reverb_diffuser_bytes(size_t i);
+bool vocal_fx_reverb_diffuser_in_psram(size_t i);
+size_t vocal_fx_reverb_total_bytes();
+
+// B4D.4: invalid LPC frame reasons since the last reset.
+void vocal_fx_lpc_invalid_reasons(uint64_t *unvoiced, uint64_t *solve_fail);
+void vocal_fx_reset_lpc_invalid_reasons();
+
+// B4D.4 per-grain-count section attribution (voice 0). Buckets 0,1,2,3+ new
+// grains; section index is PitchShiftProfileSection.
+bool vocal_fx_b4d4_class_init();
+void vocal_fx_b4d4_class_free();
+uint64_t vocal_fx_b4d4_class_cycles(size_t bucket, size_t section);
+uint64_t vocal_fx_b4d4_class_blocks(size_t bucket);
+
+// B4D.5 exact mark-selection / model-lookup decomposition (diagnostic).
+void vocal_fx_b4d5_audit_reset();
+void vocal_fx_b4d5_audit_enable(bool on);
+void vocal_fx_b4d5_mark_audit(uint64_t *calls, uint64_t *candidates,
+                              uint64_t *scan_cycles, uint64_t *total_cycles);
+void vocal_fx_b4d5_model_audit(uint64_t *calls, uint64_t *candidates,
+                               uint64_t *scan_cycles, uint64_t *copies,
+                               uint64_t *repeat);
+void vocal_fx_b4d5_global_class_init();
+void vocal_fx_b4d5_global_class_free();
+uint64_t vocal_fx_b4d5_global_class_cycles(size_t bucket, size_t group);
+uint64_t vocal_fx_b4d5_global_class_blocks(size_t bucket);
+const char *vocal_fx_b4d5_global_class_name(size_t group);
+
+// B4D.2 warp-cache audit (§7): total model-change warp-cache misses and how
+// many differ only by model_timestamp (all mathematical inputs identical).
+void vocal_fx_warp_cache_audit(uint64_t *miss_total, uint64_t *math_only_miss);
+void vocal_fx_reset_warp_cache_audit();
+
 #ifndef ESP_PLATFORM
 typedef void (*VocalFxSampleTelemetryCallback)(const SampleTelemetryRecord *records, size_t count, void *user_data);
 void vocal_fx_set_sample_telemetry_callback(VocalFxSampleTelemetryCallback cb, void *user_data);
 #endif
+

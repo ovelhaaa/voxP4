@@ -1,6 +1,7 @@
 #pragma once
 
 #include "boards/wt9932p4_tiny_audio.h"
+#include "vocal_fx_types.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -24,6 +25,40 @@ enum class AudioI2sMode : uint8_t {
   SampleForensic = 5,     // Captures first 256 raw words from RX DMA for bit alignment audit
   SyntheticVoicedDsp = 6, // Stage B4B: Deterministic synthetic voiced harmonic tone -> Full DSP -> DAC (100% DMA active)
   PitchWorkerLockAudit = 7, // Stage B4B.2: constant 220 Hz pure sine -> all DSP taps
+  B4B6RcValidation = 8, // Stage B4B.6: configurable deterministic RC stimuli
+  B4C1AudioCoreAudit = 9, // Stage B4C.1: Audio/Render Core DSP Budget Audit
+  B4C2AudioCoreAudit = 10, // Stage B4C.2: TD-PSOLA LPC Formant & Window/OLA Throughput Optimization
+  B4C3HarmonizerTailAudit = 11, // Stage B4C.3: Harmonizer Tail-Latency & ModelWarp Optimization
+  B4C3AWorkloadAudit = 12, // Stage B4C.3A: Profiler Integrity & Grain-Burst Workload Audit
+  B4C3BSourceGrainBurst = 13, // Stage B4C.3B: Exact Source-Grain Reuse & Grain-Burst Flattening Audit
+  B4C4SingleGrainDeferred = 14, // Stage B4C.4: Single-Grain Cost Attribution & Deferred Grain-Slice Rendering Audit
+  B4C4ADeferredStandalone = 15, // Stage B4C.4A: Deferred Harmonizer Standalone Realtime Qualification
+  B4C6ATimingForensics = 16, // Stage B4C.6A: end-to-end loop timing forensics
+  B4C7HarmonizerAudit = 17, // Stage B4C.7: prestaged input, BOTH-ACTIVE, reuse
+  B4D1Qualification = 18, // Stage B4D.1: cleaned 1V realtime window + FX budget
+};
+
+enum class B4B6StimulusKind : uint8_t {
+  PureTone,
+  HarmonicVoiced,
+  BroadbandNoise,
+  BreathyVoiced,
+  Silence,
+  NearSilence,
+  Step110To220,
+  Step220To110,
+  Step110To440,
+  Step440To110,
+  Step65To130,
+  Step80To160,
+  Step220To440,
+  Step147To220To330,
+  Gliss80To440,
+  Gliss440To80,
+  VibratoOneSemitone,
+  VibratoTwoSemitones,
+  Staccato,
+  VocalReplay,
 };
 
 enum class TxSignalType : uint8_t {
@@ -80,6 +115,14 @@ struct AudioTransportCounters {
   std::atomic<uint64_t> tx_event_queue_max_depth{0};
   std::atomic<uint64_t> rx_dropped_frames{0};
   std::atomic<uint64_t> tx_dropped_frames{0};
+  std::atomic<uint64_t> rx_bytes_read{0};
+  std::atomic<uint64_t> tx_bytes_written{0};
+  std::atomic<uint64_t> rx_frames_read{0};
+  std::atomic<uint64_t> tx_frames_written{0};
+  std::atomic<uint64_t> rx_blocks_read{0};
+  std::atomic<uint64_t> tx_blocks_written{0};
+  std::atomic<uint64_t> rx_sequence_gaps{0};
+  std::atomic<uint64_t> tx_sequence_gaps{0};
   std::atomic<uint64_t> dma_errors{0};
   std::atomic<uint64_t> audio_blocks_processed{0};
   std::atomic<uint64_t> audio_deadline_misses{0};
@@ -89,6 +132,10 @@ struct AudioTransportCounters {
   std::atomic<uint64_t> max_rx_callback_gap_us{0};
   std::atomic<uint64_t> max_tx_callback_gap_us{0};
   std::atomic<uint64_t> max_audio_task_wake_latency_us{0};
+  std::atomic<uint64_t> max_single_block_lateness_us{0};
+  std::atomic<uint64_t> cumulative_lateness_us{0};
+  std::atomic<uint64_t> current_consecutive_late_blocks{0};
+  std::atomic<uint64_t> max_consecutive_late_blocks{0};
 
   void reset() {
     rx_dma_events.store(0, std::memory_order_relaxed);
@@ -109,6 +156,14 @@ struct AudioTransportCounters {
     tx_event_queue_max_depth.store(0, std::memory_order_relaxed);
     rx_dropped_frames.store(0, std::memory_order_relaxed);
     tx_dropped_frames.store(0, std::memory_order_relaxed);
+    rx_bytes_read.store(0, std::memory_order_relaxed);
+    tx_bytes_written.store(0, std::memory_order_relaxed);
+    rx_frames_read.store(0, std::memory_order_relaxed);
+    tx_frames_written.store(0, std::memory_order_relaxed);
+    rx_blocks_read.store(0, std::memory_order_relaxed);
+    tx_blocks_written.store(0, std::memory_order_relaxed);
+    rx_sequence_gaps.store(0, std::memory_order_relaxed);
+    tx_sequence_gaps.store(0, std::memory_order_relaxed);
     dma_errors.store(0, std::memory_order_relaxed);
     audio_blocks_processed.store(0, std::memory_order_relaxed);
     audio_deadline_misses.store(0, std::memory_order_relaxed);
@@ -118,6 +173,10 @@ struct AudioTransportCounters {
     max_rx_callback_gap_us.store(0, std::memory_order_relaxed);
     max_tx_callback_gap_us.store(0, std::memory_order_relaxed);
     max_audio_task_wake_latency_us.store(0, std::memory_order_relaxed);
+    max_single_block_lateness_us.store(0, std::memory_order_relaxed);
+    cumulative_lateness_us.store(0, std::memory_order_relaxed);
+    current_consecutive_late_blocks.store(0, std::memory_order_relaxed);
+    max_consecutive_late_blocks.store(0, std::memory_order_relaxed);
   }
 };
 
@@ -137,11 +196,23 @@ struct OutlierRecord {
   bool diagnostic_queue_flush_active;
 };
 
+// B4C.7 link budget (see td_psola.h slice-ring note): the outlier ring is
+// write-only forensics that B4C.7 never prints; shrink it in B4C.7 builds.
+// B4D.1/B4D.2 use the dedicated B4D1BlockRecord ring for per-block forensics,
+// so the legacy outlier ring is likewise redundant there and shrunk to keep
+// the sram_high link budget (B4D.2 reverb profiling added engine .bss).
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+constexpr size_t kMaxOutlierRecords = 32;
+#else
 constexpr size_t kMaxOutlierRecords = 128;
+#endif
 
 // Percentile and latency statistics
 struct TimingPercentiles {
   double avg_us = 0.0;
+  uint64_t p50_us = 0;
+  uint64_t p90_us = 0;
   uint64_t p95_us = 0;
   uint64_t p99_us = 0;
   uint64_t p99_bucket_upper_bound_us = 0;
@@ -150,12 +221,154 @@ struct TimingPercentiles {
   uint64_t samples = 0;
 };
 
+// B4C.6A per-block sample stored in PSRAM and printed only after the window.
+// Aggregates/histograms cover every measured block; this ring is a CSV sample.
+struct B4C6ATimingRecord {
+  uint64_t iteration_begin_us = 0;
+  uint64_t iteration_end_us = 0;
+  uint32_t loop_total_us = 0;
+  uint32_t loop_period_us = 0;
+  uint32_t loop_total_cycles = 0;
+  uint32_t rx_wait_us = 0;
+  uint32_t rx_copy_us = 0;
+  uint32_t fixture_us = 0;
+  uint32_t dsp_us = 0;
+  uint32_t tx_prep_us = 0;
+  uint32_t tx_wait_us = 0;
+  uint32_t bookkeeping_us = 0;
+  uint32_t other_us = 0;
+  uint32_t inter_gap_us = 0;
+  uint32_t rx_bytes = 0;
+  uint32_t tx_bytes = 0;
+  uint16_t rx_frames = 0;
+  uint16_t tx_frames = 0;
+  int16_t rx_rc = 0;
+  int16_t tx_rc = 0;
+  uint8_t rx_partial = 0;
+  uint8_t tx_partial = 0;
+  uint8_t rx_ok = 0;
+  uint8_t tx_ok = 0;
+};
+constexpr size_t kB4C6ATimingRecordCapacity = 16384;
+constexpr size_t kB4C6AHistBins = 400;
+constexpr uint64_t kB4C6ABinWidthUs = 10;
+
+struct B4C6ASectionTotals {
+  uint64_t samples = 0;
+  uint64_t rx_wait_us = 0;
+  uint64_t rx_copy_us = 0;
+  uint64_t fixture_us = 0;
+  uint64_t dsp_us = 0;
+  uint64_t tx_prep_us = 0;
+  uint64_t tx_wait_us = 0;
+  uint64_t bookkeeping_us = 0;
+  uint64_t other_us = 0;
+  uint64_t inter_gap_us = 0;
+  uint64_t loop_total_us = 0;
+  uint64_t loop_total_max_us = 0;
+  uint64_t loop_period_us = 0;
+  uint64_t loop_total_cycles = 0;
+  uint64_t positive_lateness_us = 0;
+  uint64_t late_loop_blocks = 0;
+  uint64_t catchup_rx_near_zero = 0;
+  uint64_t recover_blocks_sum = 0;
+  uint64_t recover_events = 0;
+  uint64_t rx_timeouts = 0;
+  uint64_t tx_timeouts = 0;
+  uint64_t rx_retries = 0;
+  uint64_t tx_retries = 0;
+  uint64_t rx_wait_max_us = 0;
+  uint64_t tx_wait_max_us = 0;
+  uint64_t loop_period_max_us = 0;
+  uint64_t inter_gap_max_us = 0;
+  uint64_t dsp_max_us = 0;
+};
+
 // Stimulus state tracking for Stage B4B
 enum class StimulusState : uint8_t {
   Silence = 0,
   Attack = 1,
   Tone = 2,
   Release = 3,
+};
+
+// B4C.7 production-equivalent input delivery (§12). Prestaged replays a
+// coordinator-staged PSRAM buffer (no synthesis inside the timed loop);
+// LiveAdc feeds the converted RX mono directly (true product path).
+enum class B4C7InputKind : uint8_t {
+  Prestaged = 0,
+  LiveAdc = 1,
+};
+
+// B4C.7 BOTH-ACTIVE classifier (§17) from actual render state: a voice is
+// ACTIVE in a block iff it rendered >= 1 deferred slice that block.
+enum class B4C7BlockClass : uint8_t {
+  BothActive = 0,
+  V0Only = 1,
+  V1Only = 2,
+  NeitherActive = 3,
+};
+
+// B4C.7 per-block row (PSRAM ring sample; aggregates cover every block).
+struct B4C7BlockRecord {
+  uint32_t block = 0;
+  uint8_t block_class = 0;
+  uint32_t dsp_us = 0;
+  uint32_t v0_us = 0;
+  uint32_t v1_us = 0;
+  uint32_t global_us = 0;
+  uint16_t slices_v0 = 0;
+  uint16_t slices_v1 = 0;
+  uint16_t sched_v0 = 0;
+  uint16_t sched_v1 = 0;
+};
+constexpr size_t kB4C7BlockRecordCapacity = 16384;
+
+// B4D.1 cleaned-qualification per-block record. Whole-DSP and whole-loop
+// timings are captured together with the harmonizer model-change flag in the
+// same audio block so the MC x deadline-miss contingency is built from
+// actually observed blocks (no correlation inference). PSRAM-backed.
+struct B4D1BlockRecord {
+  uint32_t block_id = 0;
+  uint16_t dsp_us = 0;   // vocal_fx_process() wall time, clamped to 65535
+  uint16_t loop_us = 0;  // full audio-loop iteration, clamped to 65535
+  uint8_t model_changed = 0;
+  uint8_t dsp_miss = 0;  // dsp_us > 1333.33 us
+  uint8_t loop_miss = 0; // loop_us > 1333.33 us
+  // B4D.3 same-block voice-0 renderer counters (no index join needed).
+  uint8_t new_grains = 0;
+  uint8_t exp_warp = 0;
+  uint8_t active_desc = 0;
+  uint8_t slices = 0;
+  // B4D.5 paired-block matching inputs (voice 0).
+  float f0 = 0.0f;
+  uint8_t source_grains = 0;
+  uint8_t reserved = 0;
+};
+constexpr size_t kB4D1BlockRecordCapacity = 65536;
+
+// B4C.7 decomposition sections (§19): 20 global + 20 per voice.
+struct B4C7DecompTotals {
+  static constexpr size_t kGlobals = 20;
+  static constexpr size_t kVoiceSubs = 25;
+  static constexpr size_t kClasses = 4;
+  uint64_t count[kClasses]{};
+  uint64_t loop_sum[kClasses]{};
+  uint64_t acct_sum[kClasses]{};
+  uint64_t global[kClasses][kGlobals]{};
+  uint64_t voice[kClasses][2][kVoiceSubs]{};
+  // TX-prep subsections (§37): ramp / sanity+encode+peaks / rms.
+  uint64_t txp_ramp = 0;
+  uint64_t txp_sanity_encode = 0;
+  uint64_t txp_rms = 0;
+  uint64_t txp_ramp_max = 0;
+  uint64_t txp_sanity_encode_max = 0;
+  uint64_t txp_rms_max = 0;
+  // BOTH_ACTIVE DSP distribution (10 us bins, same geometry as B4C6A).
+  uint32_t both_hist[kB4C6AHistBins]{};
+  uint64_t both_samples = 0;
+  uint64_t both_total_us = 0;
+  uint64_t both_max_us = 0;
 };
 
 // Transport error timestamp event record (Req 3)
@@ -238,14 +451,125 @@ public:
   AudioTransportCounters &counters() { return counters_; }
   const AudioTransportCounters &counters() const { return counters_; }
 
-  void reset_counters() { counters_.reset(); }
+  // B4D.3S: the block deadline follows the configured sample rate
+  // (block_size / sample_rate). No hard-coded 1333.33 us.
+  double block_deadline_us() const {
+    return config_.sample_rate
+               ? (1000000.0 * static_cast<double>(block_size_) /
+                  static_cast<double>(config_.sample_rate))
+               : 1333.3333333333;
+  }
+
+  void reset_counters() {
+    counters_.reset();
+    dsp_total_us_ = 0;
+    cycle_total_us_ = 0;
+    wake_total_us_ = 0;
+    dsp_worst_us_ = 0;
+    cycle_worst_us_ = 0;
+    wake_worst_us_ = 0;
+    // PSRAM histograms are null until init() allocates (reset runs first).
+    uint32_t *legacy[] = {dsp_hist_, cycle_hist_, wake_hist_};
+    for (uint32_t *h : legacy)
+      if (h) std::fill_n(h, kHistBins, 0);
+    outlier_count_ = 0;
+    reset_b4c6a_stats();
+    reset_b4c7_stats();
+  }
   TimingPercentiles calculate_dsp_percentiles() const;
   TimingPercentiles calculate_cycle_percentiles() const;
   TimingPercentiles calculate_wake_percentiles() const;
+  void print_b4c6a_forensics(bool dump_samples = true) const;
+  void reset_b4c6a_stats();
+  // B4C.7 extensions.
+  void print_b4c7_forensics(bool dump_samples = true) const;
+  void reset_b4c7_stats();
+  void set_b4c7_input(B4C7InputKind kind) {
+    b4c7_input_ = kind;
+  }
+  void set_b4c7_prestaged(const float *buf, size_t frames) {
+    b4c7_pre_buf_ = buf;
+    b4c7_pre_frames_ = frames;
+    b4c7_pre_idx_ = 0;
+    b4c7_pre_overruns_ = 0;
+  }
+  uint64_t b4c7_prestaged_overruns() const { return b4c7_pre_overruns_; }
+  const B4C7DecompTotals *b4c7_totals() const { return b4c7_totals_; }
+  uint64_t b4c7_block_rows() const { return b4c7_block_count_; }
+  uint64_t b4c7_block_dropped() const { return b4c7_block_dropped_; }
+
+  // B4D.1 cleaned-qualification recorder. Allocation is explicit and happens
+  // outside the measured window; reset() clears it and restarts block ids.
+  bool b4d1_recorder_init(size_t capacity = kB4D1BlockRecordCapacity);
+  void b4d1_recorder_free();
+  void b4d1_recorder_reset(uint32_t origin_block_id = 0);
+  void b4d1_recorder_enable(bool enabled) {
+    b4d1_record_enabled_.store(enabled, std::memory_order_release);
+  }
+  bool b4d1_recorder_enabled() const {
+    return b4d1_record_enabled_.load(std::memory_order_acquire);
+  }
+  size_t b4d1_recorder_count() const {
+    return b4d1_record_count_.load(std::memory_order_acquire);
+  }
+  bool b4d1_recorder_get(size_t index, B4D1BlockRecord *out) const;
+  // Host-testable B4C.6A accounting helpers (no ESP dependency).
+  static double b4c6a_reconciliation_pct(uint64_t accounted_us,
+                                         uint64_t total_us);
+  static double b4c6a_effective_fs(double frames, double wall_s);
+  static double b4c6a_timeline_lost_s(double wall_s, double effective_fs);
+  static double b4c6a_expected_blocks(double wall_s);
+  TimingPercentiles b4c6a_loop_percentiles() const;
+  TimingPercentiles b4c6a_period_percentiles() const;
+  TimingPercentiles b4c6a_dsp_forensic_percentiles() const;
+  TimingPercentiles b4c6a_rx_percentiles() const;
+  TimingPercentiles b4c6a_tx_percentiles() const;
+  TimingPercentiles b4c6a_gap_percentiles() const;
+  uint64_t b4c6a_sample_count() const { return b4c6a_totals_.samples; }
+  uint64_t b4c6a_dropped_samples() const { return b4c6a_timing_dropped_; }
+  // Diagnostic feed used by firmware run() and host tests. Sections must be
+  // non-overlapping; other_us is the in-iteration residual.
+  void b4c6a_note_iteration(uint32_t rx_wait, uint32_t rx_copy, uint32_t fixture,
+                            uint32_t dsp, uint32_t tx_prep, uint32_t tx_wait,
+                            uint32_t book, uint32_t other, uint32_t loop_total,
+                            uint32_t loop_period, uint32_t inter_gap,
+                            uint32_t loop_cycles, uint32_t rx_bytes, uint32_t tx_bytes,
+                            uint16_t rx_frames, uint16_t tx_frames, int rx_rc,
+                            int tx_rc, uint64_t begin_us, uint64_t end_us,
+                            bool success);
+  void set_b4c6a_detail(uint8_t level) { b4c6a_detail_ = level; }
+  uint8_t b4c6a_detail() const { return b4c6a_detail_; }
+  const B4C6ASectionTotals &b4c6a_totals() const { return b4c6a_totals_; }
+
+  uint64_t max_single_block_lateness_us() const {
+    return counters_.max_single_block_lateness_us.load(std::memory_order_relaxed);
+  }
+  uint64_t cumulative_lateness_us() const {
+    return counters_.cumulative_lateness_us.load(std::memory_order_relaxed);
+  }
+  uint64_t max_consecutive_late_blocks() const {
+    return counters_.max_consecutive_late_blocks.load(std::memory_order_relaxed);
+  }
 
   // Synthetic Voiced Source (Stage B4B)
   void generate_synthetic_voiced_mono(float *mono, size_t frames);
   void generate_b4b2_pure_sine(float *mono, size_t frames);
+  void generate_b4b6_mono(float *mono, size_t frames);
+  void configure_b4b6_stimulus(B4B6StimulusKind kind, float f0_hz,
+                               const uint8_t *vocal_mulaw = nullptr,
+                               size_t vocal_samples = 0);
+  void set_b4b6_dsp_paused(bool paused) {
+    b4b6_dsp_paused_.store(paused, std::memory_order_release);
+  }
+  bool b4b6_dsp_active() const {
+    return b4b6_dsp_active_.load(std::memory_order_acquire);
+  }
+  void set_b4c1_transport_only(bool transport_only) {
+    b4c1_transport_only_.store(transport_only, std::memory_order_release);
+  }
+  bool b4c1_transport_only() const {
+    return b4c1_transport_only_.load(std::memory_order_acquire);
+  }
   float current_synth_freq_hz() const { return current_synth_f0_; }
   bool is_current_synth_voiced() const { return current_synth_voiced_; }
   StimulusState current_stimulus_state() const { return current_stimulus_state_; }
@@ -271,6 +595,10 @@ public:
   float output_peak_r() const { return out_peak_r_; }
   float output_rms_l() const { return out_rms_l_; }
   float output_rms_r() const { return out_rms_r_; }
+  // B4D.2: output RMS is telemetry-only; disable it in production to keep the
+  // two per-sample multiply-accumulates out of the TX hot path.
+  void set_output_rms_enabled(bool enabled) { output_rms_enabled_ = enabled; }
+  bool output_rms_enabled() const { return output_rms_enabled_; }
 
   // Diagnostics & Info
   const AudioI2sConfig &config() const { return config_; }
@@ -354,18 +682,75 @@ private:
   OutlierRecord outliers_[kMaxOutlierRecords]{};
   size_t outlier_count_ = 0;
 
-  // Timing histograms (50 bins of 50 us: 0..2500 us)
-  static constexpr size_t kHistBins = 50;
+  // Timing histograms (320 bins of 50 us: 0..16000 us)
+  static constexpr size_t kHistBins = 320;
   static constexpr uint64_t kBinWidthUs = 50;
-  uint32_t dsp_hist_[kHistBins]{};
-  uint32_t cycle_hist_[kHistBins]{};
-  uint32_t wake_hist_[kHistBins]{};
+  // PSRAM-backed like the B4C.6A histograms (same rationale).
+  uint32_t *dsp_hist_ = nullptr;
+  uint32_t *cycle_hist_ = nullptr;
+  uint32_t *wake_hist_ = nullptr;
   uint64_t dsp_total_us_ = 0;
   uint64_t cycle_total_us_ = 0;
   uint64_t wake_total_us_ = 0;
   uint64_t dsp_worst_us_ = 0;
   uint64_t cycle_worst_us_ = 0;
   uint64_t wake_worst_us_ = 0;
+
+  B4C7BlockRecord *b4c7_blocks_ = nullptr;
+  size_t b4c7_block_capacity_ = 0;
+  uint64_t b4c7_block_count_ = 0;
+  uint64_t b4c7_block_dropped_ = 0;
+
+  // B4D.1 per-block recorder state (PSRAM ring, off unless enabled).
+  B4D1BlockRecord *b4d1_records_ = nullptr;
+  size_t b4d1_record_capacity_ = 0;
+  std::atomic<size_t> b4d1_record_count_{0};
+  uint32_t b4d1_record_origin_ = 0;
+  std::atomic<bool> b4d1_record_enabled_{false};
+  // PSRAM-backed: ~3.7 KB of per-block counters must not consume internal
+  // .bss (the frozen static audio stacks already fill it near the limit).
+  B4C7DecompTotals *b4c7_totals_ = nullptr;
+  B4C7InputKind b4c7_input_ = B4C7InputKind::Prestaged;
+  const float *b4c7_pre_buf_ = nullptr;
+  size_t b4c7_pre_frames_ = 0;
+  size_t b4c7_pre_idx_ = 0;
+  uint64_t b4c7_pre_overruns_ = 0;
+  uint64_t b4c7_block_seq_ = 0;
+  PsolaSourceGrainAudit b4c7_audit_start_{};
+  B4C7SliceAuditSnapshot b4c7_slice_start_{};
+  PsolaSourceResidualCacheStats b4c7_fir_start_[2];
+  // B4C.7 per-block DSP hook (ESP only; see audio_i2s.cpp).
+  void b4c7_process_block(float *mono, float *l, float *r, size_t n,
+                          int64_t *t_dsp_start, int64_t *t_dsp_done,
+                          uint64_t *pure_dsp_us, uint8_t *block_class,
+                          uint32_t *v0_us, uint32_t *v1_us, uint32_t *glob_us,
+                          uint16_t *slices0, uint16_t *slices1,
+                          uint16_t *sched0, uint16_t *sched1);
+  B4C6ATimingRecord *b4c6a_timing_ = nullptr;
+  size_t b4c6a_timing_capacity_ = 0;
+  uint64_t b4c6a_timing_count_ = 0;
+  uint64_t b4c6a_timing_dropped_ = 0;
+  uint8_t b4c6a_detail_ = 2;
+  B4C6ASectionTotals b4c6a_totals_{};
+  // PSRAM-backed (B4C.7 link budget): 6 x 400 x 4 B of per-block
+  // distribution counters. Written once per block in bookkeeping (never in
+  // the DSP interval); read only in post-window prints.
+  uint32_t *b4c6a_loop_hist_ = nullptr;
+  uint32_t *b4c6a_period_hist_ = nullptr;
+  uint32_t *b4c6a_dsp_hist_ = nullptr;
+  uint32_t *b4c6a_rx_hist_ = nullptr;
+  uint32_t *b4c6a_tx_hist_ = nullptr;
+  uint32_t *b4c6a_gap_hist_ = nullptr;
+  // NOTE (B4C.7 link budget): rx_copy/fixture per-block histograms removed;
+  // their totals still feed the EQUATION avgs. Saves 3.2 KB internal .bss.
+  uint64_t b4c6a_rx_partial_ = 0;
+  uint64_t b4c6a_tx_partial_ = 0;
+  uint64_t b4c6a_rx_zero_ = 0;
+  uint64_t b4c6a_tx_zero_ = 0;
+  uint64_t b4c6a_last_end_us_ = 0;
+  uint64_t b4c6a_last_begin_us_ = 0;
+  bool b4c6a_prev_late_ = false;
+  uint32_t b4c6a_recover_run_ = 0;
 
   // Synthetic voiced generator state (Stage B4B)
   uint64_t synth_sample_idx_ = 0;
@@ -399,6 +784,7 @@ private:
   float out_peak_r_ = 0.0f;
   float out_rms_l_ = 0.0f;
   float out_rms_r_ = 0.0f;
+  bool output_rms_enabled_ = true;
 
   // Internal signal generator state
   float sine_phase_l_ = 0.0f;
@@ -407,6 +793,17 @@ private:
 
   void record_timing(uint64_t dsp_us, uint64_t cycle_us, uint64_t wake_us, uint64_t rx_gap_us, uint64_t block_idx);
   void generate_tx_tones(float *out_l, float *out_r, size_t frames);
+  void b4c6a_hist_add(uint32_t *hist, uint64_t us);
+  TimingPercentiles b4c6a_hist_percentiles(const uint32_t *hist, uint64_t total_us,
+                                           uint64_t max_us, uint64_t samples) const;
+  B4B6StimulusKind b4b6_stimulus_ = B4B6StimulusKind::PureTone;
+  float b4b6_f0_hz_ = 220.0f;
+  const uint8_t *b4b6_vocal_mulaw_ = nullptr;
+  size_t b4b6_vocal_samples_ = 0;
+  uint32_t b4b6_noise_state_ = 0x6d2b79f5U;
+  std::atomic<bool> b4b6_dsp_paused_{false};
+  std::atomic<bool> b4b6_dsp_active_{false};
+  std::atomic<bool> b4c1_transport_only_{false};
   void update_adc_diagnostics(const float *l, const float *r, const int32_t *raw, size_t frames);
 
 #ifdef ESP_PLATFORM

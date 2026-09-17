@@ -22,7 +22,7 @@ static void put32(std::ofstream &f, uint32_t v) {
 }
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--autocorr reference|float-scalar|float-multiacc|f32-kahan|f32-fma-product|f32-double-single] [--lpc-energy double|compensated] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
+    std::fprintf(stderr, "usage: pitch_shift input.wav output.wav semitones [--formants off|lpc] [--formant-amount 0..1] [--lpc-order 10|12|16|20] [--autocorr reference|float-scalar|float-multiacc|f32-kahan|f32-fma-product|f32-double-single] [--lpc-energy double|compensated] [--yin-cmnd reference|double-sum-f32-div|f32|f32-compensated] [--yin-energy reference|f32|f32-compensated] [--history-offset-ms 24|32|40|48|64] [--debug-csv file] [--continuity-policy baseline|onset|coasting|combined]\n");
     return 2;
   }
   std::ifstream f(argv[1], std::ios::binary);
@@ -64,6 +64,8 @@ int main(int argc, char **argv) {
   c.pitch_shift.wet = 1;
   c.isolate_pitch_shift_output = true;
   FormantMode formants=FormantMode::Off; float amount=1.0f;
+  YinCmndVariant yin_cmnd = YinCmndVariant::ReferenceDouble;
+  YinEnergyVariant yin_energy = YinEnergyVariant::ReferenceDouble;
   std::string debug_path;
   std::string sample_telemetry_path;
   for(int i=4;i<argc;++i){
@@ -86,6 +88,21 @@ int main(int argc, char **argv) {
       if(value=="double")c.lpc.windowing=LpcWindowVariant::PrecomputedHannDoubleEnergy;
       else if(value=="compensated")c.lpc.windowing=LpcWindowVariant::PrecomputedHannCompensatedEnergy;
       else{std::fprintf(stderr,"invalid LPC energy variant: %s\n",value.c_str());return 2;}
+    }
+    else if(option=="--yin-cmnd"&&i+1<argc){
+      const std::string value=argv[++i];
+      if(value=="reference")yin_cmnd=YinCmndVariant::ReferenceDouble;
+      else if(value=="double-sum-f32-div")yin_cmnd=YinCmndVariant::DoubleSumF32Div;
+      else if(value=="f32")yin_cmnd=YinCmndVariant::F32;
+      else if(value=="f32-compensated")yin_cmnd=YinCmndVariant::F32Compensated;
+      else{std::fprintf(stderr,"invalid YIN CMND variant: %s\n",value.c_str());return 2;}
+    }
+    else if(option=="--yin-energy"&&i+1<argc){
+      const std::string value=argv[++i];
+      if(value=="reference")yin_energy=YinEnergyVariant::ReferenceDouble;
+      else if(value=="f32")yin_energy=YinEnergyVariant::F32;
+      else if(value=="f32-compensated")yin_energy=YinEnergyVariant::F32Compensated;
+      else{std::fprintf(stderr,"invalid YIN energy variant: %s\n",value.c_str());return 2;}
     }
     else if(option=="--history-offset-ms"&&i+1<argc){const float ms=std::stof(argv[++i]);c.pitch_shift.history_offset_samples=static_cast<uint32_t>(std::lround(ms*48.0f));}
     else if(option=="--debug-csv"&&i+1<argc)debug_path=argv[++i];
@@ -117,6 +134,16 @@ int main(int argc, char **argv) {
   }
   if (!vocal_fx_init(c)) {
     std::fprintf(stderr, "engine init failed\n");
+    return 2;
+  }
+  PitchAnalysisConfig pitch_config{};
+  pitch_config.yin_difference = YinDifferenceVariant::IncrementalF32;
+  pitch_config.yin_incremental_rebase_hops = 64;
+  pitch_config.yin_cmnd = yin_cmnd;
+  pitch_config.yin_energy = yin_energy;
+  pitch_config.pitch_mark_ncc = PitchMarkNccVariant::ReuseAa;
+  if (!vocal_fx_init_pitch_analysis(pitch_config)) {
+    std::fprintf(stderr, "pitch analysis init failed\n");
     return 2;
   }
   vocal_fx_set_formant_mode(0,formants); vocal_fx_set_formant_amount(0,amount);
@@ -208,4 +235,6 @@ int main(int argc, char **argv) {
                (unsigned long long)t.formant_resets, t.max_restored);
   const auto lt=vocal_fx_lpc_telemetry();
   std::fprintf(stderr,"lpc_frames=%llu invalid=%llu fallback=%llu max_error=%.6f\n",(unsigned long long)lt.lpc_frames,(unsigned long long)lt.lpc_invalid_frames,(unsigned long long)lt.lpc_fallback_frames,lt.max_prediction_error);
+  const auto funnel=vocal_fx_funnel_stats();
+  std::fprintf(stderr,"pitch_results=%llu pitch_marks=%llu grains_attempted=%llu grains_scheduled=%llu grains_rendered=%llu\n",(unsigned long long)funnel.pitch_results_produced,(unsigned long long)funnel.pitch_marks_generated,(unsigned long long)funnel.grain_schedule_attempts,(unsigned long long)funnel.grains_scheduled,(unsigned long long)funnel.grains_rendered);
 }

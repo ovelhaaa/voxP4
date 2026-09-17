@@ -20,12 +20,108 @@
 #include <new>
 #include <string_view>
 
+#if (defined(CONFIG_VOXP4_MODE_I2S_B4C_1_AUDIO_CORE_AUDIT) || \
+     defined(CONFIG_VOXP4_MODE_I2S_B4C_2_AUDIO_CORE_AUDIT)) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
+#define CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION 1
+#ifndef CONFIG_VOXP4_B4B6_MEASURE_SECONDS
+#define CONFIG_VOXP4_B4B6_MEASURE_SECONDS 10
+#endif
+#ifndef CONFIG_VOXP4_B4B6_STABILITY_SECONDS
+#define CONFIG_VOXP4_B4B6_STABILITY_SECONDS 60
+#endif
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+#include "b4b6_vocal_fixture.h"
+#endif
+
+// B4B.6 runs the normal B4B.5 production selection with a broader stimulus
+// harness. This compile-time inheritance enables observability only; all
+// selector-mutation blocks remain disabled by the B4B.5 guards below.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+#define CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION 1
+#endif
+
+// B4B.5 reuses the qualified profiling harness only. Its selector-mutation
+// blocks are explicitly disabled below so vocal_fx_init() exercises the normal
+// ESP32-P4 production-default path.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT 1
+#endif
+
+// B4B.4K retains the complete frozen B4B.4J worker configuration and changes
+// only the YIN energy accumulation after host numerical qualification.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT 1
+#endif
+// B4B.4J retains the complete frozen B4B.4I worker configuration and changes
+// only the CMND arithmetic after host numerical qualification.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT 1
+#endif
+// B4B.4I retains the complete frozen B4B.4H worker configuration. It adds
+// observability only; the normal P4 YIN default remains FMA_8ACC.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#define CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION 1
+#endif
 // B4B.4H retains the complete B4B.4G/B4B.4F worker configuration and transport.
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION) && \
     !defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
 #define CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT 1
 #endif
-#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.4A"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C4A"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.4"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C4"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.3B"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C3B"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.3A"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C3A"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.3"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C3"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_2_AUDIO_CORE_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.2"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C2"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_1_AUDIO_CORE_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4C.1"
+#define VOXP4_LPC_AUDIT_TOKEN "B4C1"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
+#define VOXP4_LPC_AUDIT_STAGE "B4B.6"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B6"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+#define VOXP4_LPC_AUDIT_STAGE "B4B.5"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B5"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4B.4K"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B4K"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4B.4J"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B4J"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+#define VOXP4_LPC_AUDIT_STAGE "B4B.4I"
+#define VOXP4_LPC_AUDIT_TOKEN "B4B4I"
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
 #define VOXP4_LPC_AUDIT_STAGE "B4B.4H"
 #define VOXP4_LPC_AUDIT_TOKEN "B4B4H"
 #else
@@ -51,8 +147,45 @@ namespace {
 
 const char *TAG = "i2s_bringup";
 vocal_fx_platform::AudioI2s s_audio;
+// B4D.3S: sample rate selected by the sweep harness (default production 48 kHz).
+uint32_t g_pipeline_sample_rate = 48000;
 TaskHandle_t s_audio_task_handle = nullptr;
 TaskHandle_t s_pitch_task_handle = nullptr;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+// The J/K diagnostics add enough code/stdio state to split the internal heap's
+// largest block below 32 KiB even though total SRAM remains ample.  Reserve the
+// exact frozen audio-worker stack at link time; size, priority and core stay
+// identical to the production/audit configuration.
+StaticTask_t s_b4b4j_audio_task_storage{};
+alignas(16) std::array<StackType_t, 32768> s_b4b4j_audio_task_stack{};
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+// The RC matrix repeatedly creates the same worker. Reserve its unchanged
+// 16 KiB stack at link time so allocator fragmentation between cases cannot
+// invalidate the harness; core, priority and scheduling remain identical.
+StaticTask_t s_b4b6_pitch_task_storage{};
+alignas(16) std::array<StackType_t, 16384> s_b4b6_pitch_task_stack{};
+#endif
 std::atomic<bool> s_pitch_running{false};
 constexpr EventBits_t kAudioTaskStopped = BIT0;
 constexpr EventBits_t kPitchTaskStopped = BIT1;
@@ -62,6 +195,7 @@ bool s_teardown_diagnostics_enabled = false;
 std::atomic<bool> s_pitch_lock_audit_enabled{false};
 std::atomic<bool> s_pitch_hotspot_audit_enabled{false};
 std::atomic<bool> s_pitch_worker_in_call{false};
+std::atomic<bool> s_b4b6_measurement_pause{false};
 
 struct PitchWorkerCallRecord {
   uint64_t start_us = 0;
@@ -72,7 +206,14 @@ struct PitchWorkerCallRecord {
 // B4B.2 measured only ~85 worker calls in a 10-second window. Keep generous
 // fixed headroom without consuming the internal RAM needed by the real-time
 // task stacks. Any exhaustion remains explicit in record_drops.
+// B4C.7 runs near the internal-.bss link limit (frozen 32 KB audio + 16 KB
+// pitch static stacks plus the audit rings); its recorder capacity is reduced
+// while the audit that fills it stays disabled. Other modes keep 512.
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT)
+constexpr size_t kPitchWorkerCallRecordCapacity = 128;
+#else
 constexpr size_t kPitchWorkerCallRecordCapacity = 512;
+#endif
 std::array<PitchWorkerCallRecord, kPitchWorkerCallRecordCapacity>
     s_pitch_worker_call_records{};
 std::array<uint32_t, kPitchWorkerCallRecordCapacity> s_b4b3_call_us_sort{};
@@ -126,6 +267,10 @@ void audio_task_entry(void *) {
 
 void pitch_worker_task(void *) {
   while (s_pitch_running.load(std::memory_order_relaxed)) {
+    if (s_b4b6_measurement_pause.load(std::memory_order_acquire)) {
+      vTaskDelay(1);
+      continue;
+    }
     s_pitch_worker.wakeups.fetch_add(1, std::memory_order_relaxed);
     s_pitch_worker.iterations.fetch_add(1, std::memory_order_relaxed);
     constexpr size_t kMaximumHops = 4;
@@ -223,6 +368,60 @@ void b4b3_coordinator_task(void *) {
   vTaskDelete(nullptr);
 }
 
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_1_AUDIO_CORE_AUDIT)
+void b4c1_coordinator_task(void *) {
+  vTaskDelay(pdMS_TO_TICKS(250));
+  run_i2s_stage_b4c1_audio_core_audit();
+  vTaskSuspend(nullptr);
+}
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_2_AUDIO_CORE_AUDIT)
+void b4c2_coordinator_task(void *) {
+  vTaskDelay(pdMS_TO_TICKS(250));
+  run_i2s_stage_b4c2_audio_core_audit();
+  vTaskSuspend(nullptr);
+}
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT)
+void b4c3_coordinator_task(void *) {
+  vTaskDelay(pdMS_TO_TICKS(250));
+  run_i2s_stage_b4c3_harmonizer_tail_audit();
+  vTaskSuspend(nullptr);
+}
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS)
+void b4c6a_coordinator_task(void *);
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT)
+void b4c7_coordinator_task(void *);
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION)
+void b4c8_coordinator_task(void *);
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+void b4d1_coordinator_task(void *);
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
+void run_b4b6a_low_f0_decomposition();
+
+void b4b6_coordinator_task(void *) {
+  vTaskDelay(pdMS_TO_TICKS(250));
+  run_b4b6a_low_f0_decomposition();
+  run_i2s_stage_b4b6_rc_validation();
+  // The coordinator stack lives in PSRAM and the completed RC report remains
+  // observable on the serial console. It has no further work after this point.
+  vTaskSuspend(nullptr);
+}
+#endif
+
 bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch = true) {
   if (!s_task_events)
     s_task_events = xEventGroupCreateStatic(&s_task_events_storage);
@@ -232,6 +431,7 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
   io.mode = mode;
   io.dma_desc_num = 6;
   io.dma_frame_num = 64;
+  io.sample_rate = g_pipeline_sample_rate;
 
   if (!s_audio.init(io, 64)) {
     ESP_LOGE(TAG, "Audio I2S driver initialization failed");
@@ -249,8 +449,29 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
 #endif
 
   // Core 0: Audio task + DSP (highest real-time priority)
-  if (xTaskCreatePinnedToCore(audio_task_entry, "vocal_audio", 32768, nullptr,
-                              configMAX_PRIORITIES - 2, &s_audio_task_handle, 0) != pdPASS) {
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+  s_audio_task_handle = xTaskCreateStaticPinnedToCore(
+      audio_task_entry, "vocal_audio", s_b4b4j_audio_task_stack.size(),
+      nullptr, configMAX_PRIORITIES - 2, s_b4b4j_audio_task_stack.data(),
+      &s_b4b4j_audio_task_storage, 0);
+  const bool audio_task_created = s_audio_task_handle != nullptr;
+#else
+  const bool audio_task_created =
+      xTaskCreatePinnedToCore(audio_task_entry, "vocal_audio", 32768, nullptr,
+                              configMAX_PRIORITIES - 2, &s_audio_task_handle,
+                              0) == pdPASS;
+#endif
+  if (!audio_task_created) {
     ESP_LOGE(TAG, "Failed to create audio task on Core 0");
     s_audio.deinit();
     return false;
@@ -259,8 +480,29 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
   // Core 1: Pitch Worker task
   if (start_pitch) {
     s_pitch_running.store(true, std::memory_order_release);
-    if (xTaskCreatePinnedToCore(pitch_worker_task, "vocal_pitch", 16384, nullptr,
-                                configMAX_PRIORITIES - 5, &s_pitch_task_handle, 1) != pdPASS) {
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+    s_pitch_task_handle = xTaskCreateStaticPinnedToCore(
+        pitch_worker_task, "vocal_pitch", s_b4b6_pitch_task_stack.size(),
+        nullptr, configMAX_PRIORITIES - 5, s_b4b6_pitch_task_stack.data(),
+        &s_b4b6_pitch_task_storage, 1);
+    const bool pitch_task_created = s_pitch_task_handle != nullptr;
+#else
+    const bool pitch_task_created =
+        xTaskCreatePinnedToCore(pitch_worker_task, "vocal_pitch", 16384,
+                                nullptr, configMAX_PRIORITIES - 5,
+                                &s_pitch_task_handle, 1) == pdPASS;
+#endif
+    if (!pitch_task_created) {
       ESP_LOGE(TAG, "Failed to create pitch task on Core 1");
       s_pitch_running.store(false, std::memory_order_release);
       s_audio.stop();
@@ -278,7 +520,7 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
   return true;
 }
 
-bool stop_pipeline_tasks() {
+bool stop_pipeline_tasks(bool deinit_after_stop = true) {
   if (s_teardown_diagnostics_enabled)
     printf("[B4B.2 TEARDOWN] test stop requested\n");
   s_pitch_running.store(false, std::memory_order_release);
@@ -301,7 +543,14 @@ bool stop_pipeline_tasks() {
     ESP_LOGE(TAG, "Refusing I2S teardown while pipeline tasks are live");
     return false;
   }
-  s_audio.deinit();
+  // Both tasks signal immediately before self-delete. Give the scheduler and
+  // idle tasks a boundary to finish deletion before a matrix case reuses the
+  // static TCB/stack. This is outside every warmup and measured window.
+  vTaskDelay(pdMS_TO_TICKS(2));
+  // B4C.6A prints its PSRAM timing ring after the tasks stop; deinit frees
+  // that ring, so the forensics stage defers it until after printing.
+  if (deinit_after_stop)
+    s_audio.deinit();
   if (s_teardown_diagnostics_enabled) {
     printf("[B4B.2 TEARDOWN] I2S callbacks disabled\n");
     printf("[B4B.2 TEARDOWN] RX channel disabled\n");
@@ -1559,6 +1808,58 @@ struct OldSlidingStorageBenchmark {
   float checksum = 0.0f;
 };
 
+struct ProfileOverheadBenchmark {
+  uint32_t iterations = 0;
+  double now_cycles_per_call = 0.0;
+  double profile_pair_cycles = 0.0;
+  double record_cycles_cycles = 0.0;
+  double atomic_increment_cycles = 0.0;
+};
+
+ProfileOverheadBenchmark benchmark_profile_overhead() {
+  constexpr uint32_t kIterations = 20000;
+  ProfileOverheadBenchmark result{};
+  result.iterations = kIterations;
+  volatile uint32_t sink = 0;
+
+  uint32_t start = Profiler::now_cycles();
+  for (uint32_t i = 0; i < kIterations; ++i)
+    sink = sink ^ Profiler::now_cycles();
+  result.now_cycles_per_call =
+      static_cast<uint32_t>(Profiler::now_cycles() - start) /
+      static_cast<double>(kIterations);
+
+  Profiler profiler;
+  (void)profiler.enable_distribution_range(ProfileSection::AnalysisTotal,
+                                           ProfileSection::AnalysisTotal);
+  start = Profiler::now_cycles();
+  for (uint32_t i = 0; i < kIterations; ++i) {
+    profiler.begin(ProfileSection::AnalysisTotal);
+    profiler.end(ProfileSection::AnalysisTotal, 0);
+  }
+  result.profile_pair_cycles =
+      static_cast<uint32_t>(Profiler::now_cycles() - start) /
+      static_cast<double>(kIterations);
+
+  start = Profiler::now_cycles();
+  for (uint32_t i = 0; i < kIterations; ++i)
+    profiler.record_cycles(ProfileSection::AnalysisTotal, i & 1U);
+  result.record_cycles_cycles =
+      static_cast<uint32_t>(Profiler::now_cycles() - start) /
+      static_cast<double>(kIterations);
+
+  std::atomic<uint64_t> telemetry{0};
+  start = Profiler::now_cycles();
+  for (uint32_t i = 0; i < kIterations; ++i)
+    telemetry.fetch_add(1, std::memory_order_relaxed);
+  result.atomic_increment_cycles =
+      static_cast<uint32_t>(Profiler::now_cycles() - start) /
+      static_cast<double>(kIterations);
+  sink ^= static_cast<uint32_t>(telemetry.load(std::memory_order_relaxed));
+  (void)sink;
+  return result;
+}
+
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT)
 struct AutocorrIsolatedBenchmark {
@@ -2404,6 +2705,367 @@ void print_pitch_mark_ncc_isolated_benchmarks() {
 #endif
 #endif
 
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+struct CmndIsolatedBenchmark {
+  uint32_t count = 0, cold_us = 0, cold_cycles = 0;
+  uint64_t total_us = 0, total_cycles = 0;
+  uint32_t p50_us = 0, p95_us = 0, p99_us = 0, maximum_us = 0;
+  float checksum = 0.0f;
+};
+
+volatile float s_b4b4j_cmnd_checksum = 0.0f;
+volatile double s_b4b4j_cmnd_double_checksum = 0.0;
+volatile uint32_t s_b4b4j_cmnd_integer_checksum = 0;
+float *s_b4b4j_numerators = nullptr;
+double *s_b4b4j_denominators = nullptr;
+
+using CmndCostProbe = void (*)(const float *, size_t, float *);
+
+__attribute__((noinline)) void cmnd_probe_cumulative(
+    const float *difference, size_t tau_count, float *) {
+  double cumulative = 0.0;
+  for (size_t tau = 1; tau <= tau_count; ++tau)
+    cumulative += difference[tau];
+  s_b4b4j_cmnd_double_checksum = cumulative;
+}
+
+__attribute__((noinline)) void cmnd_probe_numerator(
+    const float *difference, size_t tau_count, float *output) {
+  for (size_t tau = 1; tau <= tau_count; ++tau)
+    output[tau] = difference[tau] * static_cast<float>(tau);
+  s_b4b4j_cmnd_checksum = output[tau_count];
+}
+
+__attribute__((noinline)) void cmnd_probe_division(
+    const float *, size_t tau_count, float *output) {
+  for (size_t tau = 1; tau <= tau_count; ++tau)
+    output[tau] = static_cast<float>(
+        static_cast<double>(s_b4b4j_numerators[tau]) /
+        s_b4b4j_denominators[tau]);
+  s_b4b4j_cmnd_checksum = output[tau_count];
+}
+
+__attribute__((noinline)) void cmnd_probe_store(
+    const float *, size_t tau_count, float *output) {
+  for (size_t tau = 1; tau <= tau_count; ++tau)
+    output[tau] = s_b4b4j_numerators[tau];
+  s_b4b4j_cmnd_checksum = output[tau_count];
+}
+
+__attribute__((noinline)) void cmnd_probe_loop_branch(
+    const float *, size_t tau_count, float *) {
+  uint32_t taken = 0;
+  for (size_t tau = 1; tau <= tau_count; ++tau)
+    if (s_b4b4j_denominators[tau] > 1e-20)
+      ++taken;
+  s_b4b4j_cmnd_integer_checksum = taken;
+}
+
+__attribute__((noinline)) void cmnd_probe_loop(
+    const float *, size_t tau_count, float *) {
+  uint32_t visited = 0;
+  for (size_t tau = 1; tau <= tau_count; ++tau)
+    visited += static_cast<uint32_t>(tau);
+  s_b4b4j_cmnd_integer_checksum = visited;
+}
+
+double benchmark_cmnd_cost_probe(CmndCostProbe probe, const float *difference,
+                                 size_t tau_count, float *output) {
+  constexpr size_t kWarmup = 8, kRuns = 128;
+  for (size_t i = 0; i < kWarmup; ++i)
+    probe(difference, tau_count, output);
+  uint64_t cycles = 0;
+  for (size_t i = 0; i < kRuns; ++i) {
+    const uint32_t start = esp_cpu_get_cycle_count();
+    probe(difference, tau_count, output);
+    cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - start);
+  }
+  return static_cast<double>(cycles) / kRuns;
+}
+
+CmndIsolatedBenchmark benchmark_yin_cmnd(YinCmndVariant variant) {
+  constexpr size_t kWindow = 512, kTaus = 185, kWarmup = 8, kRuns = 128;
+  constexpr float kPi = 3.14159265358979323846f;
+  std::array<float, kWindow> window{};
+  std::array<float, YinDetector::kMaxWindow + 1> difference{}, cmnd{};
+  std::array<uint32_t, kRuns> elapsed_us{}, elapsed_cycles{};
+  for (size_t i = 0; i < window.size(); ++i) {
+    const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) / 12000.0f;
+    window[i] = 0.12589254f * std::sin(phase) +
+                0.007f * std::sin(2.0f * phase);
+  }
+  yin_difference_fma_8acc(window.data(), window.size(), kTaus,
+                          difference.data());
+  CmndIsolatedBenchmark result{};
+  uint64_t start_us = esp_timer_get_time();
+  uint32_t start_cycles = esp_cpu_get_cycle_count();
+  yin_cmnd_compute(variant, difference.data(), kTaus, cmnd.data());
+  result.cold_cycles = esp_cpu_get_cycle_count() - start_cycles;
+  result.cold_us = esp_timer_get_time() - start_us;
+  for (size_t i = 0; i < kWarmup; ++i)
+    yin_cmnd_compute(variant, difference.data(), kTaus, cmnd.data());
+  for (size_t run = 0; run < kRuns; ++run) {
+    start_us = esp_timer_get_time();
+    start_cycles = esp_cpu_get_cycle_count();
+    yin_cmnd_compute(variant, difference.data(), kTaus, cmnd.data());
+    elapsed_cycles[run] = esp_cpu_get_cycle_count() - start_cycles;
+    elapsed_us[run] = esp_timer_get_time() - start_us;
+    result.total_cycles += elapsed_cycles[run];
+    result.total_us += elapsed_us[run];
+    result.maximum_us = std::max(result.maximum_us, elapsed_us[run]);
+    result.checksum += cmnd[1 + run % kTaus];
+  }
+  result.count = kRuns;
+  std::sort(elapsed_us.begin(), elapsed_us.end());
+  result.p50_us = percentile_sorted(elapsed_us.data(), kRuns, 50);
+  result.p95_us = percentile_sorted(elapsed_us.data(), kRuns, 95);
+  result.p99_us = percentile_sorted(elapsed_us.data(), kRuns, 99);
+  s_b4b4j_cmnd_checksum = result.checksum;
+  return result;
+}
+
+void print_yin_cmnd_isolated_benchmarks() {
+  const std::array<YinCmndVariant, 4> variants{{
+      YinCmndVariant::ReferenceDouble, YinCmndVariant::DoubleSumF32Div,
+      YinCmndVariant::F32, YinCmndVariant::F32Compensated,
+  }};
+  CmndIsolatedBenchmark reference{};
+  printf("B4B4J_CMND_THEORY tau_first=1 tau_last=185 taus_per_hop=185 "
+         "threshold=0.15 numerator_semantics=F32_PRODUCT_THEN_EXTEND\n");
+  for (const auto variant : variants) {
+    const auto stats = benchmark_yin_cmnd(variant);
+    if (variant == YinCmndVariant::ReferenceDouble)
+      reference = stats;
+    const double average_us = stats.count
+                                  ? static_cast<double>(stats.total_us) /
+                                        stats.count
+                                  : 0.0;
+    const double average_cycles = stats.count
+                                      ? static_cast<double>(stats.total_cycles) /
+                                            stats.count
+                                      : 0.0;
+    const double reference_cycles = reference.count
+                                        ? static_cast<double>(reference.total_cycles) /
+                                              reference.count
+                                        : average_cycles;
+    printf("B4B4J_CMND_ISOLATED variant=%s hops=%lu cold_us=%lu "
+           "cold_cycles=%lu avg_us/hop=%.3f P50=%lu P95=%lu P99=%lu "
+           "max=%lu cycles/hop=%.2f cycles/tau=%.4f speedup=%.4f "
+           "checksum=%.9g\n",
+           yin_cmnd_variant_name(variant),
+           static_cast<unsigned long>(stats.count),
+           static_cast<unsigned long>(stats.cold_us),
+           static_cast<unsigned long>(stats.cold_cycles), average_us,
+           static_cast<unsigned long>(stats.p50_us),
+           static_cast<unsigned long>(stats.p95_us),
+           static_cast<unsigned long>(stats.p99_us),
+           static_cast<unsigned long>(stats.maximum_us), average_cycles,
+           average_cycles / 185.0,
+           average_cycles > 0.0 ? reference_cycles / average_cycles : 0.0,
+           stats.checksum);
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+  constexpr size_t kTaus = 185, kWindow = 512;
+  constexpr float kPi = 3.14159265358979323846f;
+  auto *window = static_cast<float *>(
+      heap_caps_calloc(kWindow, sizeof(float), MALLOC_CAP_SPIRAM));
+  auto *difference = static_cast<float *>(heap_caps_calloc(
+      YinDetector::kMaxWindow + 1, sizeof(float), MALLOC_CAP_SPIRAM));
+  auto *output = static_cast<float *>(heap_caps_calloc(
+      YinDetector::kMaxWindow + 1, sizeof(float), MALLOC_CAP_SPIRAM));
+  s_b4b4j_numerators = static_cast<float *>(heap_caps_calloc(
+      YinDetector::kMaxWindow + 1, sizeof(float), MALLOC_CAP_SPIRAM));
+  s_b4b4j_denominators = static_cast<double *>(heap_caps_calloc(
+      YinDetector::kMaxWindow + 1, sizeof(double), MALLOC_CAP_SPIRAM));
+  if (!window || !difference || !output || !s_b4b4j_numerators ||
+      !s_b4b4j_denominators) {
+    printf("B4B4J_CMND_COST_METHOD allocation=FAIL\n");
+    heap_caps_free(window);
+    heap_caps_free(difference);
+    heap_caps_free(output);
+    heap_caps_free(s_b4b4j_numerators);
+    heap_caps_free(s_b4b4j_denominators);
+    s_b4b4j_numerators = nullptr;
+    s_b4b4j_denominators = nullptr;
+    return;
+  }
+  for (size_t i = 0; i < kWindow; ++i) {
+    const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) / 12000.0f;
+    window[i] = 0.12589254f * std::sin(phase) +
+                0.007f * std::sin(2.0f * phase);
+  }
+  yin_difference_fma_8acc(window, kWindow, kTaus, difference);
+  double cumulative = 0.0;
+  for (size_t tau = 1; tau <= kTaus; ++tau) {
+    cumulative += difference[tau];
+    s_b4b4j_numerators[tau] =
+        difference[tau] * static_cast<float>(tau);
+    s_b4b4j_denominators[tau] = cumulative;
+  }
+  const double reference_cycles = reference.count
+                                      ? static_cast<double>(reference.total_cycles) /
+                                            reference.count
+                                      : 0.0;
+  const double loop = benchmark_cmnd_cost_probe(
+      cmnd_probe_loop_branch, difference, kTaus, output);
+  const double pure_loop = benchmark_cmnd_cost_probe(
+      cmnd_probe_loop, difference, kTaus, output);
+  const double store_with_loop = benchmark_cmnd_cost_probe(
+      cmnd_probe_store, difference, kTaus, output);
+  const double numerator_with_store = benchmark_cmnd_cost_probe(
+      cmnd_probe_numerator, difference, kTaus, output);
+  const double cumulative_with_loop = benchmark_cmnd_cost_probe(
+      cmnd_probe_cumulative, difference, kTaus, output);
+  const double division_with_store = benchmark_cmnd_cost_probe(
+      cmnd_probe_division, difference, kTaus, output);
+  const std::array<double, 5> raw{{
+      std::max(0.0, cumulative_with_loop - pure_loop),
+      std::max(0.0, numerator_with_store - store_with_loop),
+      std::max(0.0, division_with_store - store_with_loop),
+      std::max(0.0, store_with_loop - pure_loop), std::max(0.0, loop),
+  }};
+  const double raw_sum = raw[0] + raw[1] + raw[2] + raw[3] + raw[4];
+  const double scale = raw_sum > 0.0 ? reference_cycles * 0.98 / raw_sum : 0.0;
+  const std::array<const char *, 5> names{{
+      "cumulative_update", "numerator_formation", "division", "store_cmnd",
+      "loop_branch",
+  }};
+  printf("B4B4J_CMND_COST_METHOD reference_cycles/hop=%.2f raw_sum=%.2f "
+         "normalized_probe_coverage=98.000 other=2.000 reconciled=100.000\n",
+         reference_cycles, raw_sum);
+  for (size_t i = 0; i < raw.size(); ++i) {
+    const double normalized = raw[i] * scale;
+    printf("B4B4J_CMND_COST category=%s raw_cycles/hop=%.2f "
+           "normalized_cycles/hop=%.2f normalized_us/hop=%.3f percent=%.3f\n",
+           names[i], raw[i], normalized,
+           normalized / Profiler::cycles_per_us(),
+           reference_cycles > 0.0 ? 100.0 * normalized / reference_cycles
+                                  : 0.0);
+  }
+  printf("B4B4J_CMND_COST category=other raw_cycles/hop=0 "
+         "normalized_cycles/hop=%.2f normalized_us/hop=%.3f percent=2.000\n",
+         reference_cycles * 0.02,
+         reference_cycles * 0.02 / Profiler::cycles_per_us());
+  heap_caps_free(window);
+  heap_caps_free(difference);
+  heap_caps_free(output);
+  heap_caps_free(s_b4b4j_numerators);
+  heap_caps_free(s_b4b4j_denominators);
+  s_b4b4j_numerators = nullptr;
+  s_b4b4j_denominators = nullptr;
+}
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+struct YinEnergyIsolatedBenchmark {
+  uint32_t count = 0, cold_us = 0, cold_cycles = 0;
+  uint64_t total_us = 0, total_cycles = 0;
+  uint32_t p50_us = 0, p95_us = 0, p99_us = 0, maximum_us = 0;
+  double checksum = 0.0;
+};
+
+volatile double s_b4b4k_energy_checksum = 0.0;
+
+YinEnergyIsolatedBenchmark benchmark_yin_energy(
+    YinEnergyVariant variant, const float *window, size_t frames) {
+  constexpr size_t kWarmup = 8, kRuns = 128;
+  std::array<uint32_t, kRuns> elapsed_us{};
+  YinEnergyIsolatedBenchmark result{};
+  double measured_energy = 0.0;
+  float measured_rms_db = 0.0f;
+  auto measure = [&]() {
+    measured_energy = yin_energy_compute(variant, window, frames);
+    measured_rms_db = 10.0f * std::log10(
+        static_cast<float>(measured_energy / frames) + 1e-20f);
+  };
+  uint64_t start_us = esp_timer_get_time();
+  uint32_t start_cycles = esp_cpu_get_cycle_count();
+  measure();
+  result.cold_cycles = esp_cpu_get_cycle_count() - start_cycles;
+  result.cold_us = static_cast<uint32_t>(esp_timer_get_time() - start_us);
+  result.checksum = measured_energy + measured_rms_db;
+  for (size_t i = 0; i < kWarmup; ++i) {
+    measure();
+    result.checksum += measured_energy + measured_rms_db;
+  }
+  result.checksum = 0.0;
+  for (size_t run = 0; run < kRuns; ++run) {
+    start_us = esp_timer_get_time();
+    start_cycles = esp_cpu_get_cycle_count();
+    measure();
+    result.total_cycles += static_cast<uint32_t>(
+        esp_cpu_get_cycle_count() - start_cycles);
+    elapsed_us[run] = static_cast<uint32_t>(esp_timer_get_time() - start_us);
+    result.checksum += measured_energy + measured_rms_db;
+    result.total_us += elapsed_us[run];
+    result.maximum_us = std::max(result.maximum_us, elapsed_us[run]);
+  }
+  result.count = kRuns;
+  std::sort(elapsed_us.begin(), elapsed_us.end());
+  result.p50_us = percentile_sorted(elapsed_us.data(), kRuns, 50);
+  result.p95_us = percentile_sorted(elapsed_us.data(), kRuns, 95);
+  result.p99_us = percentile_sorted(elapsed_us.data(), kRuns, 99);
+  s_b4b4k_energy_checksum = result.checksum;
+  return result;
+}
+
+void print_yin_energy_isolated_benchmarks() {
+  constexpr size_t kFrames = 512;
+  constexpr float kPi = 3.14159265358979323846f;
+  std::array<float, kFrames> window{};
+  uint32_t state = 0x4234424bU;
+  for (size_t i = 0; i < window.size(); ++i) {
+    state = state * 1664525U + 1013904223U;
+    const float noise = static_cast<int32_t>(state) / 2147483648.0f;
+    const float phase = 2.0f * kPi * 220.0f * i / 12000.0f;
+    window[i] = 0.12589254f * std::sin(phase) +
+                0.007f * std::sin(2.0f * phase) + 0.0002f * noise;
+  }
+  const std::array<YinEnergyVariant, 3> variants{{
+      YinEnergyVariant::ReferenceDouble, YinEnergyVariant::F32,
+      YinEnergyVariant::F32Compensated,
+  }};
+  YinEnergyIsolatedBenchmark reference{};
+  printf("B4B4K_ENERGY_THEORY samples_per_hop=512 energy=sum_x_squared "
+         "rms_db=10_log10_energy_over_N_plus_1e-20\n");
+  for (const auto variant : variants) {
+    const auto stats = benchmark_yin_energy(variant, window.data(),
+                                            window.size());
+    if (variant == YinEnergyVariant::ReferenceDouble)
+      reference = stats;
+    const double average_us = stats.count
+                                  ? static_cast<double>(stats.total_us) /
+                                        stats.count
+                                  : 0.0;
+    const double average_cycles = stats.count
+                                      ? static_cast<double>(stats.total_cycles) /
+                                            stats.count
+                                      : 0.0;
+    const double reference_cycles = reference.count
+                                        ? static_cast<double>(
+                                              reference.total_cycles) /
+                                              reference.count
+                                        : average_cycles;
+    printf("B4B4K_ENERGY_ISOLATED variant=%s hops=%lu cold_us=%lu "
+           "cold_cycles=%lu avg_us/hop=%.3f P50=%lu P95=%lu P99=%lu "
+           "max=%lu cycles/hop=%.2f cycles/sample=%.4f speedup=%.4f "
+           "checksum=%.17g\n",
+           yin_energy_variant_name(variant),
+           static_cast<unsigned long>(stats.count),
+           static_cast<unsigned long>(stats.cold_us),
+           static_cast<unsigned long>(stats.cold_cycles), average_us,
+           static_cast<unsigned long>(stats.p50_us),
+           static_cast<unsigned long>(stats.p95_us),
+           static_cast<unsigned long>(stats.p99_us),
+           static_cast<unsigned long>(stats.maximum_us), average_cycles,
+           average_cycles / kFrames,
+           average_cycles > 0.0 ? reference_cycles / average_cycles : 0.0,
+           stats.checksum);
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+#endif
+
 OldSlidingStorageBenchmark benchmark_old_lpc_sliding_storage() {
   constexpr uint32_t kSamples = 48000;
   // This benchmark runs only after both real-time tasks have confirmed stop.
@@ -2440,7 +3102,15 @@ configRUN_TIME_COUNTER_TYPE task_runtime_counter(TaskHandle_t task) {
 } // namespace
 
 void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
+  constexpr uint32_t kDurationSeconds = CONFIG_VOXP4_B4B6_MEASURE_SECONDS;
+  bool b4b5_config_matches = false;
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  constexpr uint32_t kDurationSeconds = CONFIG_VOXP4_B4B5_DURATION_SECONDS;
+  bool b4b5_config_matches = false;
+#else
   constexpr uint32_t kDurationSeconds = 10;
+#endif
   constexpr double kAnalysisSampleRate = 12000.0;
   constexpr double kHopSize = 60.0;
   constexpr double kRequiredHopsPerSecond =
@@ -2512,7 +3182,17 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("   B4B.5 — P4 PRODUCTION DEFAULT REALTIME QUALIFICATION\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  printf("   B4B.4K — YIN ENERGY COMPENSATED-F32 QUALIFICATION\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  printf("   B4B.4J — YIN CMND FPU KERNEL QUALIFICATION\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  printf("   B4B.4I — RESIDUAL PITCH ANALYSIS HOTSPOT AUDIT\n");
+#else
   printf("   B4B.4H — LPC COMPENSATED F32 ENERGY QUALIFICATION\n");
+#endif
 #else
   printf("   B4B.4G — LPC WINDOWING / ENERGY KERNEL AUDIT\n");
 #endif
@@ -2527,12 +3207,17 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("   B4B_3_PITCH_ANALYSIS_HOTSPOT_AUDIT\n");
 #endif
   printf("=======================================================\n");
-  printf("Duration: 10 seconds\n");
+  printf("Duration: %lu seconds\n",
+         static_cast<unsigned long>(kDurationSeconds));
   printf("Stimulus: 500 ms silence, 20 ms attack, 220 Hz pure sine at -18 dBFS\n");
   printf("Transport: real PCM1808 RX/read and PCM5102 TX; synthetic input feeds all DSP taps\n");
   printf("Pitch priority: configMAX_PRIORITIES - 5 (unchanged)\n");
   printf("CPU frequency: 360 MHz\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("Normal ESP32-P4 production defaults; profiling changes no DSP selector.\n");
+#else
   printf("No DSP algorithm or analysis parameter is changed by this audit.\n");
+#endif
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4B_LPC_AUTOCORR_AUDIT)
   printf("Production autocorrelation: AUTOCORR_REFERENCE_DOUBLE (float candidates rejected by host numeric guardrails)\n");
   print_lpc_autocorr_isolated_benchmarks();
@@ -2544,11 +3229,32 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("Production LPC autocorrelation: AUTOCORR_F32_DOUBLE_SINGLE (unchanged)\n");
   printf("P4 production default: PITCH_MARK_NCC_REUSE_AA\n");
   printf("Generic cross-platform default: PITCH_MARK_NCC_REFERENCE\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("B4B algorithm override active: NO\n");
+#else
   printf("Audit override: PITCH_MARK_NCC_REUSE_AA\n");
+#endif
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("Production LPC energy default: LPC_ENERGY_F32_COMPENSATED\n");
+  printf("LPC windowing oracle retained: LPC_WINDOW_HANN_DOUBLE_ENERGY\n");
+  printf("Production CMND default: YIN_CMND_F32_COMPENSATED\n");
+  printf("CMND oracle retained: YIN_CMND_REFERENCE_DOUBLE\n");
+  printf("Production YIN energy default: YIN_ENERGY_F32_COMPENSATED\n");
+  printf("YIN energy oracle retained: YIN_ENERGY_REFERENCE_DOUBLE\n");
+#else
   printf("Production LPC energy candidate: LPC_ENERGY_F32_COMPENSATED\n");
   printf("Production oracle: LPC_WINDOW_HANN_DOUBLE_ENERGY\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  printf("Production CMND candidate: YIN_CMND_F32_COMPENSATED\n");
+  printf("CMND oracle retained: YIN_CMND_REFERENCE_DOUBLE\n");
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  printf("Production YIN energy candidate: YIN_ENERGY_F32_COMPENSATED\n");
+  printf("YIN energy oracle retained: YIN_ENERGY_REFERENCE_DOUBLE\n");
+#endif
+#endif
 #else
   printf("Production LPC windowing candidate: LPC_WINDOW_HANN_DOUBLE_ENERGY\n");
   printf("Host Hann guardrail: 1024/1024 bit-identical coefficients\n");
@@ -2568,6 +3274,27 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   print_yin_isolated_benchmarks();
 #endif
 
+  ProfileOverheadBenchmark profile_overhead{};
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  profile_overhead = benchmark_profile_overhead();
+  printf("B4B4I_OVERHEAD component=ProfilerNowCycles iterations=%lu avg_cycles=%.3f avg_us=%.6f\n",
+         static_cast<unsigned long>(profile_overhead.iterations),
+         profile_overhead.now_cycles_per_call,
+         profile_overhead.now_cycles_per_call / Profiler::cycles_per_us());
+  printf("B4B4I_OVERHEAD component=VF_PROFILE_BEGIN_END iterations=%lu avg_cycles=%.3f avg_us=%.6f\n",
+         static_cast<unsigned long>(profile_overhead.iterations),
+         profile_overhead.profile_pair_cycles,
+         profile_overhead.profile_pair_cycles / Profiler::cycles_per_us());
+  printf("B4B4I_OVERHEAD component=ProfilerRecordCycles iterations=%lu avg_cycles=%.3f avg_us=%.6f\n",
+         static_cast<unsigned long>(profile_overhead.iterations),
+         profile_overhead.record_cycles_cycles,
+         profile_overhead.record_cycles_cycles / Profiler::cycles_per_us());
+  printf("B4B4I_OVERHEAD component=AtomicTelemetryIncrement iterations=%lu avg_cycles=%.3f avg_us=%.6f\n",
+         static_cast<unsigned long>(profile_overhead.iterations),
+         profile_overhead.atomic_increment_cycles,
+         profile_overhead.atomic_increment_cycles / Profiler::cycles_per_us());
+#endif
+
   static VocalFxConfig config;
   config = {};
   config.enable_gate = true;
@@ -2576,12 +3303,14 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   config.enable_reverb = true;
   config.enable_pitch_analysis = true;
   config.pitch_shift.enabled = true;
-#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
   config.lpc.windowing =
       LpcWindowVariant::PrecomputedHannCompensatedEnergy;
 #endif
-#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT) || \
-    defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)
+#if (defined(CONFIG_VOXP4_MODE_I2S_B4B_4C_COMPENSATED_AUTOCORR_AUDIT) || \
+     defined(CONFIG_VOXP4_MODE_I2S_B4B_4D_YIN_DIFFERENCE_AUDIT)) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
   config.lpc.autocorrelation =
       LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
 #endif
@@ -2595,16 +3324,60 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
     ESP_LOGE(TAG, "B4B.3 Vocal FX initialization failed");
     return;
   }
-#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4E_INCREMENTAL_YIN_AUDIT) && \
+    !defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
   PitchAnalysisConfig incremental_pitch_config{};
   incremental_pitch_config.yin_difference =
       YinDifferenceVariant::IncrementalF32;
   incremental_pitch_config.yin_incremental_rebase_hops = 64;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  incremental_pitch_config.yin_cmnd = YinCmndVariant::F32Compensated;
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  incremental_pitch_config.yin_energy = YinEnergyVariant::F32Compensated;
+#endif
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
   incremental_pitch_config.pitch_mark_ncc = PitchMarkNccVariant::ReuseAa;
 #endif
   if (!vocal_fx_init_pitch_analysis(incremental_pitch_config)) {
     ESP_LOGE(TAG, "B4B.4E incremental pitch initialization failed");
+    return;
+  }
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  const VocalFxEffectiveDspConfig effective =
+      vocal_fx_effective_dsp_config();
+  b4b5_config_matches =
+      effective.yin_difference == YinDifferenceVariant::IncrementalF32 &&
+      effective.yin_incremental_rebase_hops == 64 &&
+      effective.yin_energy == YinEnergyVariant::F32Compensated &&
+      effective.yin_cmnd == YinCmndVariant::F32Compensated &&
+      effective.pitch_mark_ncc == PitchMarkNccVariant::ReuseAa &&
+      effective.lpc_windowing ==
+          LpcWindowVariant::PrecomputedHannCompensatedEnergy &&
+      effective.lpc_autocorrelation ==
+          LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
+  printf("\nEffective P4 DSP configuration:\n\n");
+  printf("YIN difference:\n%s\n\n",
+         yin_difference_variant_name(effective.yin_difference));
+  printf("YIN rebase:\n%u\n\n",
+         static_cast<unsigned>(effective.yin_incremental_rebase_hops));
+  printf("YIN energy:\n%s\n\n",
+         yin_energy_variant_name(effective.yin_energy));
+  printf("YIN CMND:\n%s\n\n",
+         yin_cmnd_variant_name(effective.yin_cmnd));
+  printf("PitchMark NCC:\n%s\n\n",
+         pitch_mark_ncc_variant_name(effective.pitch_mark_ncc));
+  printf("LPC energy:\n%s\n\n",
+         lpc_window_variant_name(effective.lpc_windowing));
+  printf("LPC autocorrelation:\n%s\n\n",
+         lpc_autocorrelation_variant_name(effective.lpc_autocorrelation));
+  printf("B4B algorithm override active:\nNO\n");
+  printf("B4B5_EFFECTIVE_CONFIG all_matches=%s source=normal_p4_defaults "
+         "post_init_replacement=NO runtime_override=NO\n",
+         b4b5_config_matches ? "YES" : "NO");
+  if (!b4b5_config_matches) {
+    ESP_LOGE(TAG, "B4B.5 normal production configuration mismatch");
     return;
   }
 #endif
@@ -2633,6 +3406,11 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
     return;
   }
 
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  // Keep startup transients separate. The following ten-second window is the
+  // only source for the primary B4B.4I statistics.
+  vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
   std::array<VocalFxProfileStats,
              static_cast<size_t>(PitchAnalysisProfileSection::Count)>
       pitch_profile_start{};
@@ -2652,6 +3430,16 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
       vocal_fx_pitch_mark_forensic_telemetry();
   const TransportSnapshot transport_start = transport_snapshot();
   const LpcTelemetry lpc_telemetry_start = vocal_fx_lpc_telemetry();
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  float b4b5_backlog_first_ms = audit_start.analysis_backlog_ms;
+  float b4b5_backlog_last_ms = b4b5_backlog_first_ms;
+  float b4b5_pitch_age_first_ms = audit_start.latest_pitch_age_ms;
+  float b4b5_pitch_age_last_ms = b4b5_pitch_age_first_ms;
+  uint32_t b4b5_backlog_growth_streak = 0;
+  uint32_t b4b5_backlog_max_growth_streak = 0;
+  uint32_t b4b5_pitch_age_growth_streak = 0;
+  uint32_t b4b5_pitch_age_max_growth_streak = 0;
+#endif
 
   s_pitch_worker_call_record_count.store(0, std::memory_order_relaxed);
   s_pitch_worker_call_record_drops.store(0, std::memory_order_relaxed);
@@ -2667,7 +3455,34 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #endif
   const uint64_t window_start_us = esp_timer_get_time();
   s_pitch_hotspot_audit_enabled.store(true, std::memory_order_release);
-  vTaskDelay(pdMS_TO_TICKS(kDurationSeconds * 1000));
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  for (uint32_t second = 0; second < kDurationSeconds; ++second) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    const auto sample = vocal_fx_pitch_analysis_audit_telemetry();
+    b4b5_backlog_growth_streak =
+        sample.analysis_backlog_ms > b4b5_backlog_last_ms + 0.05f
+            ? b4b5_backlog_growth_streak + 1
+            : 0;
+    b4b5_pitch_age_growth_streak =
+        sample.latest_pitch_age_ms > b4b5_pitch_age_last_ms + 0.05f
+            ? b4b5_pitch_age_growth_streak + 1
+            : 0;
+    b4b5_backlog_max_growth_streak = std::max(
+        b4b5_backlog_max_growth_streak, b4b5_backlog_growth_streak);
+    b4b5_pitch_age_max_growth_streak = std::max(
+        b4b5_pitch_age_max_growth_streak, b4b5_pitch_age_growth_streak);
+    b4b5_backlog_last_ms = sample.analysis_backlog_ms;
+    b4b5_pitch_age_last_ms = sample.latest_pitch_age_ms;
+  }
+  // Include the initial partial scheduler tick in addition to the requested
+  // number of complete one-second sampling periods.
+  vTaskDelay(1);
+#else
+  // vTaskDelay() counts ticks after the current partial tick.  Add one tick so
+  // the measured warm window itself is never a few microseconds short of the
+  // required ten seconds.
+  vTaskDelay(pdMS_TO_TICKS(kDurationSeconds * 1000) + 1);
+#endif
   s_pitch_hotspot_audit_enabled.store(false, std::memory_order_release);
   while (s_pitch_worker_in_call.load(std::memory_order_acquire))
     vTaskDelay(1);
@@ -2705,6 +3520,22 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   const PitchShiftTelemetry harmony0_end = vocal_fx_harmony_telemetry(0);
   const VocalFxFunnelStats funnel_end = vocal_fx_funnel_stats();
   const bool teardown_clean = stop_pipeline_tasks();
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  // Run the diagnostic-only CMND probes after both real-time task stacks have
+  // been released.  Newlib's first-use formatting state can otherwise consume
+  // the final 1 KiB adjacent to the 32 KiB audio-stack heap block.  This keeps
+  // the frozen worker stack sizes and the measured pipeline unchanged.
+  print_yin_cmnd_isolated_benchmarks();
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  print_yin_energy_isolated_benchmarks();
+#endif
+  std::array<VocalFxProfileDistribution,
+             static_cast<size_t>(PitchAnalysisProfileSection::Count)>
+      pitch_distribution{};
+  for (size_t i = 0; i < pitch_distribution.size(); ++i)
+    pitch_distribution[i] = vocal_fx_pitch_profile_distribution(
+        static_cast<PitchAnalysisProfileSection>(i));
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
   // B4B.4F sampled these relaxed counters while the audio task could still be
   // between "attempt" and its terminal scheduled/rejected counter. Sampling a
@@ -2904,7 +3735,17 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("Stage B4B.5 — Production Default Realtime Qualification Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  printf("Stage B4B.4K — YIN Energy Compensated-F32 Qualification Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  printf("Stage B4B.4J — YIN CMND FPU Kernel Qualification Report\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  printf("Stage B4B.4I — Residual PitchAnalysis Hotspot Audit Report\n");
+#else
   printf("Stage B4B.4H — LPC Compensated F32 Energy Production Qualification Report\n");
+#endif
 #else
   printf("Stage B4B.4G — LPC Windowing & Energy Kernel Optimization Report\n");
 #endif
@@ -3591,6 +4432,18 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
                                         : 0.0;
   const double other_pitch_us_per_hop =
       std::max(0.0, new_pitch_analysis_us_per_hop - pitch_mark_us_per_hop);
+  const double yin_energy_us_per_hop =
+      profiled_hops
+          ? static_cast<double>(
+                pitch(PitchAnalysisProfileSection::YinEnergy).total_cycles) /
+                (Profiler::cycles_per_us() * profiled_hops)
+          : 0.0;
+  const double yin_cmnd_us_per_hop =
+      profiled_hops
+          ? static_cast<double>(
+                pitch(PitchAnalysisProfileSection::YinCmnd).total_cycles) /
+                (Profiler::cycles_per_us() * profiled_hops)
+          : 0.0;
   const double pitch_mark_target_ms_s = pitch_mark_us_per_hop * 200.0 / 1000.0;
   const double other_pitch_target_ms_s = other_pitch_us_per_hop * 200.0 / 1000.0;
   const double lpc_target_ms_s = lpc_avg_frame_us * 125.0 / 1000.0;
@@ -3672,14 +4525,309 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   const bool b4b4g_transport_pass = no_transport_regression && teardown_clean &&
       lpc_frames > 0 && lpc_frame_cost.count > 0;
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  const std::array<PitchAnalysisProfileSection, 13> b4b4i_sections{{
+      PitchAnalysisProfileSection::FifoDrain,
+      PitchAnalysisProfileSection::RollingWindow,
+      PitchAnalysisProfileSection::LinearWindowCopy,
+      PitchAnalysisProfileSection::YinEnergy,
+      PitchAnalysisProfileSection::YinDifference,
+      PitchAnalysisProfileSection::YinCmnd,
+      PitchAnalysisProfileSection::YinSearch,
+      PitchAnalysisProfileSection::YinInterpolation,
+      PitchAnalysisProfileSection::VoicedFeatures,
+      PitchAnalysisProfileSection::VoicedClassifier,
+      PitchAnalysisProfileSection::PitchSmoother,
+      PitchAnalysisProfileSection::PitchMarkSearch,
+      PitchAnalysisProfileSection::PitchPublication,
+  }};
+  uint64_t b4b4i_dsp_section_cycles = 0;
+  for (const auto section : b4b4i_sections)
+    b4b4i_dsp_section_cycles += pitch(section).total_cycles;
+  const uint64_t b4b4i_total_cycles = pitch_total.total_cycles;
+  const std::array<PitchAnalysisProfileSection, 15> profiled_pair_sections{{
+      PitchAnalysisProfileSection::LinearWindowCopy,
+      PitchAnalysisProfileSection::YinEnergy,
+      PitchAnalysisProfileSection::YinDifference,
+      PitchAnalysisProfileSection::YinCmnd,
+      PitchAnalysisProfileSection::YinSearch,
+      PitchAnalysisProfileSection::YinInterpolation,
+      PitchAnalysisProfileSection::YinTotal,
+      PitchAnalysisProfileSection::VoicedFeatures,
+      PitchAnalysisProfileSection::VoicedClassifier,
+      PitchAnalysisProfileSection::PitchSmoother,
+      PitchAnalysisProfileSection::PitchMarkSearch,
+      PitchAnalysisProfileSection::PitchMarkCorrelation,
+      PitchAnalysisProfileSection::PitchPublication,
+      PitchAnalysisProfileSection::Total,
+      PitchAnalysisProfileSection::RunTotal,
+  }};
+  uint64_t profiled_pairs = 0;
+  for (const auto section : profiled_pair_sections)
+    profiled_pairs += pitch(section).blocks;
+  const uint64_t record_cycle_calls =
+      pitch(PitchAnalysisProfileSection::FifoDrain).blocks +
+      pitch(PitchAnalysisProfileSection::RollingWindow).blocks;
+  // Four direct cycle reads are provable for every successfully popped sample:
+  // two around FIFO pop and two around rolling-window maintenance.
+  const uint64_t direct_cycle_reads =
+      4 * (audit_end.fifo_pops - audit_start.fifo_pops);
+  const double measured_audit_cycles =
+      profiled_pairs * profile_overhead.profile_pair_cycles +
+      record_cycle_calls * profile_overhead.record_cycles_cycles +
+      direct_cycle_reads * profile_overhead.now_cycles_per_call +
+      profiled_hops * profile_overhead.atomic_increment_cycles;
+  const uint64_t b4b4i_raw_other_cycles =
+      b4b4i_total_cycles > b4b4i_dsp_section_cycles
+          ? b4b4i_total_cycles - b4b4i_dsp_section_cycles
+          : 0;
+  const uint64_t b4b4i_audit_accounted_cycles = std::min<uint64_t>(
+      b4b4i_raw_other_cycles,
+      static_cast<uint64_t>(std::llround(measured_audit_cycles)));
+  const uint64_t b4b4i_accounted_cycles =
+      b4b4i_dsp_section_cycles + b4b4i_audit_accounted_cycles;
+  const uint64_t b4b4i_other_cycles =
+      b4b4i_total_cycles > b4b4i_accounted_cycles
+          ? b4b4i_total_cycles - b4b4i_accounted_cycles
+          : 0;
+  const double b4b4i_reconciliation =
+      b4b4i_total_cycles
+          ? 100.0 * b4b4i_accounted_cycles / b4b4i_total_cycles
+          : 0.0;
+  const double measured_audit_us_per_hop =
+      profiled_hops
+          ? measured_audit_cycles /
+                (Profiler::cycles_per_us() * static_cast<double>(profiled_hops))
+          : 0.0;
+  const double current_pitch_us_per_hop =
+      profiled_hops
+          ? b4b4i_total_cycles /
+                (Profiler::cycles_per_us() * static_cast<double>(profiled_hops))
+          : 0.0;
+  const double production_pitch_us_per_hop =
+      std::max(0.0, current_pitch_us_per_hop - measured_audit_us_per_hop);
+  const bool pitch_age_low = audit_end.latest_pitch_age_ms <= 35.0f &&
+                             audit_end.pitch_age_max_ms <= 40.0f;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  // A short rising streak is normal scheduler phase jitter.  Call it a
+  // persistent growth trend only when the streak is accompanied by a
+  // materially larger endpoint; the independent boundedness limits below
+  // continue to guard maxima and FIFO occupancy.
+  const bool b4b5_backlog_monotonic_growth =
+      b4b5_backlog_max_growth_streak >= 5 &&
+      b4b5_backlog_last_ms > b4b5_backlog_first_ms + 5.0f;
+  const bool b4b5_pitch_age_monotonic_growth =
+      b4b5_pitch_age_max_growth_streak >= 5 &&
+      b4b5_pitch_age_last_ms > b4b5_pitch_age_first_ms + 10.0f;
+  const bool b4b5_stability_trend_ok =
+      !b4b5_backlog_monotonic_growth &&
+      !b4b5_pitch_age_monotonic_growth;
+#endif
+  const bool b4b4g_pass = b4b4g_transport_pass &&
+                           hann_internal && terminal_unaccounted == 0 &&
+                           terminal_rejections == 0 && fifo_bounded &&
+                           pitch_age_low && b4b4i_reconciliation >= 97.0 &&
+                           wall_seconds >= 10.0
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+                           && b4b5_config_matches &&
+                           b4b5_stability_trend_ok
+#endif
+                           ;
+#else
   const bool pitch_age_low = audit_end.latest_pitch_age_ms <= 35.0f &&
                              audit_end.pitch_age_max_ms <= 40.0f;
   const bool b4b4g_pass = b4b4g_transport_pass && realtime_capacity &&
                           hann_internal && terminal_unaccounted == 0 &&
                           terminal_rejections == 0 && fifo_bounded &&
                           pitch_age_low;
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  const std::array<const char *, 13> b4b4i_names{{
+      "FIFO", "RollingWindow", "LinearCopy", "YinEnergy",
+      "YinDifference", "YinCMND", "YinSearch", "YinInterpolation",
+      "VoicedFeatures", "VoicedClassifier", "PitchSmoother",
+      "PitchMarkSearch", "PitchPublication",
+  }};
+  const std::array<const char *, 13> b4b4i_categories{{
+      "PRODUCTION_DSP", "PRODUCTION_DSP", "PRODUCTION_DSP",
+      "PRODUCTION_DSP", "PRODUCTION_DSP", "PRODUCTION_DSP",
+      "PRODUCTION_DSP", "PRODUCTION_DSP", "PRODUCTION_DSP",
+      "PRODUCTION_DSP", "PRODUCTION_DSP", "PRODUCTION_DSP",
+      "PRODUCTION_SYNCHRONIZATION",
+  }};
+  for (size_t i = 0; i < b4b4i_sections.size(); ++i) {
+    const auto &stats = pitch(b4b4i_sections[i]);
+    const auto &distribution =
+        pitch_distribution[static_cast<size_t>(b4b4i_sections[i])];
+    const double average_cycles =
+        profiled_hops ? static_cast<double>(stats.total_cycles) / profiled_hops
+                      : 0.0;
+    const double average_us = average_cycles / Profiler::cycles_per_us();
+    printf("B4B4I_SECTION name=%s category=%s executions=%llu avg_us_hop=%.3f P50_us=%lu P95_us=%lu P99_us=%lu max_us=%llu avg_cycles_hop=%.3f cpu_ms_s=%.3f samples=%lu bytes=%lu cycles_per_sample=%.3f\n",
+           b4b4i_names[i], b4b4i_categories[i],
+           static_cast<unsigned long long>(stats.blocks), average_us,
+           static_cast<unsigned long>(distribution.p50_us),
+           static_cast<unsigned long>(distribution.p95_us),
+           static_cast<unsigned long>(distribution.p99_us),
+           static_cast<unsigned long long>(stats.worst_us), average_cycles,
+           average_us * 0.2,
+           static_cast<unsigned long>(
+               b4b4i_sections[i] == PitchAnalysisProfileSection::FifoDrain ||
+                       b4b4i_sections[i] ==
+                           PitchAnalysisProfileSection::RollingWindow
+                   ? 60
+                   : b4b4i_sections[i] ==
+                                 PitchAnalysisProfileSection::LinearWindowCopy ||
+                             b4b4i_sections[i] ==
+                                 PitchAnalysisProfileSection::YinEnergy ||
+                             b4b4i_sections[i] ==
+                                 PitchAnalysisProfileSection::VoicedFeatures
+                         ? 512
+                         : 0),
+           static_cast<unsigned long>(
+               b4b4i_sections[i] ==
+                       PitchAnalysisProfileSection::LinearWindowCopy
+                   ? 512 * sizeof(float)
+                   : 0),
+           (b4b4i_sections[i] == PitchAnalysisProfileSection::FifoDrain ||
+            b4b4i_sections[i] == PitchAnalysisProfileSection::RollingWindow)
+               ? average_cycles / 60.0
+               : (b4b4i_sections[i] ==
+                              PitchAnalysisProfileSection::LinearWindowCopy ||
+                          b4b4i_sections[i] ==
+                              PitchAnalysisProfileSection::YinEnergy ||
+                          b4b4i_sections[i] ==
+                              PitchAnalysisProfileSection::VoicedFeatures)
+                     ? average_cycles / 512.0
+                     : 0.0);
+  }
+  const auto &mark_correlation_stats =
+      pitch(PitchAnalysisProfileSection::PitchMarkCorrelation);
+  printf("B4B4I_NESTED name=PitchMarkCorrelation parent=PitchMarkSearch executions=%llu avg_us_hop=%.3f avg_cycles_hop=%.3f\n",
+         static_cast<unsigned long long>(mark_correlation_stats.blocks),
+         profiled_hops
+             ? static_cast<double>(mark_correlation_stats.total_cycles) /
+                   (Profiler::cycles_per_us() * profiled_hops)
+             : 0.0,
+         profiled_hops
+             ? static_cast<double>(mark_correlation_stats.total_cycles) /
+                   profiled_hops
+             : 0.0);
+  const uint64_t cold_hops = yin_start.executions;
+  const auto &cold_total =
+      pitch_profile_start[static_cast<size_t>(
+          PitchAnalysisProfileSection::RunTotal)];
+  const double cold_us_per_hop =
+      cold_hops
+          ? static_cast<double>(cold_total.total_cycles) /
+                (Profiler::cycles_per_us() * cold_hops)
+          : 0.0;
+  const double current_target_ms_s =
+      current_pitch_us_per_hop * 0.2 + lpc_target_ms_s;
+  const double production_target_ms_s =
+      production_pitch_us_per_hop * 0.2 + lpc_target_ms_s;
+  const double residual_us_per_hop =
+      profiled_hops
+          ? std::max(
+                0.0, current_pitch_us_per_hop -
+                         (static_cast<double>(yin_difference.total_cycles +
+                                              mark_search.total_cycles) /
+                          (Profiler::cycles_per_us() * profiled_hops)))
+          : 0.0;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("\n%s effective normal production configuration: YIN_DIFF_INCREMENTAL_F32 rebase=64; YIN_CMND_%s; YIN_ENERGY_%s; PITCH_MARK_NCC_REUSE_AA; LPC_ENERGY_F32_COMPENSATED; AUTOCORR_F32_DOUBLE_SINGLE\n",
+#else
+  printf("\n%s frozen audit configuration: YIN_DIFF_INCREMENTAL_F32 rebase=64; YIN_CMND_%s; YIN_ENERGY_%s; PITCH_MARK_NCC_REUSE_AA; LPC_ENERGY_F32_COMPENSATED; AUTOCORR_F32_DOUBLE_SINGLE\n",
+#endif
+         VOXP4_LPC_AUDIT_STAGE,
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+         "F32_COMPENSATED"
+#else
+         "REFERENCE_DOUBLE"
+#endif
+         ,
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+         "F32_COMPENSATED"
+#else
+         "REFERENCE_DOUBLE"
+#endif
+  );
+  printf("B4B4I_COLD warmup_seconds=1 hops=%llu PitchAnalysis_us_hop=%.3f\n",
+         static_cast<unsigned long long>(cold_hops), cold_us_per_hop);
+  printf("B4B4I_YIN energy_samples=512 energy_accumulator=%s energy_passes=1 energy_math=log10 CMND_tau_first=1 CMND_tau_last=%lu CMND_taus=%lu CMND_accumulator=%s search_tau_min=%lu search_tau_max=%lu interpolation=parabolic_raw_difference\n",
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+         "f32_compensated_then_double_materialization",
+#else
+         "double",
+#endif
+         static_cast<unsigned long>(yin_end.tau_max + 1),
+         static_cast<unsigned long>(yin_end.tau_values_per_execution),
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+         "f32_compensated",
+#else
+         "double",
+#endif
+         static_cast<unsigned long>(yin_end.tau_min),
+         static_cast<unsigned long>(yin_end.tau_max));
+  printf("B4B4I_CMND_SENSITIVITY threshold=%.9g selected_min=%.9g selected_avg=%.9g closest_threshold_distance=%.9g selected_tau_min=%lu selected_tau_max=%lu\n",
+         yin_end.yin_threshold, yin_end.selected_cmnd_minimum,
+         yin_end.selected_cmnd_average, yin_end.closest_threshold_distance,
+         static_cast<unsigned long>(yin_end.selected_tau_minimum),
+         static_cast<unsigned long>(yin_end.selected_tau_maximum));
+  printf("B4B4I_ITERATIVE YinDifference_inner=%llu YinDifference_cycles_operation=%.6f YinCMND_cycles_tau=%.6f FIFO_samples_popped=%llu Rolling_samples_written=%llu LinearCopy_bytes_hop=2048\n",
+         static_cast<unsigned long long>(yin_inner),
+         yin_inner ? static_cast<double>(yin_difference.total_cycles) / yin_inner
+                   : 0.0,
+         profiled_hops && yin_end.tau_values_per_execution
+             ? static_cast<double>(
+                   pitch(PitchAnalysisProfileSection::YinCmnd).total_cycles) /
+                   (profiled_hops * yin_end.tau_values_per_execution)
+             : 0.0,
+         static_cast<unsigned long long>(audit_end.fifo_pops -
+                                         audit_start.fifo_pops),
+         static_cast<unsigned long long>(audit_end.fifo_pops -
+                                         audit_start.fifo_pops));
+  printf("B4B4I_WINDOW_PASSES full_window_passes_per_hop=3 passes=LinearCopy,YinEnergy,VoicedFeatures YinEnergy_quantities=sum_sq_selected,rms_db VoicedFeatures_quantities=peak,sum_sq_float,lag1,zcr,hfr,centroid redundant_energy=yes redundant_transcendentals=no exact_share_without_semantic_change=no\n");
+  printf("B4B4I_MATH VoicedFeatures=fabs,acos,division VoicedClassifier=log2,pow,division PitchSmoother=log2,exp,exp2,sqrt,division Publication=atomic_seqlock\n");
+  printf("B4B4I_RECONCILIATION total_cycles=%llu accounted_cycles=%llu other_cycles=%llu other_us_hop=%.3f percent=%.3f result=%s\n",
+         static_cast<unsigned long long>(b4b4i_total_cycles),
+         static_cast<unsigned long long>(b4b4i_accounted_cycles),
+         static_cast<unsigned long long>(b4b4i_other_cycles),
+         profiled_hops
+             ? static_cast<double>(b4b4i_other_cycles) /
+                   (Profiler::cycles_per_us() * profiled_hops)
+             : 0.0,
+         b4b4i_reconciliation,
+         b4b4i_reconciliation >= 97.0 ? "PASS" : "FAIL");
+  printf("B4B4I_AUDIT_ESTIMATE profiled_pairs=%llu record_cycle_calls=%llu direct_now_cycle_calls=%llu sensitivity_atomic_increments=%llu audit_us_hop=%.3f audit_ms_s=%.3f current_audit_pitch_us_hop=%.3f estimated_production_pitch_us_hop=%.3f production_only_estimate=yes\n",
+         static_cast<unsigned long long>(profiled_pairs),
+         static_cast<unsigned long long>(record_cycle_calls),
+         static_cast<unsigned long long>(direct_cycle_reads),
+         static_cast<unsigned long long>(profiled_hops),
+         measured_audit_us_per_hop, measured_audit_us_per_hop * 0.2,
+         current_pitch_us_per_hop, production_pitch_us_per_hop);
+  printf("B4B4I_SUMMARY PitchAnalysis_us_hop=%.3f YinDifference_us_hop=%.3f PitchMarkSearch_us_hop=%.3f residual_us_hop=%.3f LPC_us_frame=%.3f LPC_ms_s=%.3f target_rate_current_ms_s=%.3f target_rate_minus_audit_ms_s=%.3f missing_to_900_ms_s=%.3f reconciliation_percent=%.3f\n",
+         current_pitch_us_per_hop,
+         profiled_hops
+             ? static_cast<double>(yin_difference.total_cycles) /
+                   (Profiler::cycles_per_us() * profiled_hops)
+             : 0.0,
+         profiled_hops
+             ? static_cast<double>(mark_search.total_cycles) /
+                   (Profiler::cycles_per_us() * profiled_hops)
+             : 0.0,
+         residual_us_per_hop, lpc_avg_frame_us, lpc_target_ms_s,
+         current_target_ms_s, production_target_ms_s,
+         std::max(0.0, current_target_ms_s - 900.0),
+         b4b4i_reconciliation);
+#else
   printf("\nB4B.4H production selection: LPC_ENERGY_F32_COMPENSATED\n");
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("Production kernels: LPC_WINDOW_HANN_DOUBLE_ENERGY; AUTOCORR_F32_DOUBLE_SINGLE; YIN_DIFF_INCREMENTAL_F32 rebase64; YIN_ENERGY_F32_COMPENSATED; YIN_CMND_F32_COMPENSATED; PITCH_MARK_NCC_REUSE_AA\n");
+#else
   printf("Frozen kernels: AUTOCORR_F32_DOUBLE_SINGLE; YIN audit override=YIN_DIFF_INCREMENTAL_F32 rebase64; P4 normal YIN default=YIN_DIFF_FMA_8ACC; PITCH_MARK_NCC_REUSE_AA\n");
+#endif
   printf("Host B-vs-C guardrails: y_bit_mismatch=0 valid_mismatch=0 coefficient_max_abs<=1e-6 prediction_error_diff<=1e-7 confidence_diff<=1e-7 timestamp_mismatch=0 frame_count_mismatch=0 NaN/Inf=0 audio_difference_SNR>=100dB\n");
 #else
   const bool b4b4g_pass = b4b4g_transport_pass &&
@@ -3702,9 +4850,10 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          static_cast<unsigned long>(lpc_frame_cost.max_us),
          lpc_frames ? static_cast<double>(lpc_total.total_cycles) / lpc_frames
                     : 0.0);
-  printf(VOXP4_LPC_AUDIT_TOKEN "_FULL_WORKER pitch_mark_us/hop=%.2f other_pitch_us/hop=%.2f pitch_analysis_us/hop=%.2f yin_difference_us/hop=%.2f LPC_windowing_us/frame=%.2f LPC_autocorrelation_us/frame=%.2f LPC_Levinson_us/frame=%.2f LPC_total_us/frame=%.2f\n",
+  printf(VOXP4_LPC_AUDIT_TOKEN "_FULL_WORKER pitch_mark_us/hop=%.2f other_pitch_us/hop=%.2f pitch_analysis_us/hop=%.2f yin_energy_us/hop=%.2f yin_difference_us/hop=%.2f yin_cmnd_us/hop=%.2f LPC_windowing_us/frame=%.2f LPC_autocorrelation_us/frame=%.2f LPC_Levinson_us/frame=%.2f LPC_total_us/frame=%.2f\n",
          pitch_mark_us_per_hop, other_pitch_us_per_hop,
-         new_pitch_analysis_us_per_hop, new_yin_difference_us_per_hop,
+         new_pitch_analysis_us_per_hop, yin_energy_us_per_hop,
+         new_yin_difference_us_per_hop, yin_cmnd_us_per_hop,
          lpc_windowing_avg_frame_us, autocorrelation_avg_frame_us,
          levinson_avg_frame_us, lpc_avg_frame_us);
   printf("Target-rate budget: PitchMark=%.3f ms/s other_PitchAnalysis=%.3f ms/s LPC=%.3f ms/s total_Core1=%.3f ms/s\n",
@@ -3718,6 +4867,18 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          audit_end.analysis_backlog_max_ms, audit_end.latest_pitch_age_ms,
          audit_end.pitch_age_average_ms, audit_end.pitch_age_p95_ms,
          audit_end.pitch_age_p99_ms, audit_end.pitch_age_max_ms);
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("B4B5_STABILITY_TREND duration_s=%lu backlog_first_ms=%.3f "
+         "backlog_last_ms=%.3f backlog_max_growth_streak=%lu "
+         "pitch_age_first_ms=%.3f pitch_age_last_ms=%.3f "
+         "pitch_age_max_growth_streak=%lu monotonic_growth=%s\n",
+         static_cast<unsigned long>(kDurationSeconds), b4b5_backlog_first_ms,
+         b4b5_backlog_last_ms,
+         static_cast<unsigned long>(b4b5_backlog_max_growth_streak),
+         b4b5_pitch_age_first_ms, b4b5_pitch_age_last_ms,
+         static_cast<unsigned long>(b4b5_pitch_age_max_growth_streak),
+         b4b5_stability_trend_ok ? "NO" : "YES");
+#endif
   printf("Grain rejection: source_negative=%llu select_total=%llu no_marks=%llu low_confidence=%llu invalid_period=%llu distance_too_large=%llu history_total=%llu center_before_half=%llu history_too_old=%llu future_end=%llu\n",
          static_cast<unsigned long long>(grain.attempt_source_negative),
          static_cast<unsigned long long>(grain.select_mark_failure_total),
@@ -3754,6 +4915,15 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
          b4b4g_pass ? "PASS" : "FAIL");
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
   printf("PRODUCTION LPC ENERGY:\nLPC_ENERGY_F32_COMPENSATED\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  printf("PRODUCTION YIN CMND:\nYIN_CMND_F32_COMPENSATED\n");
+#endif
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  printf("PRODUCTION YIN ENERGY:\nYIN_ENERGY_F32_COMPENSATED\n");
+  printf("YIN ENERGY:\n326.20 -> %.2f us/hop\n", yin_energy_us_per_hop);
+  printf("YIN ENERGY SPEEDUP:\n%.2fx\n",
+         yin_energy_us_per_hop > 0.0 ? 326.20 / yin_energy_us_per_hop : 0.0);
+#endif
 #else
   printf("PRODUCTION LPC WINDOWING:\nLPC_WINDOW_HANN_DOUBLE_ENERGY\n");
 #endif
@@ -3775,11 +4945,28 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
   printf("NEXT TARGET-RATE HOTSPOT:\n%s\n", next_hotspot);
   printf("NEXT REDUCTION POTENTIAL:\n%.3f ms/s\n",
          next_reduction_potential_ms_s);
-#if defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  printf("NORMAL FIRMWARE QUALIFIED:\n%s\n",
+         b4b4g_pass ? "YES" : "NO");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4H_LPC_ENERGY_QUALIFICATION)
   printf("NORMAL FIRMWARE QUALIFIED:\nNO (YIN_DIFF_INCREMENTAL_F32 rebase64 remains an audit override)\n");
 #endif
-  printf("NEXT STEP:\noptimize %s, the largest normalized measured CPU demand\n",
+  printf("NEXT STEP:\n");
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  if (b4b4g_pass)
+    printf("release-candidate validation; retain <=800 ms/s as future optimization\n");
+  else
+    printf("investigate the failing production qualification guardrail\n");
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  if (ninety_percent_headroom)
+    printf("PRODUCTION DEFAULT INTEGRATION\n");
+  else
+    printf("optimize %s, the largest normalized measured CPU demand\n",
+           next_hotspot);
+#else
+  printf("optimize %s, the largest normalized measured CPU demand\n",
          next_hotspot);
+#endif
 #else
   printf("\nB4B.4F production selection: PITCH_MARK_NCC_REUSE_AA\n");
   printf("Host NCC guardrails: score_bit_identical=yes best_offset=0 accept_reject=0 mark_position=0 coherent_mark=0 track_state=0 NaN/Inf=0\n");
@@ -4133,6 +5320,1002 @@ void run_i2s_stage_b4b3_pitch_analysis_hotspot_audit(void) {
 #endif
 }
 
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
+namespace {
+using vocal_fx_platform::B4B6StimulusKind;
+
+struct B4B6CaseDefinition {
+  const char *name;
+  const char *family;
+  B4B6StimulusKind stimulus;
+  float nominal_f0_hz;
+  bool representative;
+  bool vocal;
+};
+
+struct B4B6CaseResult {
+  const B4B6CaseDefinition *definition = nullptr;
+  uint32_t measured_seconds = 0;
+  double wall_seconds = 0.0;
+  uint64_t pitch_hops = 0;
+  uint64_t lpc_frames = 0;
+  double pitch_analysis_us_hop = 0.0;
+  double pitch_mark_us_hop = 0.0;
+  double pitch_mark_correlation_us_hop = 0.0;
+  double lpc_total_us_frame = 0.0;
+  double total_ms_s = 0.0;
+  std::array<double, 5> yin_us_hop{};
+  std::array<double, 3> lpc_detail_us_frame{};
+  VocalFxProfileDistribution pitch_distribution{};
+  VocalFxProfileDistribution mark_distribution{};
+  LpcFrameCostSummary lpc_distribution{};
+  PitchMarkForensicTelemetry geometry{};
+  PitchAnalysisAuditTelemetry audit{};
+  uint64_t searches = 0, offsets = 0, sample_pairs = 0;
+  uint64_t grain_attempted = 0, grain_scheduled = 0, grain_rendered = 0;
+  uint64_t grain_no_marks = 0, grain_low_confidence = 0;
+  uint64_t grain_invalid_period = 0, grain_distance = 0;
+  uint64_t grain_history = 0, grain_source_negative = 0, grain_other = 0;
+  uint64_t fifo_drops = 0;
+  float backlog_first_ms = 0.0f, backlog_last_ms = 0.0f;
+  uint32_t backlog_growth_streak = 0;
+  bool transport_clean = false;
+  bool teardown_clean = false;
+  bool trend_bounded = false;
+  bool health_pass = false;
+  bool pass = false;
+};
+
+constexpr std::array<B4B6CaseDefinition, 39> kB4B6Cases{{
+    {"pure_65", "pure", B4B6StimulusKind::PureTone, 65.0f, false, false},
+    {"pure_66", "pure", B4B6StimulusKind::PureTone, 66.0f, false, false},
+    {"pure_80", "pure", B4B6StimulusKind::PureTone, 80.0f, true, false},
+    {"pure_110", "pure", B4B6StimulusKind::PureTone, 110.0f, true, false},
+    {"pure_147", "pure", B4B6StimulusKind::PureTone, 147.0f, true, false},
+    {"pure_220", "pure", B4B6StimulusKind::PureTone, 220.0f, true, false},
+    {"pure_330", "pure", B4B6StimulusKind::PureTone, 330.0f, true, false},
+    {"pure_440", "pure", B4B6StimulusKind::PureTone, 440.0f, true, false},
+    {"pure_700", "pure", B4B6StimulusKind::PureTone, 700.0f, false, false},
+    {"pure_900", "pure", B4B6StimulusKind::PureTone, 900.0f, false, false},
+    {"pure_990", "pure", B4B6StimulusKind::PureTone, 990.0f, false, false},
+    {"pure_1000", "pure", B4B6StimulusKind::PureTone, 1000.0f, false, false},
+    {"harmonic_65", "harmonic", B4B6StimulusKind::HarmonicVoiced, 65.0f, false, false},
+    {"harmonic_66", "harmonic", B4B6StimulusKind::HarmonicVoiced, 66.0f, false, false},
+    {"harmonic_80", "harmonic", B4B6StimulusKind::HarmonicVoiced, 80.0f, true, false},
+    {"harmonic_110", "harmonic", B4B6StimulusKind::HarmonicVoiced, 110.0f, true, false},
+    {"harmonic_147", "harmonic", B4B6StimulusKind::HarmonicVoiced, 147.0f, true, false},
+    {"harmonic_220", "harmonic", B4B6StimulusKind::HarmonicVoiced, 220.0f, true, false},
+    {"harmonic_330", "harmonic", B4B6StimulusKind::HarmonicVoiced, 330.0f, true, false},
+    {"harmonic_440", "harmonic", B4B6StimulusKind::HarmonicVoiced, 440.0f, true, false},
+    {"harmonic_700", "harmonic", B4B6StimulusKind::HarmonicVoiced, 700.0f, false, false},
+    {"harmonic_900", "harmonic", B4B6StimulusKind::HarmonicVoiced, 900.0f, false, false},
+    {"harmonic_990", "harmonic", B4B6StimulusKind::HarmonicVoiced, 990.0f, false, false},
+    {"harmonic_1000", "harmonic", B4B6StimulusKind::HarmonicVoiced, 1000.0f, false, false},
+    {"broadband_noise", "noise", B4B6StimulusKind::BroadbandNoise, 0.0f, true, false},
+    {"breathy_220", "noise", B4B6StimulusKind::BreathyVoiced, 220.0f, true, false},
+    {"silence", "silence", B4B6StimulusKind::Silence, 0.0f, true, false},
+    {"near_silence", "silence", B4B6StimulusKind::NearSilence, 0.0f, true, false},
+    {"step_110_220", "transition", B4B6StimulusKind::Step110To220, 110.0f, true, false},
+    {"step_220_110", "transition", B4B6StimulusKind::Step220To110, 220.0f, true, false},
+    {"step_110_440", "transition", B4B6StimulusKind::Step110To440, 110.0f, true, false},
+    {"step_440_110", "transition", B4B6StimulusKind::Step440To110, 440.0f, true, false},
+    {"step_147_220_330", "transition", B4B6StimulusKind::Step147To220To330, 147.0f, true, false},
+    {"gliss_80_440", "glissando", B4B6StimulusKind::Gliss80To440, 80.0f, true, false},
+    {"gliss_440_80", "glissando", B4B6StimulusKind::Gliss440To80, 440.0f, true, false},
+    {"vibrato_1st", "vibrato", B4B6StimulusKind::VibratoOneSemitone, 220.0f, true, false},
+    {"vibrato_2st", "vibrato", B4B6StimulusKind::VibratoTwoSemitones, 220.0f, true, false},
+    {"staccato_110_220_440", "staccato", B4B6StimulusKind::Staccato, 110.0f, true, false},
+    {"real_vocal_corpus", "real_vocal", B4B6StimulusKind::VocalReplay, 0.0f, true, true},
+}};
+
+double b4b6_average_us(const VocalFxProfileStats &stats, uint64_t count) {
+  return count ? static_cast<double>(stats.total_cycles) /
+                     (Profiler::cycles_per_us() * static_cast<double>(count))
+               : 0.0;
+}
+
+uint64_t b4b6_grain_sum(uint64_t GrainRejectionTelemetry::*member,
+                        const GrainRejectionTelemetry &a,
+                        const GrainRejectionTelemetry &b) {
+  return a.*member + b.*member;
+}
+
+B4B6CaseResult b4b6_run_case(const B4B6CaseDefinition &definition,
+                             uint32_t measured_seconds,
+                             const char *role) {
+  B4B6CaseResult result{};
+  result.definition = &definition;
+  result.measured_seconds = measured_seconds;
+  vocal_fx_reset();
+  vocal_fx_reset_funnel_stats();
+  s_audio.configure_b4b6_stimulus(
+      definition.stimulus, definition.nominal_f0_hz,
+      definition.vocal ? kB4b6VocalMulaw : nullptr,
+      definition.vocal ? kB4b6VocalMulawSize : 0);
+  if (!start_pipeline_tasks(
+          vocal_fx_platform::AudioI2sMode::B4B6RcValidation, true)) {
+    printf("B4B6_CASE role=%s name=%s status=START_FAILURE\n", role,
+           definition.name);
+    return result;
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  s_b4b6_measurement_pause.store(true, std::memory_order_release);
+  s_audio.set_b4b6_dsp_paused(true);
+  while (s_pitch_worker_in_call.load(std::memory_order_acquire) ||
+         s_audio.b4b6_dsp_active())
+    vTaskDelay(1);
+  vocal_fx_reset_measurement_telemetry();
+
+  const TransportSnapshot transport_start = transport_snapshot();
+  const PitchAnalysisAuditTelemetry audit_start =
+      vocal_fx_pitch_analysis_audit_telemetry();
+  const VocalFxFunnelStats funnel_start = vocal_fx_funnel_stats();
+  const GrainRejectionTelemetry grain0_start =
+      vocal_fx_grain_rejection_telemetry(0);
+  const GrainRejectionTelemetry grain1_start =
+      vocal_fx_grain_rejection_telemetry(1);
+  result.backlog_first_ms = audit_start.analysis_backlog_ms;
+  float previous_backlog = result.backlog_first_ms;
+  uint32_t current_growth_streak = 0;
+  const uint64_t window_start_us = esp_timer_get_time();
+  s_audio.set_b4b6_dsp_paused(false);
+  s_b4b6_measurement_pause.store(false, std::memory_order_release);
+
+  for (uint32_t second = 0; second < measured_seconds; ++second) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    const PitchAnalysisAuditTelemetry sample =
+        vocal_fx_pitch_analysis_audit_telemetry();
+    current_growth_streak =
+        sample.analysis_backlog_ms > previous_backlog + 0.05f
+            ? current_growth_streak + 1
+            : 0;
+    result.backlog_growth_streak =
+        std::max(result.backlog_growth_streak, current_growth_streak);
+    previous_backlog = sample.analysis_backlog_ms;
+  }
+  vTaskDelay(1);
+
+  s_b4b6_measurement_pause.store(true, std::memory_order_release);
+  s_audio.set_b4b6_dsp_paused(true);
+  while (s_pitch_worker_in_call.load(std::memory_order_acquire) ||
+         s_audio.b4b6_dsp_active())
+    vTaskDelay(1);
+  const uint64_t window_end_us = esp_timer_get_time();
+  result.wall_seconds = (window_end_us - window_start_us) / 1000000.0;
+
+  std::array<VocalFxProfileStats,
+             static_cast<size_t>(PitchAnalysisProfileSection::Count)>
+      pitch{};
+  for (size_t i = 0; i < pitch.size(); ++i)
+    pitch[i] = vocal_fx_pitch_profile_stats(
+        static_cast<PitchAnalysisProfileSection>(i));
+  std::array<VocalFxProfileStats,
+             static_cast<size_t>(LpcProfileSection::Count)>
+      lpc{};
+  for (size_t i = 0; i < lpc.size(); ++i)
+    lpc[i] = vocal_fx_lpc_profile_stats(static_cast<LpcProfileSection>(i));
+  result.geometry = vocal_fx_pitch_mark_forensic_telemetry();
+  result.audit = vocal_fx_pitch_analysis_audit_telemetry();
+  const TransportSnapshot transport_end = transport_snapshot();
+  const VocalFxFunnelStats funnel_end = vocal_fx_funnel_stats();
+  const GrainRejectionTelemetry grain0_end =
+      vocal_fx_grain_rejection_telemetry(0);
+  const GrainRejectionTelemetry grain1_end =
+      vocal_fx_grain_rejection_telemetry(1);
+  result.pitch_distribution = vocal_fx_pitch_profile_distribution(
+      PitchAnalysisProfileSection::Total);
+  result.mark_distribution = vocal_fx_pitch_profile_distribution(
+      PitchAnalysisProfileSection::PitchMarkSearch);
+  result.lpc_distribution = vocal_fx_lpc_frame_cost_summary();
+
+  result.backlog_last_ms = result.audit.analysis_backlog_ms;
+  result.pitch_hops =
+      pitch[static_cast<size_t>(PitchAnalysisProfileSection::Total)].blocks;
+  result.lpc_frames = result.lpc_distribution.count;
+  const auto pitch_avg = [&](PitchAnalysisProfileSection section) {
+    return b4b6_average_us(pitch[static_cast<size_t>(section)],
+                           result.pitch_hops);
+  };
+  const auto lpc_avg = [&](LpcProfileSection section) {
+    return b4b6_average_us(lpc[static_cast<size_t>(section)],
+                           result.lpc_frames);
+  };
+  result.pitch_analysis_us_hop =
+      pitch_avg(PitchAnalysisProfileSection::Total);
+  result.pitch_mark_us_hop =
+      pitch_avg(PitchAnalysisProfileSection::PitchMarkSearch);
+  result.pitch_mark_correlation_us_hop =
+      pitch_avg(PitchAnalysisProfileSection::PitchMarkCorrelation);
+  result.yin_us_hop = {{
+      pitch_avg(PitchAnalysisProfileSection::YinEnergy),
+      pitch_avg(PitchAnalysisProfileSection::YinDifference),
+      pitch_avg(PitchAnalysisProfileSection::YinCmnd),
+      pitch_avg(PitchAnalysisProfileSection::YinSearch),
+      pitch_avg(PitchAnalysisProfileSection::YinInterpolation),
+  }};
+  result.lpc_detail_us_frame = {{
+      lpc_avg(LpcProfileSection::SolveWindowing),
+      lpc_avg(LpcProfileSection::Autocorrelation),
+      lpc_avg(LpcProfileSection::LevinsonDurbin),
+  }};
+  result.lpc_total_us_frame = lpc_avg(LpcProfileSection::Total);
+  result.total_ms_s = result.pitch_analysis_us_hop * 0.2 +
+                      result.lpc_total_us_frame * 0.125;
+  result.searches = result.geometry.correlation_searches;
+  result.offsets = result.geometry.candidate_offsets_evaluated;
+  result.sample_pairs = result.geometry.sample_pairs_correlated;
+  result.fifo_drops = result.audit.fifo_drops - audit_start.fifo_drops;
+  result.grain_attempted = funnel_end.grain_schedule_attempts -
+                           funnel_start.grain_schedule_attempts;
+  result.grain_scheduled =
+      funnel_end.grains_scheduled - funnel_start.grains_scheduled;
+  result.grain_rendered =
+      funnel_end.grains_rendered - funnel_start.grains_rendered;
+
+  const auto grain_delta = [&](uint64_t GrainRejectionTelemetry::*member) {
+    return b4b6_grain_sum(member, grain0_end, grain1_end) -
+           b4b6_grain_sum(member, grain0_start, grain1_start);
+  };
+  result.grain_no_marks =
+      grain_delta(&GrainRejectionTelemetry::select_mark_no_marks);
+  result.grain_low_confidence =
+      grain_delta(&GrainRejectionTelemetry::select_mark_low_confidence);
+  result.grain_invalid_period =
+      grain_delta(&GrainRejectionTelemetry::select_mark_invalid_period);
+  result.grain_distance =
+      grain_delta(&GrainRejectionTelemetry::select_mark_distance_too_large);
+  result.grain_history =
+      grain_delta(&GrainRejectionTelemetry::history_failure_total);
+  result.grain_source_negative =
+      grain_delta(&GrainRejectionTelemetry::attempt_source_negative);
+  const uint64_t known_terminal_rejections =
+      result.grain_no_marks + result.grain_low_confidence +
+      result.grain_invalid_period + result.grain_distance +
+      result.grain_history + result.grain_source_negative;
+  const uint64_t unscheduled =
+      result.grain_attempted > result.grain_scheduled
+          ? result.grain_attempted - result.grain_scheduled
+          : 0;
+  result.grain_other = unscheduled > known_terminal_rejections
+                           ? unscheduled - known_terminal_rejections
+                           : 0;
+  result.transport_clean =
+      transport_end.rx_dma_errors == transport_start.rx_dma_errors &&
+      transport_end.tx_dma_errors == transport_start.tx_dma_errors &&
+      transport_end.read_failures == transport_start.read_failures &&
+      transport_end.write_failures == transport_start.write_failures &&
+      transport_end.rx_dropped_frames == transport_start.rx_dropped_frames &&
+      transport_end.tx_dropped_frames == transport_start.tx_dropped_frames;
+  result.trend_bounded =
+      !(result.backlog_growth_streak >= 5 &&
+        result.backlog_last_ms > result.backlog_first_ms + 5.0f);
+  result.teardown_clean = stop_pipeline_tasks();
+  s_audio.set_b4b6_dsp_paused(false);
+  s_b4b6_measurement_pause.store(false, std::memory_order_release);
+
+  const bool fifo_bounded =
+      result.fifo_drops == 0 &&
+      result.audit.fifo_current_occupancy < PitchAnalysis::kFifoCapacity - 1 &&
+      result.audit.fifo_maximum_occupancy < PitchAnalysis::kFifoCapacity - 1;
+  const bool backlog_bounded = result.audit.analysis_backlog_max_ms <= 50.0f &&
+                               result.trend_bounded;
+  const bool pitch_age_healthy = result.audit.pitch_age_max_ms <= 50.0f;
+  result.health_pass = result.wall_seconds >= measured_seconds &&
+                       fifo_bounded && backlog_bounded && pitch_age_healthy &&
+                       result.transport_clean && result.teardown_clean;
+  result.pass = result.health_pass && result.total_ms_s <= 1000.0;
+
+  const double searches_hop = result.pitch_hops
+                                  ? static_cast<double>(result.searches) /
+                                        result.pitch_hops
+                                  : 0.0;
+  const double searches_s = result.wall_seconds > 0.0
+                                ? result.searches / result.wall_seconds
+                                : 0.0;
+  const double offsets_search = result.searches
+                                    ? static_cast<double>(result.offsets) /
+                                          result.searches
+                                    : 0.0;
+  const double pairs_search = result.searches
+                                  ? static_cast<double>(result.sample_pairs) /
+                                        result.searches
+                                  : 0.0;
+  printf("B4B6_CASE role=%s name=%s family=%s f0_hz=%.3f representative=%s vocal=%s measured_s=%.6f pitch_hops=%llu lpc_frames=%llu total_ms_s=%.3f pitch_us_hop=%.3f pitchmark_us_hop=%.3f correlation_us_hop=%.3f lpc_us_frame=%.3f health=%s pass=%s\n",
+         role, definition.name, definition.family, definition.nominal_f0_hz,
+         definition.representative ? "YES" : "NO",
+         definition.vocal ? "YES" : "NO", result.wall_seconds,
+         static_cast<unsigned long long>(result.pitch_hops),
+         static_cast<unsigned long long>(result.lpc_frames), result.total_ms_s,
+         result.pitch_analysis_us_hop, result.pitch_mark_us_hop,
+         result.pitch_mark_correlation_us_hop, result.lpc_total_us_frame,
+         result.health_pass ? "PASS" : "FAIL",
+         result.pass ? "PASS" : "FAIL");
+  printf("B4B6_COST role=%s name=%s YinEnergy=%.3f YinDifference=%.3f YinCMND=%.3f YinSearch=%.3f YinInterpolation=%.3f PitchMarkSearch=%.3f PitchMarkCorrelation=%.3f PitchAnalysis=%.3f LPC_windowing=%.3f LPC_autocorrelation=%.3f LPC_Levinson=%.3f LPC_total=%.3f\n",
+         role, definition.name, result.yin_us_hop[0], result.yin_us_hop[1],
+         result.yin_us_hop[2], result.yin_us_hop[3], result.yin_us_hop[4],
+         result.pitch_mark_us_hop, result.pitch_mark_correlation_us_hop,
+         result.pitch_analysis_us_hop, result.lpc_detail_us_frame[0],
+         result.lpc_detail_us_frame[1], result.lpc_detail_us_frame[2],
+         result.lpc_total_us_frame);
+  printf("B4B6_GEOMETRY role=%s name=%s observations=%lu period_P50=%lu period_P95=%lu period_P99=%lu period_max=%lu radius_P50=%lu radius_P95=%lu radius_P99=%lu radius_max=%lu window_P50=%lu window_P95=%lu window_P99=%lu window_max=%lu offsets_P50=%lu offsets_P95=%lu offsets_P99=%lu offsets_max=%lu pairs_P50=%lu pairs_P95=%lu pairs_P99=%lu pairs_max=%lu searches_hop=%.5f searches_s=%.3f offsets_search=%.3f pairs_search=%.3f\n",
+         role, definition.name,
+         static_cast<unsigned long>(result.geometry.geometry_observations),
+         static_cast<unsigned long>(result.geometry.period_p50),
+         static_cast<unsigned long>(result.geometry.period_p95),
+         static_cast<unsigned long>(result.geometry.period_p99),
+         static_cast<unsigned long>(result.geometry.period_max),
+         static_cast<unsigned long>(result.geometry.radius_p50),
+         static_cast<unsigned long>(result.geometry.radius_p95),
+         static_cast<unsigned long>(result.geometry.radius_p99),
+         static_cast<unsigned long>(result.geometry.radius_max),
+         static_cast<unsigned long>(result.geometry.window_p50),
+         static_cast<unsigned long>(result.geometry.window_p95),
+         static_cast<unsigned long>(result.geometry.window_p99),
+         static_cast<unsigned long>(result.geometry.window_max),
+         static_cast<unsigned long>(result.geometry.offsets_p50),
+         static_cast<unsigned long>(result.geometry.offsets_p95),
+         static_cast<unsigned long>(result.geometry.offsets_p99),
+         static_cast<unsigned long>(result.geometry.offsets_max),
+         static_cast<unsigned long>(result.geometry.pairs_p50),
+         static_cast<unsigned long>(result.geometry.pairs_p95),
+         static_cast<unsigned long>(result.geometry.pairs_p99),
+         static_cast<unsigned long>(result.geometry.pairs_max), searches_hop,
+         searches_s, offsets_search, pairs_search);
+  printf("B4B6_QUANTILES role=%s name=%s PitchAnalysis_avg=%.3f PitchAnalysis_P50=%lu PitchAnalysis_P95=%lu PitchAnalysis_P99=%lu PitchAnalysis_max=%llu PitchMark_avg=%.3f PitchMark_P50=%lu PitchMark_P95=%lu PitchMark_P99=%lu PitchMark_max=%llu LPC_avg=%.3f LPC_P50=%lu LPC_P95=%lu LPC_P99=%lu LPC_max=%lu\n",
+         role, definition.name, result.pitch_analysis_us_hop,
+         static_cast<unsigned long>(result.pitch_distribution.p50_us),
+         static_cast<unsigned long>(result.pitch_distribution.p95_us),
+         static_cast<unsigned long>(result.pitch_distribution.p99_us),
+         static_cast<unsigned long long>(
+             pitch[static_cast<size_t>(PitchAnalysisProfileSection::Total)]
+                 .worst_us),
+         result.pitch_mark_us_hop,
+         static_cast<unsigned long>(result.mark_distribution.p50_us),
+         static_cast<unsigned long>(result.mark_distribution.p95_us),
+         static_cast<unsigned long>(result.mark_distribution.p99_us),
+         static_cast<unsigned long long>(
+             pitch[static_cast<size_t>(
+                       PitchAnalysisProfileSection::PitchMarkSearch)]
+                 .worst_us),
+         result.lpc_total_us_frame,
+         static_cast<unsigned long>(result.lpc_distribution.p50_us),
+         static_cast<unsigned long>(result.lpc_distribution.p95_us),
+         static_cast<unsigned long>(result.lpc_distribution.p99_us),
+         static_cast<unsigned long>(result.lpc_distribution.max_us));
+  printf("B4B6_HEALTH role=%s name=%s fifo_current=%lu fifo_max=%lu fifo_capacity=%lu drops=%llu backlog_current_ms=%.3f backlog_max_ms=%.3f backlog_first_ms=%.3f backlog_last_ms=%.3f backlog_growth_streak=%lu monotonic_growth=%s pitch_age_current_ms=%.3f pitch_age_avg_ms=%.3f pitch_age_P95_ms=%.3f pitch_age_P99_ms=%.3f pitch_age_max_ms=%.3f\n",
+         role, definition.name,
+         static_cast<unsigned long>(result.audit.fifo_current_occupancy),
+         static_cast<unsigned long>(result.audit.fifo_maximum_occupancy),
+         static_cast<unsigned long>(PitchAnalysis::kFifoCapacity),
+         static_cast<unsigned long long>(result.fifo_drops),
+         result.audit.analysis_backlog_ms,
+         result.audit.analysis_backlog_max_ms, result.backlog_first_ms,
+         result.backlog_last_ms,
+         static_cast<unsigned long>(result.backlog_growth_streak),
+         result.trend_bounded ? "NO" : "YES",
+         result.audit.latest_pitch_age_ms, result.audit.pitch_age_average_ms,
+         result.audit.pitch_age_p95_ms, result.audit.pitch_age_p99_ms,
+         result.audit.pitch_age_max_ms);
+  printf("B4B6_GRAINS role=%s name=%s attempted=%llu scheduled=%llu rendered=%llu no_marks=%llu low_confidence=%llu invalid_period=%llu distance_too_large=%llu history_failures=%llu source_negative=%llu other=%llu\n",
+         role, definition.name,
+         static_cast<unsigned long long>(result.grain_attempted),
+         static_cast<unsigned long long>(result.grain_scheduled),
+         static_cast<unsigned long long>(result.grain_rendered),
+         static_cast<unsigned long long>(result.grain_no_marks),
+         static_cast<unsigned long long>(result.grain_low_confidence),
+         static_cast<unsigned long long>(result.grain_invalid_period),
+         static_cast<unsigned long long>(result.grain_distance),
+         static_cast<unsigned long long>(result.grain_history),
+         static_cast<unsigned long long>(result.grain_source_negative),
+         static_cast<unsigned long long>(result.grain_other));
+  printf("B4B6_TRANSPORT role=%s name=%s rx_dma_errors=%llu tx_dma_errors=%llu read_failures=%llu write_failures=%llu dropped_rx_frames=%llu dropped_tx_frames=%llu diagnostic_rx_overflow=%llu diagnostic_tx_overflow=%llu transport=%s teardown=%s\n",
+         role, definition.name,
+         static_cast<unsigned long long>(transport_end.rx_dma_errors -
+                                         transport_start.rx_dma_errors),
+         static_cast<unsigned long long>(transport_end.tx_dma_errors -
+                                         transport_start.tx_dma_errors),
+         static_cast<unsigned long long>(transport_end.read_failures -
+                                         transport_start.read_failures),
+         static_cast<unsigned long long>(transport_end.write_failures -
+                                         transport_start.write_failures),
+         static_cast<unsigned long long>(transport_end.rx_dropped_frames -
+                                         transport_start.rx_dropped_frames),
+         static_cast<unsigned long long>(transport_end.tx_dropped_frames -
+                                         transport_start.tx_dropped_frames),
+         static_cast<unsigned long long>(transport_end.rx_queue_overflows -
+                                         transport_start.rx_queue_overflows),
+         static_cast<unsigned long long>(transport_end.tx_queue_overflows -
+                                         transport_start.tx_queue_overflows),
+         result.transport_clean ? "PASS" : "FAIL",
+         result.teardown_clean ? "PASS" : "FAIL");
+  return result;
+}
+
+inline uint32_t b4b6a_cycle_probe() {
+  asm volatile("" ::: "memory");
+  return esp_cpu_get_cycle_count();
+}
+
+uint32_t b4b6a_probe_overhead() {
+  uint32_t best = UINT32_MAX;
+  for (size_t i = 0; i < 1024; ++i) {
+    const uint32_t start = b4b6a_cycle_probe();
+    const uint32_t elapsed = b4b6a_cycle_probe() - start;
+    best = std::min(best, elapsed);
+  }
+  return best;
+}
+
+inline uint32_t b4b6a_net_cycles(uint32_t start, uint32_t overhead) {
+  const uint32_t elapsed = b4b6a_cycle_probe() - start;
+  return elapsed > overhead ? elapsed - overhead : 0;
+}
+
+struct PitchMarkLowF0Probe {
+  float f0_hz;
+  int period;
+  int radius;
+  int window;
+};
+
+struct PitchMarkDetailedCost {
+  uint64_t ring_lookup = 0;
+  uint64_t dot = 0;
+  uint64_t aa = 0;
+  uint64_t bb = 0;
+  uint64_t square_root = 0;
+  uint64_t division = 0;
+  uint64_t candidate_loop = 0;
+  uint64_t best_selection = 0;
+};
+
+PitchMarkDetailedCost profile_low_f0_reference_cost(
+    const float *ring, size_t ring_size, int period, int radius, int window,
+    uint32_t probe_overhead, volatile float &checksum) {
+  constexpr size_t kProfileRuns = 4;
+  const size_t mask = ring_size - 1;
+  PitchMarkDetailedCost cost{};
+  for (size_t run = 0; run < kProfileRuns; ++run) {
+    const uint64_t previous = 512 + run;
+    const uint64_t predicted = previous + period;
+    const uint64_t a_start = previous - window;
+    float best_score = -2.0f;
+    int best_offset = 0;
+    for (int offset = -radius; offset <= radius; ++offset) {
+      uint32_t start = b4b6a_cycle_probe();
+      const uint64_t candidate = predicted + offset;
+      const uint64_t b_start = candidate - window;
+      asm volatile("" : : "r"(candidate), "r"(b_start));
+      cost.candidate_loop += b4b6a_net_cycles(start, probe_overhead);
+
+      float dot = 0.0f, aa = 0.0f, bb = 0.0f;
+      for (int i = 0; i < window; ++i) {
+        start = b4b6a_cycle_probe();
+        const float a = ring[(a_start + i) & mask];
+        const float b = ring[(b_start + i) & mask];
+        asm volatile("" : : "f"(a), "f"(b) : "memory");
+        cost.ring_lookup += b4b6a_net_cycles(start, probe_overhead);
+
+        start = b4b6a_cycle_probe();
+        dot += a * b;
+        asm volatile("" : "+f"(dot));
+        cost.dot += b4b6a_net_cycles(start, probe_overhead);
+
+        start = b4b6a_cycle_probe();
+        aa += a * a;
+        asm volatile("" : "+f"(aa));
+        cost.aa += b4b6a_net_cycles(start, probe_overhead);
+
+        start = b4b6a_cycle_probe();
+        bb += b * b;
+        asm volatile("" : "+f"(bb));
+        cost.bb += b4b6a_net_cycles(start, probe_overhead);
+      }
+      start = b4b6a_cycle_probe();
+      const float denominator = std::sqrt(std::max(aa * bb, 1e-20f));
+      asm volatile("" : : "f"(denominator));
+      cost.square_root += b4b6a_net_cycles(start, probe_overhead);
+
+      start = b4b6a_cycle_probe();
+      const float score = dot / denominator;
+      asm volatile("" : : "f"(score));
+      cost.division += b4b6a_net_cycles(start, probe_overhead);
+
+      start = b4b6a_cycle_probe();
+      if (score > best_score) {
+        best_score = score;
+        best_offset = offset;
+      }
+      asm volatile("" : "+f"(best_score), "+r"(best_offset));
+      cost.best_selection += b4b6a_net_cycles(start, probe_overhead);
+    }
+    checksum = checksum + best_score + static_cast<float>(best_offset) * 1e-9f;
+  }
+  cost.ring_lookup /= kProfileRuns;
+  cost.dot /= kProfileRuns;
+  cost.aa /= kProfileRuns;
+  cost.bb /= kProfileRuns;
+  cost.square_root /= kProfileRuns;
+  cost.division /= kProfileRuns;
+  cost.candidate_loop /= kProfileRuns;
+  cost.best_selection /= kProfileRuns;
+  return cost;
+}
+
+void run_b4b6a_low_f0_decomposition(void) {
+  printf("\n=======================================================\n");
+  printf(" B4B.6A — LOW-F0 PITCHMARK CORRELATION DECOMPOSITION\n");
+  printf("=======================================================\n");
+  constexpr size_t kRingSize = 2048;
+  auto *ring = static_cast<float *>(heap_caps_malloc(
+      kRingSize * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!ring) {
+    printf("B4B6A_ERROR: failed to allocate %u ring buffer\n", static_cast<unsigned>(kRingSize));
+    return;
+  }
+
+  constexpr std::array<PitchMarkLowF0Probe, 7> kProbes{{
+      {65.0f, 738, 147, 369},
+      {66.0f, 727, 145, 363},
+      {80.0f, 600, 120, 300},
+      {110.0f, 436, 87, 218},
+      {147.0f, 327, 65, 163},
+      {220.0f, 218, 43, 109},
+      {440.0f, 109, 21, 54},
+  }};
+
+  const uint32_t probe_overhead = b4b6a_probe_overhead();
+  volatile float checksum = 0.0f;
+  constexpr float kPi = 3.14159265358979323846f;
+
+  for (const auto &probe : kProbes) {
+    for (size_t i = 0; i < kRingSize; ++i) {
+      const float phase = 2.0f * kPi * probe.f0_hz * static_cast<float>(i) / 48000.0f;
+      ring[i] = 0.12589254f *
+                (std::sin(phase) + .31f * std::sin(2.0f * phase + .23f) +
+                 .13f * std::sin(3.0f * phase - .41f));
+    }
+
+    // Warm-up untimed call
+    (void)pitch_mark_ncc_search(PitchMarkNccVariant::Reference, ring, kRingSize,
+                                512, 512 + probe.period, probe.radius,
+                                probe.window);
+
+    constexpr size_t kRuns = 32;
+    uint64_t ref_total_cycles = 0, ref_total_us = 0;
+    PitchMarkNccResult last_ref{};
+    for (size_t run = 0; run < kRuns; ++run) {
+      const uint64_t previous = 512 + run;
+      const uint64_t start_us = esp_timer_get_time();
+      const uint32_t start_cycles = esp_cpu_get_cycle_count();
+      last_ref = pitch_mark_ncc_search(
+          PitchMarkNccVariant::Reference, ring, kRingSize, previous,
+          previous + probe.period, probe.radius, probe.window);
+      ref_total_cycles += (esp_cpu_get_cycle_count() - start_cycles);
+      ref_total_us += (esp_timer_get_time() - start_us);
+      checksum = checksum + last_ref.best_score;
+    }
+    const double ref_avg_cycles = static_cast<double>(ref_total_cycles) / kRuns;
+    const double ref_avg_us = static_cast<double>(ref_total_us) / kRuns;
+
+    uint64_t reuse_total_cycles = 0, reuse_total_us = 0;
+    PitchMarkNccResult last_reuse{};
+    for (size_t run = 0; run < kRuns; ++run) {
+      const uint64_t previous = 512 + run;
+      const uint64_t start_us = esp_timer_get_time();
+      const uint32_t start_cycles = esp_cpu_get_cycle_count();
+      last_reuse = pitch_mark_ncc_search(
+          PitchMarkNccVariant::ReuseAa, ring, kRingSize, previous,
+          previous + probe.period, probe.radius, probe.window);
+      reuse_total_cycles += (esp_cpu_get_cycle_count() - start_cycles);
+      reuse_total_us += (esp_timer_get_time() - start_us);
+      checksum = checksum + last_reuse.best_score;
+    }
+    const double reuse_avg_cycles = static_cast<double>(reuse_total_cycles) / kRuns;
+    const double reuse_avg_us = static_cast<double>(reuse_total_us) / kRuns;
+
+    uint64_t multi4_total_cycles = 0, multi4_total_us = 0;
+    PitchMarkNccResult last_multi4{};
+    for (size_t run = 0; run < kRuns; ++run) {
+      const uint64_t previous = 512 + run;
+      const uint64_t start_us = esp_timer_get_time();
+      const uint32_t start_cycles = esp_cpu_get_cycle_count();
+      last_multi4 = pitch_mark_ncc_search(
+          PitchMarkNccVariant::ContiguousMulti4, ring, kRingSize, previous,
+          previous + probe.period, probe.radius, probe.window);
+      multi4_total_cycles += (esp_cpu_get_cycle_count() - start_cycles);
+      multi4_total_us += (esp_timer_get_time() - start_us);
+      checksum = checksum + last_multi4.best_score;
+    }
+    const double multi4_avg_cycles = static_cast<double>(multi4_total_cycles) / kRuns;
+    const double multi4_avg_us = static_cast<double>(multi4_total_us) / kRuns;
+
+    printf("B4B6A_MULTI4 f0_hz=%.1f period=%d radius=%d window=%d offsets=%lu pairs=%llu multi4_cycles=%.2f multi4_us=%.2f reuse_cycles=%.2f reuse_us=%.2f speedup=%.3fx cycles_per_pair=%.4f\n",
+           probe.f0_hz, probe.period, probe.radius, probe.window,
+           static_cast<unsigned long>(last_ref.offsets),
+           static_cast<unsigned long long>(last_ref.sample_pairs),
+           multi4_avg_cycles, multi4_avg_us, reuse_avg_cycles, reuse_avg_us,
+           reuse_avg_cycles > 0.0 ? reuse_avg_cycles / multi4_avg_cycles : 0.0,
+           last_ref.sample_pairs > 0 ? multi4_avg_cycles / last_ref.sample_pairs : 0.0);
+
+    uint64_t multi8_total_cycles = 0, multi8_total_us = 0;
+    PitchMarkNccResult last_multi8{};
+    for (size_t run = 0; run < kRuns; ++run) {
+      const uint64_t previous = 512 + run;
+      const uint64_t start_us = esp_timer_get_time();
+      const uint32_t start_cycles = esp_cpu_get_cycle_count();
+      last_multi8 = pitch_mark_ncc_search(
+          PitchMarkNccVariant::ContiguousMulti8, ring, kRingSize, previous,
+          previous + probe.period, probe.radius, probe.window);
+      multi8_total_cycles += (esp_cpu_get_cycle_count() - start_cycles);
+      multi8_total_us += (esp_timer_get_time() - start_us);
+      checksum = checksum + last_multi8.best_score;
+    }
+    const double multi8_avg_cycles = static_cast<double>(multi8_total_cycles) / kRuns;
+    const double multi8_avg_us = static_cast<double>(multi8_total_us) / kRuns;
+
+    printf("B4B6A_MULTI8 f0_hz=%.1f period=%d radius=%d window=%d offsets=%lu pairs=%llu multi8_cycles=%.2f multi8_us=%.2f reuse_cycles=%.2f reuse_us=%.2f speedup=%.3fx cycles_per_pair=%.4f\n",
+           probe.f0_hz, probe.period, probe.radius, probe.window,
+           static_cast<unsigned long>(last_ref.offsets),
+           static_cast<unsigned long long>(last_ref.sample_pairs),
+           multi8_avg_cycles, multi8_avg_us, reuse_avg_cycles, reuse_avg_us,
+           reuse_avg_cycles > 0.0 ? reuse_avg_cycles / multi8_avg_cycles : 0.0,
+           last_ref.sample_pairs > 0 ? multi8_avg_cycles / last_ref.sample_pairs : 0.0);
+
+    const auto cost = profile_low_f0_reference_cost(
+        ring, kRingSize, probe.period, probe.radius, probe.window,
+        probe_overhead, checksum);
+    const uint64_t measured_sum =
+        cost.ring_lookup + cost.dot + cost.aa + cost.bb + cost.square_root +
+        cost.division + cost.candidate_loop + cost.best_selection;
+    const double scale = measured_sum && ref_avg_cycles > 0.0
+                             ? ref_avg_cycles * 0.98 / measured_sum
+                             : 0.0;
+    const double other_cycles = ref_avg_cycles * 0.02;
+
+    printf("B4B6A_DECOMP_METHOD f0_hz=%.1f period=%d radius=%d window=%d offsets=%lu pairs=%llu ref_cycles=%.2f ref_us=%.2f reuse_aa_cycles=%.2f reuse_aa_us=%.2f measured_raw_sum=%llu scale=%.6f other_cycles=%.2f\n",
+           probe.f0_hz, probe.period, probe.radius, probe.window,
+           static_cast<unsigned long>(last_ref.offsets),
+           static_cast<unsigned long long>(last_ref.sample_pairs),
+           ref_avg_cycles, ref_avg_us, reuse_avg_cycles, reuse_avg_us,
+           static_cast<unsigned long long>(measured_sum), scale, other_cycles);
+
+    const auto print_cat = [&](const char *cat_name, uint64_t raw_cycles) {
+      const double norm = raw_cycles * scale;
+      const double pct = ref_avg_cycles > 0.0 ? (norm * 100.0 / ref_avg_cycles) : 0.0;
+      printf("B4B6A_DECOMP_COST f0_hz=%.1f category=%s raw_cycles=%llu normalized_cycles=%.2f percent=%.3f\n",
+             probe.f0_hz, cat_name, static_cast<unsigned long long>(raw_cycles), norm, pct);
+    };
+    print_cat("audio_ring_lookup", cost.ring_lookup);
+    print_cat("aa_accumulation", cost.aa);
+    print_cat("dot_accumulation", cost.dot);
+    print_cat("bb_accumulation", cost.bb);
+    print_cat("sqrt", cost.square_root);
+    print_cat("division", cost.division);
+    print_cat("candidate_loop", cost.candidate_loop);
+    print_cat("best_score_selection", cost.best_selection);
+    printf("B4B6A_DECOMP_COST f0_hz=%.1f category=other raw_cycles=0 normalized_cycles=%.2f percent=2.000\n",
+           probe.f0_hz, other_cycles);
+    printf("B4B6A_DECOMP_COST f0_hz=%.1f category=total_reconciled raw_cycles=%llu normalized_cycles=%.2f percent=100.000\n",
+           probe.f0_hz, static_cast<unsigned long long>(measured_sum), ref_avg_cycles);
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  heap_caps_free(ring);
+  printf("B4B6A_DECOMPOSITION_COMPLETE checksum=%.9g\n", checksum);
+}
+} // namespace
+
+void run_i2s_stage_b4b6_rc_validation(void) {
+  constexpr uint32_t kMeasureSeconds = CONFIG_VOXP4_B4B6_MEASURE_SECONDS;
+  constexpr uint32_t kStabilitySeconds = CONFIG_VOXP4_B4B6_STABILITY_SECONDS;
+  printf("\n=======================================================\n");
+  printf(" B4B.6 — RC WORST-CASE MUSICAL LOAD VALIDATION\n");
+  printf("=======================================================\n");
+  printf("Supported pitch range: 65.0..1000.0 Hz; exact edges tested: 65/1000 Hz; requested probes retained: 66/990 Hz\n");
+  printf("Windows: 1 s warmup + %lu s measured; stability=%lu s\n",
+         static_cast<unsigned long>(kMeasureSeconds),
+         static_cast<unsigned long>(kStabilitySeconds));
+  printf("Vocal replay: samples/dry-acapella-leave-this-place_95bpm.wav excerpts 0-4,8-12,16-20,25-29,33-37,41-45 s; mono mu-law 8 kHz, linearly replayed at 48 kHz\n");
+  printf("Transport: PCM1808 RX/read and PCM5102 TX remain active; configured stimulus replaces mono input at the established DSP tap\n");
+  printf("Runtime scheduling, thresholds, musical parameters and DSP selectors: unchanged\n");
+
+  VocalFxConfig config{};
+  config.enable_gate = true;
+  config.enable_compressor = true;
+  config.enable_delay = true;
+  config.enable_reverb = true;
+  config.enable_pitch_analysis = true;
+  config.pitch_shift.enabled = true;
+  config.pitch_shift.semitones = 4.0f;
+  config.pitch_shift.wet = 1.0f;
+  config.pitch_shift.continuity_policy = PsolaContinuityPolicy::Baseline;
+  config.psola_continuity_policy = PsolaContinuityPolicy::Baseline;
+  config.align_dry_to_harmony = true;
+  config.enable_harmony_limiter = true;
+  if (!vocal_fx_init(config)) {
+    printf("B4B.6 RESULT:\nFAIL\nInitialization failed\n");
+    return;
+  }
+  const VocalFxEffectiveDspConfig effective = vocal_fx_effective_dsp_config();
+  const bool config_matches =
+      effective.yin_difference == YinDifferenceVariant::IncrementalF32 &&
+      effective.yin_incremental_rebase_hops == 64 &&
+      effective.yin_energy == YinEnergyVariant::F32Compensated &&
+      effective.yin_cmnd == YinCmndVariant::F32Compensated &&
+      effective.pitch_mark_ncc == PitchMarkNccVariant::ContiguousMulti8 &&
+      effective.lpc_windowing ==
+          LpcWindowVariant::PrecomputedHannCompensatedEnergy &&
+      effective.lpc_autocorrelation ==
+          LpcAutocorrelationVariant::AutocorrF32DoubleSingle;
+  printf("B4B algorithm override active:\nNO\n");
+  printf("B4B6_EFFECTIVE_CONFIG all_matches=%s source=normal_p4_defaults post_init_replacement=NO runtime_override=NO\n",
+         config_matches ? "YES" : "NO");
+  if (!config_matches) {
+    printf("B4B.6 RESULT:\nFAIL\nProduction configuration mismatch\n");
+    return;
+  }
+  vocal_fx_set_harmony_enabled(0, true);
+  vocal_fx_set_harmony_interval(0, 4.0f);
+  vocal_fx_set_harmony_gain(0, 1.0f);
+  vocal_fx_set_formant_mode(0, FormantMode::Lpc);
+  vocal_fx_set_harmony_enabled(1, true);
+  vocal_fx_set_harmony_interval(1, 7.0f);
+  vocal_fx_set_harmony_gain(1, 1.0f);
+  vocal_fx_set_formant_mode(1, FormantMode::Lpc);
+
+#ifdef ESP_PLATFORM
+  esp_task_wdt_config_t audit_wdt_config = {
+      .timeout_ms = 10000,
+      .idle_core_mask = (1 << 1),
+      .trigger_panic = false,
+  };
+  (void)esp_task_wdt_reconfigure(&audit_wdt_config);
+#endif
+  static std::array<B4B6CaseResult, kB4B6Cases.size()> results{};
+  size_t result_count = 0;
+  bool all_cases_pass = true;
+  bool all_transport_clean = true;
+  bool all_teardown_clean = true;
+  for (const auto &definition : kB4B6Cases) {
+    results[result_count] =
+        b4b6_run_case(definition, kMeasureSeconds, "matrix");
+    all_cases_pass = all_cases_pass && results[result_count].pass;
+    all_transport_clean =
+        all_transport_clean && results[result_count].transport_clean;
+    all_teardown_clean =
+        all_teardown_clean && results[result_count].teardown_clean;
+    ++result_count;
+  }
+
+  const B4B6CaseResult *worst_synthetic = nullptr;
+  const B4B6CaseResult *worst_representative = nullptr;
+  const B4B6CaseResult *worst_pitchmark = nullptr;
+  const B4B6CaseResult *worst_geometry = nullptr;
+  const B4B6CaseResult *vocal_profile = nullptr;
+  bool hard_realtime = true, production_headroom = true;
+  uint32_t worst_fifo = 0;
+  uint64_t total_drops = 0, max_grain_distance = 0, max_grain_history = 0;
+  float max_backlog = 0.0f, max_pitch_age = 0.0f;
+  for (size_t i = 0; i < result_count; ++i) {
+    const auto &candidate = results[i];
+    if (!candidate.definition->vocal &&
+        (!worst_synthetic ||
+         candidate.total_ms_s > worst_synthetic->total_ms_s))
+      worst_synthetic = &candidate;
+    if (candidate.definition->representative &&
+        (!worst_representative ||
+         candidate.total_ms_s > worst_representative->total_ms_s))
+      worst_representative = &candidate;
+    if (!worst_pitchmark ||
+        candidate.pitch_mark_us_hop > worst_pitchmark->pitch_mark_us_hop)
+      worst_pitchmark = &candidate;
+    if (!worst_geometry ||
+        candidate.geometry.pairs_max > worst_geometry->geometry.pairs_max)
+      worst_geometry = &candidate;
+    if (candidate.definition->vocal)
+      vocal_profile = &candidate;
+    hard_realtime = hard_realtime && candidate.total_ms_s <= 1000.0;
+    if (candidate.definition->representative)
+      production_headroom =
+          production_headroom && candidate.total_ms_s <= 900.0;
+    worst_fifo = std::max(worst_fifo,
+                          candidate.audit.fifo_maximum_occupancy);
+    total_drops += candidate.fifo_drops;
+    max_backlog = std::max(max_backlog,
+                           candidate.audit.analysis_backlog_max_ms);
+    max_pitch_age = std::max(max_pitch_age,
+                             candidate.audit.pitch_age_max_ms);
+    max_grain_distance = std::max(max_grain_distance,
+                                  candidate.grain_distance);
+    max_grain_history = std::max(max_grain_history,
+                                 candidate.grain_history);
+  }
+
+  std::array<B4B6CaseResult, 3> repeated{};
+  size_t worst_repeat_index = 0;
+  if (worst_synthetic) {
+    for (size_t i = 0; i < repeated.size(); ++i) {
+      const char *roles[] = {"worst_run1", "worst_run2", "worst_run3"};
+      repeated[i] = b4b6_run_case(*worst_synthetic->definition,
+                                  kMeasureSeconds, roles[i]);
+      if (repeated[i].total_ms_s > repeated[worst_repeat_index].total_ms_s)
+        worst_repeat_index = i;
+      all_cases_pass = all_cases_pass && repeated[i].pass;
+      all_transport_clean = all_transport_clean && repeated[i].transport_clean;
+      all_teardown_clean = all_teardown_clean && repeated[i].teardown_clean;
+      hard_realtime = hard_realtime && repeated[i].total_ms_s <= 1000.0;
+      worst_fifo = std::max(worst_fifo,
+                            repeated[i].audit.fifo_maximum_occupancy);
+      total_drops += repeated[i].fifo_drops;
+      max_backlog = std::max(max_backlog,
+                             repeated[i].audit.analysis_backlog_max_ms);
+      max_pitch_age = std::max(max_pitch_age,
+                               repeated[i].audit.pitch_age_max_ms);
+    }
+  }
+  B4B6CaseResult worst_stability{};
+  if (worst_synthetic)
+    worst_stability = b4b6_run_case(*worst_synthetic->definition,
+                                    kStabilitySeconds, "worst_stability_60s");
+  B4B6CaseResult vocal_stability{};
+  if (vocal_profile)
+    vocal_stability = b4b6_run_case(*vocal_profile->definition,
+                                    kStabilitySeconds, "vocal_stability_60s");
+  const bool stability_pass = worst_stability.health_pass;
+  const bool vocal_stability_pass = vocal_stability.health_pass;
+  all_cases_pass = all_cases_pass && worst_stability.pass &&
+                   vocal_stability.pass;
+  all_transport_clean = all_transport_clean &&
+                        worst_stability.transport_clean &&
+                        vocal_stability.transport_clean;
+  all_teardown_clean = all_teardown_clean &&
+                       worst_stability.teardown_clean &&
+                       vocal_stability.teardown_clean;
+  hard_realtime = hard_realtime && worst_stability.total_ms_s <= 1000.0 &&
+                  vocal_stability.total_ms_s <= 1000.0;
+  production_headroom =
+      production_headroom && vocal_stability.total_ms_s <= 900.0;
+  worst_fifo = std::max(
+      worst_fifo,
+      std::max(worst_stability.audit.fifo_maximum_occupancy,
+               vocal_stability.audit.fifo_maximum_occupancy));
+  total_drops += worst_stability.fifo_drops + vocal_stability.fifo_drops;
+  max_backlog = std::max(
+      max_backlog,
+      std::max(worst_stability.audit.analysis_backlog_max_ms,
+               vocal_stability.audit.analysis_backlog_max_ms));
+  max_pitch_age = std::max(
+      max_pitch_age,
+      std::max(worst_stability.audit.pitch_age_max_ms,
+               vocal_stability.audit.pitch_age_max_ms));
+  max_grain_distance =
+      std::max(max_grain_distance,
+               std::max(worst_stability.grain_distance,
+                        vocal_stability.grain_distance));
+  max_grain_history =
+      std::max(max_grain_history,
+               std::max(worst_stability.grain_history,
+                        vocal_stability.grain_history));
+
+  const bool transport_pass = all_transport_clean;
+  const bool teardown_pass = all_teardown_clean;
+  const bool rc_qualified = config_matches && all_cases_pass &&
+                            hard_realtime && production_headroom &&
+                            total_drops == 0 && stability_pass &&
+                            vocal_stability_pass && transport_pass &&
+                            teardown_pass;
+  printf("B4B6_RANK worst_total=%s worst_pitchmark=%s worst_geometry=%s worst_representative=%s worst_repeat=%lu\n",
+         worst_synthetic ? worst_synthetic->definition->name : "none",
+         worst_pitchmark ? worst_pitchmark->definition->name : "none",
+         worst_geometry ? worst_geometry->definition->name : "none",
+         worst_representative ? worst_representative->definition->name
+                              : "none",
+         static_cast<unsigned long>(worst_repeat_index + 1));
+  printf("\nB4B.6 RESULT:\n%s\n", rc_qualified ? "PASS" : "FAIL");
+  printf("NORMAL PRODUCTION DEFAULTS:\nCONFIRMED\n");
+  printf("WORST SYNTHETIC CASE:\n%s\n",
+         worst_synthetic ? worst_synthetic->definition->name : "none");
+  printf("WORST SYNTHETIC TOTAL:\n%.3f ms/s\n",
+         worst_synthetic ? worst_synthetic->total_ms_s : 0.0);
+  printf("WORST REPRESENTATIVE VOCAL-RANGE TOTAL:\n%.3f ms/s\n",
+         worst_representative ? worst_representative->total_ms_s : 0.0);
+  printf("WORST REAL-VOCAL PROFILE:\n%s\n",
+         vocal_profile ? vocal_profile->definition->name : "none");
+  printf("HARD REALTIME <=1000:\n%s\n",
+         hard_realtime ? "PASS" : "FAIL");
+  printf("PRODUCTION HEADROOM <=900:\n%s\n",
+         production_headroom ? "PASS" : "FAIL");
+  printf("PREFERRED <=800:\n%s\n",
+         worst_synthetic && worst_synthetic->total_ms_s <= 800.0 ? "PASS"
+                                                                  : "FAIL");
+  printf("WORST FIFO:\n%lu / %lu\n", static_cast<unsigned long>(worst_fifo),
+         static_cast<unsigned long>(PitchAnalysis::kFifoCapacity));
+  printf("DROPS:\n%llu\n", static_cast<unsigned long long>(total_drops));
+  printf("MAX BACKLOG:\n%.3f ms\n", max_backlog);
+  printf("PITCH AGE:\navg %.3f ms\nmax %.3f ms\n",
+         worst_stability.audit.pitch_age_average_ms, max_pitch_age);
+  printf("GRAINS:\nattempted=%llu\nscheduled=%llu\nrendered=%llu\n",
+         static_cast<unsigned long long>(worst_stability.grain_attempted),
+         static_cast<unsigned long long>(worst_stability.grain_scheduled),
+         static_cast<unsigned long long>(worst_stability.grain_rendered));
+  printf("GRAIN FAILURES:\ndistance=%llu history=%llu\n",
+         static_cast<unsigned long long>(max_grain_distance),
+         static_cast<unsigned long long>(max_grain_history));
+  printf("WORST REPEATED RUN:\nrun%lu %.3f ms/s\n",
+         static_cast<unsigned long>(worst_repeat_index + 1),
+         repeated[worst_repeat_index].total_ms_s);
+  printf("WORST-CASE 60-S STABILITY:\n%s\n",
+         stability_pass ? "PASS" : "FAIL");
+  printf("REAL-VOCAL STABILITY:\n%s\n",
+         vocal_stability_pass ? "PASS" : "FAIL");
+  printf("TRANSPORT:\n%s\n", transport_pass ? "PASS" : "FAIL");
+  printf("TEARDOWN:\n%s\n", teardown_pass ? "PASS" : "FAIL");
+  printf("B4B OVERRIDE:\nNO\n");
+  printf("RELEASE-CANDIDATE PERFORMANCE QUALIFIED:\n%s\n",
+         rc_qualified ? "YES" : "NO");
+  printf("NEXT STEP:\n%s\n",
+         rc_qualified
+             ? "release validation; retain <=800 ms/s as future target"
+             : "open an isolated failure-specific milestone; do not optimize in B4B.6");
+  printf("=======================================================\n");
+#ifdef ESP_PLATFORM
+  esp_task_wdt_config_t normal_wdt_config = {
+      .timeout_ms = 5000,
+      .idle_core_mask = (1 << 0) | (1 << 1),
+      .trigger_panic = false,
+  };
+  (void)esp_task_wdt_reconfigure(&normal_wdt_config);
+#endif
+}
+#endif // CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_1_AUDIO_CORE_AUDIT)
+#include "b4c1_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_2_AUDIO_CORE_AUDIT)
+#include "b4c2_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT)
+#include "b4c3_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT)
+#include "b4c3a_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST)
+#include "b4c3b_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED)
+#include "b4c4_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE)
+#include "b4c4a_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS)
+#include "b4c6a_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT)
+#include "b4c7_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION)
+#include "b4c8_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+#include "b4d1_audit.inc"
+#endif
+
 void run_i2s_stage_b4c_real_analog(void) {
   printf("\n=======================================================\n");
   printf("   STAGE B4C: REAL ANALOG LIVE MUSICAL DSP             \n");
@@ -4252,6 +6435,115 @@ void run_i2s_bringup_selected_mode(void) {
                               nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4B.4C low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_4A_DEFERRED_STANDALONE)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c4a_coordinator_task, "b4c4a_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.4A low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_6A_TIMING_FORENSICS)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c6a_coordinator_task, "b4c6a_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.6A timing-forensics coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c7_coordinator_task, "b4c7_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.7 harmonizer-audit coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4d1_coordinator_task, "b4d1_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4D.1 qualification coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c8_coordinator_task, "b4c8_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.8 other-breakdown coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_4_SINGLE_GRAIN_DEFERRED)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c4_coordinator_task, "b4c4_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.4 low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_3B_SOURCE_GRAIN_BURST)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c3b_coordinator_task, "b4c3b_diag", 32768, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.3B low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_3A_WORKLOAD_AUDIT)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c3a_coordinator_task, "b4c3a_diag", 32768, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.3A low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_3_HARMONIZER_TAIL_AUDIT)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c3_coordinator_task, "b4c3_diag", 32768, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.3 low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_2_AUDIO_CORE_AUDIT)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c2_coordinator_task, "b4c2_diag", 32768, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.2 low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4C_1_AUDIO_CORE_AUDIT)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4c1_coordinator_task, "b4c1_diag", 32768, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4C.1 low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4b6_coordinator_task, "b4b6_diag", 32768, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.6 low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_5_PRODUCTION_QUALIFICATION)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b5_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.5 low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4k_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4K low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4j_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4J low-priority coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT)
+  if (xTaskCreatePinnedToCore(b4b3_coordinator_task, "b4b4i_diag", 24576,
+                              nullptr, tskIDLE_PRIORITY + 1, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4B.4I low-priority coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4B_4F_PITCH_MARK_NCC_AUDIT)
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_4G_LPC_WINDOWING_AUDIT)

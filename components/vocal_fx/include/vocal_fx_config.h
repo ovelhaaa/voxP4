@@ -70,6 +70,8 @@ enum class PitchMarkNccVariant : uint8_t {
   Fma8AccDot,
   Fma8SlidingBb,
   LinearScratch,
+  ContiguousMulti4,
+  ContiguousMulti8,
 };
 
 // Stage B4B.4D keeps the original scalar implementation available as the
@@ -83,6 +85,23 @@ enum class YinDifferenceVariant : uint8_t {
   Fma8Acc,
   IncrementalF32,
   IncrementalDoubleSingle,
+};
+
+// Stage B4B.4J keeps the original binary64 normalization as a permanent
+// numerical oracle while qualifying binary32 implementations on ESP32-P4.
+enum class YinCmndVariant : uint8_t {
+  ReferenceDouble,
+  DoubleSumF32Div,
+  F32,
+  F32Compensated,
+};
+
+// Stage B4B.4K keeps the original binary64 sum-of-squares as an oracle and
+// qualifies binary32 accumulation kernels without changing the RMS formula.
+enum class YinEnergyVariant : uint8_t {
+  ReferenceDouble,
+  F32,
+  F32Compensated,
 };
 
 struct PitchAnalysisConfig {
@@ -108,6 +127,8 @@ struct PitchAnalysisConfig {
   // Zero disables periodic rebases (drift-study only). Incremental variants
   // always bootstrap and recover from discontinuities with Fma8Acc.
   uint8_t yin_incremental_rebase_hops = 8;
+  YinCmndVariant yin_cmnd = YinCmndVariant::ReferenceDouble;
+  YinEnergyVariant yin_energy = YinEnergyVariant::ReferenceDouble;
   PitchMarkNccVariant pitch_mark_ncc = PitchMarkNccVariant::Reference;
   PsolaContinuityPolicy continuity_policy = PsolaContinuityPolicy::Baseline;
   float coast_ms = 0.0f;

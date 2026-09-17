@@ -11,6 +11,42 @@ static int failures = 0;
 int main() {
   std::printf("=== Running Milestone 5.10.1 Formant Stabilization Tests ===\n");
 
+  // B4C.5: the deferred formant cache must not reuse a warped model when any
+  // input to warp or GainNorm changed.  Bitwise comparisons are intentional:
+  // this is an exact-form key, not an approximate DSP cache key.
+  {
+    FormantWarpCache cache;
+    std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> source{};
+    std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> warped{};
+    source[0] = 1.0f;
+    source[1] = -0.42f;
+    warped[0] = 1.0f;
+    warped[1] = -0.37f;
+    cache.update(17, 1, source.data(), 0.25f, 0.985f,
+                 FormantNormalizationStrategy::StrategyC_IntegratedSpectral,
+                 warped, 1.1f, 48000.0f);
+    CHECK(cache.is_hit(17, 1, source.data(), 0.25f, 0.985f,
+                       FormantNormalizationStrategy::StrategyC_IntegratedSpectral,
+                       48000.0f));
+    auto changed = source;
+    changed[1] = -0.420001f;
+    CHECK(!cache.is_hit(17, 1, changed.data(), 0.25f, 0.985f,
+                        FormantNormalizationStrategy::StrategyC_IntegratedSpectral,
+                        48000.0f));
+    CHECK(!cache.is_hit(17, 1, source.data(), 0.25f, 0.985f,
+                        FormantNormalizationStrategy::StrategyC_IntegratedSpectral,
+                        44100.0f));
+    CHECK(!cache.is_hit(17, 1, source.data(), 0.25f, 0.984f,
+                        FormantNormalizationStrategy::StrategyC_IntegratedSpectral,
+                        48000.0f));
+    CHECK(!cache.is_hit(17, 1, source.data(), 0.25f, 0.985f,
+                        FormantNormalizationStrategy::StrategyA_DC, 48000.0f));
+    CHECK(!cache.is_hit(18, 1, source.data(), 0.25f, 0.985f,
+                        FormantNormalizationStrategy::StrategyC_IntegratedSpectral,
+                        48000.0f));
+    std::printf("B4C5 exact formant cache key: PASS\n");
+  }
+
   constexpr size_t n = 1024;
   std::vector<float> signal(n, 0.0f);
   for (size_t i = 0; i < n; ++i) {

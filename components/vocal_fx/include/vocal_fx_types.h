@@ -1,5 +1,7 @@
 #pragma once
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -231,6 +233,29 @@ enum class RejectionReason : uint8_t {
   Other = 8
 };
 
+enum class PsolaLpcKernel : uint8_t {
+  Reference = 0,
+  ContiguousExact = 1,
+  ContiguousMulti4 = 2,
+  ContiguousMulti8 = 3,
+};
+
+enum class PsolaOlaKernel : uint8_t {
+  Reference = 0,
+  Contiguous = 1,
+};
+
+enum class PsolaGrainKernel : uint8_t {
+  Reference = 0,
+  ContiguousMulti4 = 1,
+  ContiguousMulti8 = 2,
+};
+
+enum class PsolaSynthesisKernel : uint8_t {
+  Reference = 0,
+  UnrolledExact = 1,
+};
+
 struct PitchShiftConfig {
   bool enabled = false;
   float semitones = 0.0f;
@@ -264,6 +289,10 @@ struct PitchShiftConfig {
   float f0_continuity_tolerance_cents = 150.0f;
   float max_unvoiced_zcr = 0.35f;
   float min_unvoiced_r1 = 0.30f;
+  PsolaLpcKernel lpc_kernel = PsolaLpcKernel::ContiguousMulti8;
+  PsolaOlaKernel ola_kernel = PsolaOlaKernel::Contiguous;
+  PsolaGrainKernel grain_kernel = PsolaGrainKernel::ContiguousMulti8;
+  PsolaSynthesisKernel synthesis_kernel = PsolaSynthesisKernel::UnrolledExact;
 };
 
 struct PitchShiftDebug {
@@ -329,15 +358,31 @@ struct PitchShiftDebug {
 };
 
 enum class PitchShiftProfileSection : uint8_t {
-  SourceLookup,
-  GrainPreparation,
-  WindowOla,
-  Normalization,
-  Unvoiced,
-  Crossfade,
+  MarkSelection = 0,
+  GrainScheduling,
+  GrainHistoryLookup,
+  PlainWindowOLA,
+  LpcResidualFIR,
+  LpcModelLookup,
+  LpcModelWarpPolynomial,
+  LpcModelWarpGainNorm,
+  LpcWindowOLA,
+  LpcSynthesisAllPole,
+  LpcStateShift,
+  FormantGainMatcher,
+  FormantSoftClip,
+  FormantBlend,
+  Fallback,
+  Articulation,
+  PlosiveBridge,
+  Telemetry,
+  Other,
   Total,
   Count
 };
+
+// Backwards compatibility alias
+constexpr PitchShiftProfileSection PitchShiftProfileSection_LpcModelLookupWarp = PitchShiftProfileSection::LpcModelLookup;
 
 struct PitchShiftTelemetry {
   uint64_t blocks = 0;
@@ -354,6 +399,312 @@ struct PitchShiftTelemetry {
   uint64_t formant_resets = 0;
   float max_restored = 0.0f;
   PitchShiftState state = PitchShiftState::Bypass;
+};
+
+struct SourceGrainKey {
+  uint64_t mark_center = 0;
+  uint32_t half_window = 0;
+  uint64_t lpc_timestamp = 0;
+  uint16_t lpc_order = 0;
+  uint32_t lambda_bits = 0;
+  uint32_t gamma_bits = 0;
+  uint8_t norm_strategy = 0;
+
+  bool operator==(const SourceGrainKey &o) const {
+    return mark_center == o.mark_center &&
+           half_window == o.half_window &&
+           lpc_timestamp == o.lpc_timestamp &&
+           lpc_order == o.lpc_order &&
+           lambda_bits == o.lambda_bits &&
+           gamma_bits == o.gamma_bits &&
+           norm_strategy == o.norm_strategy;
+  }
+};
+
+struct PsolaSourceResidualCacheStats {
+  uint64_t total_lookups = 0;
+  uint64_t hits = 0;
+  uint64_t misses = 0;
+  uint64_t evictions = 0;
+  uint64_t fir_samples_computed = 0;
+  uint64_t fir_samples_reused = 0;
+  uint64_t fir_cycles_saved = 0;
+  uint64_t total_lookup_cycles = 0;
+  uint64_t total_fir_cycles = 0;
+  std::array<uint64_t, 10> reuse_distance_hist{}; // 1, 2, 3, 4, 5, 6, 7, 8, 9..16, >16
+
+  double hit_rate_pct() const {
+    return total_lookups > 0 ? (100.0 * static_cast<double>(hits) / total_lookups) : 0.0;
+  }
+  double sample_hit_rate_pct() const {
+    const uint64_t tot = fir_samples_computed + fir_samples_reused;
+    return tot > 0 ? (100.0 * static_cast<double>(fir_samples_reused) / tot) : 0.0;
+  }
+  void reset() { *this = PsolaSourceResidualCacheStats{}; }
+};
+
+struct PsolaPrecomputeStats {
+  uint64_t precomputes_attempted = 0;
+  uint64_t precomputes_completed = 0;
+  uint64_t precomputes_consumed = 0;
+  uint64_t precomputes_expired = 0;
+  uint64_t synchronous_fallbacks = 0;
+  uint32_t queue_max_depth = 0;
+
+  void reset() { *this = PsolaPrecomputeStats{}; }
+};
+
+enum class PsolaGrainRenderMode : uint8_t {
+  Eager = 0,
+  DeferredSlice = 1,
+};
+
+enum class PsolaFirKernel : uint8_t {
+  ContiguousScalar = 0,
+  Multi2 = 1,
+  Multi4 = 2,
+  Multi8 = 3,
+  MultiFma = 4,
+};
+
+struct SingleGrainBenchmarkResult {
+  size_t grain_length = 0;
+  size_t order = 10;
+  // Component cycles
+  uint32_t history_setup_cycles = 0;
+  uint32_t model_lookup_cycles = 0;
+  uint32_t warp_cache_lookup_cycles = 0;
+  uint32_t warp_poly_cycles = 0;
+  uint32_t gain_norm_cycles = 0;
+  uint32_t fir_cycles = 0;
+  uint32_t window_cycles = 0;
+  uint32_t ola_write_cycles = 0;
+  uint32_t norm_write_cycles = 0;
+  uint32_t other_cycles = 0;
+  uint32_t total_add_grain_cycles = 0;
+  // Microseconds @ 360 MHz
+  double history_setup_us = 0.0;
+  double model_lookup_us = 0.0;
+  double warp_cache_lookup_us = 0.0;
+  double warp_poly_us = 0.0;
+  double gain_norm_us = 0.0;
+  double fir_us = 0.0;
+  double window_us = 0.0;
+  double ola_write_us = 0.0;
+  double norm_write_us = 0.0;
+  double other_us = 0.0;
+  double total_add_grain_us = 0.0;
+  // Metrics
+  double cycles_per_source_sample = 0.0;
+  double cycles_per_fir_tap = 0.0;
+  double reconciliation_pct = 100.0;
+};
+
+struct PsolaDeferredStats {
+  uint64_t descriptors_allocated = 0;
+  uint64_t descriptors_retired = 0;
+  uint64_t slices_rendered = 0;
+  uint64_t slice_samples_rendered = 0;
+  uint64_t slice_fir_samples = 0;
+  uint32_t max_active_descriptors = 0;
+  void reset() { *this = PsolaDeferredStats{}; }
+};
+
+struct HarmonizerBlockTraceRecord {
+  uint32_t block_index = 0;
+  float block_runtime_us = 0.0f;
+  float pipeline_base_us = 0.0f;
+  float voice0_runtime_us = 0.0f;
+  float voice1_runtime_us = 0.0f;
+  // Distinct names prescribed by B4C.3A
+  uint8_t new_grains_scheduled_v0 = 0;
+  uint8_t new_grains_scheduled_v1 = 0;
+  uint8_t active_grains_rendered_v0 = 0;
+  uint8_t active_grains_rendered_v1 = 0;
+  uint8_t source_grains_built_v0 = 0;
+  uint8_t source_grains_built_v1 = 0;
+  uint16_t grain_samples_processed = 0;
+  uint16_t unique_grain_samples = 0;
+  uint8_t unique_source_grain_keys = 0;
+  uint8_t duplicate_source_grain_keys = 0;
+  uint8_t model_warp_lookups = 0;
+  uint8_t model_warp_expensive_calls = 0;
+  float model_warp_us = 0.0f;
+  uint64_t lpc_model_timestamp = 0;
+  uint8_t formant_model_changed = 0;
+  uint8_t pitch_changed = 0;
+  uint8_t track_state = 0;
+  uint8_t fallback_active = 0;
+  uint8_t articulation_active = 0;
+  uint8_t plosive_active = 0;
+  uint8_t recovery_active = 0;
+  float render_slack_blocks_min = 0.0f;
+
+  // Prescribed B4C.3B trace metrics
+  uint8_t residual_cache_hits_v0 = 0;
+  uint8_t residual_cache_hits_v1 = 0;
+  uint8_t residual_cache_misses_v0 = 0;
+  uint8_t residual_cache_misses_v1 = 0;
+  uint16_t fir_samples_computed = 0;
+  uint16_t fir_samples_reused = 0;
+  uint8_t active_overlapping_grains_v0 = 0;
+  uint8_t active_overlapping_grains_v1 = 0;
+  uint8_t precompute_queue_depth = 0;
+  uint8_t precompute_expired_count = 0;
+
+  // Prescribed B4C.4 deferred metrics
+  uint8_t deferred_active_grains_v0 = 0;
+  uint8_t deferred_active_grains_v1 = 0;
+  uint8_t deferred_slices_rendered_v0 = 0;
+  uint8_t deferred_slices_rendered_v1 = 0;
+  uint16_t deferred_fir_samples_v0 = 0;
+  uint16_t deferred_fir_samples_v1 = 0;
+
+  // Backwards compatibility accessors
+  uint8_t grains_scheduled_v0() const { return new_grains_scheduled_v0; }
+  uint8_t grains_scheduled_v1() const { return new_grains_scheduled_v1; }
+  uint8_t grains_rendered_v0() const { return active_grains_rendered_v0; }
+  uint8_t grains_rendered_v1() const { return active_grains_rendered_v1; }
+  uint8_t model_warp_calls() const { return model_warp_lookups; }
+};
+
+struct PsolaModelWarpAudit {
+  uint64_t model_near_calls = 0;
+  uint64_t model_near_cycles = 0;
+  uint64_t lambda_calc_calls = 0;
+  uint64_t lambda_calc_cycles = 0;
+  uint64_t cache_lookup_calls = 0;
+  uint64_t cache_lookup_cycles = 0;
+  uint64_t cache_hit_calls = 0;
+  uint64_t cache_hit_cycles = 0;
+  uint64_t cache_miss_calls = 0;
+  uint64_t cache_miss_cycles = 0;
+  uint64_t warp_poly_calls = 0;
+  uint64_t warp_poly_cycles = 0;
+  uint64_t gain_norm_calls = 0;
+  uint64_t gain_norm_cycles = 0;
+  uint64_t coeff_copy_calls = 0;
+  uint64_t coeff_copy_cycles = 0;
+  uint64_t local_hits = 0;
+  uint64_t shared_hits = 0;
+  uint64_t neutral_hits = 0;
+  uint64_t expensive_computations = 0;
+
+  void reset() { *this = PsolaModelWarpAudit{}; }
+};
+
+struct PsolaSourceGrainAudit {
+  uint64_t source_grains_requested = 0;
+  uint64_t unique_source_grains = 0;
+  uint64_t duplicate_source_grains = 0;
+  uint64_t same_voice_reuses = 0;
+  uint64_t cross_voice_reuses = 0;
+  uint64_t total_grain_samples = 0;
+  uint64_t reusable_grain_samples = 0;
+
+  double reuse_ratio_pct() const {
+    return source_grains_requested > 0
+               ? (100.0 * static_cast<double>(duplicate_source_grains) /
+                  static_cast<double>(source_grains_requested))
+               : 0.0;
+  }
+  double cross_voice_reuse_pct() const {
+    return source_grains_requested > 0
+               ? (100.0 * static_cast<double>(cross_voice_reuses) /
+                  static_cast<double>(source_grains_requested))
+               : 0.0;
+  }
+  double same_voice_reuse_pct() const {
+    return source_grains_requested > 0
+               ? (100.0 * static_cast<double>(same_voice_reuses) /
+                  static_cast<double>(source_grains_requested))
+               : 0.0;
+  }
+  double weighted_reusable_samples_pct() const {
+    return total_grain_samples > 0
+               ? (100.0 * static_cast<double>(reusable_grain_samples) /
+                  static_cast<double>(total_grain_samples))
+               : 0.0;
+  }
+  void reset() { *this = PsolaSourceGrainAudit{}; }
+};
+
+// B4C.7 exact slice-level reuse snapshot (observability only).
+struct B4C7SliceAuditSnapshot {
+  uint64_t slices_requested = 0;
+  uint64_t duplicates = 0;
+  uint64_t cross_voice = 0;
+  uint64_t same_voice = 0;
+  uint64_t samples = 0;
+  uint64_t reusable_samples = 0;
+  uint64_t fir_taps = 0;
+  uint64_t reusable_taps = 0;
+  uint64_t entry_drops = 0;
+};
+
+struct PsolaSchedulingSlackAudit {
+  static constexpr size_t kHistogramBins = 64; // 0..63 blocks
+  uint64_t total_grains = 0;
+  uint64_t slack_ge_1_block = 0;
+  uint64_t slack_ge_2_blocks = 0;
+  uint64_t slack_ge_4_blocks = 0;
+  uint64_t slack_ge_8_blocks = 0;
+  float min_slack_blocks = 9999.0f;
+  float max_slack_blocks = -9999.0f;
+  uint64_t histogram[kHistogramBins]{0};
+
+  void record(float slack_blocks) {
+    ++total_grains;
+    min_slack_blocks = std::min(min_slack_blocks, slack_blocks);
+    max_slack_blocks = std::max(max_slack_blocks, slack_blocks);
+    if (slack_blocks >= 1.0f) ++slack_ge_1_block;
+    if (slack_blocks >= 2.0f) ++slack_ge_2_blocks;
+    if (slack_blocks >= 4.0f) ++slack_ge_4_blocks;
+    if (slack_blocks >= 8.0f) ++slack_ge_8_blocks;
+    const int bin = std::clamp(static_cast<int>(std::floor(slack_blocks)), 0, static_cast<int>(kHistogramBins - 1));
+    histogram[bin]++;
+  }
+
+  double pct_ge_1_block() const {
+    return total_grains > 0 ? (100.0 * static_cast<double>(slack_ge_1_block) / total_grains) : 0.0;
+  }
+  double pct_ge_2_blocks() const {
+    return total_grains > 0 ? (100.0 * static_cast<double>(slack_ge_2_blocks) / total_grains) : 0.0;
+  }
+  double pct_ge_4_blocks() const {
+    return total_grains > 0 ? (100.0 * static_cast<double>(slack_ge_4_blocks) / total_grains) : 0.0;
+  }
+  double pct_ge_8_blocks() const {
+    return total_grains > 0 ? (100.0 * static_cast<double>(slack_ge_8_blocks) / total_grains) : 0.0;
+  }
+
+  float calculate_percentile_blocks(double p) const {
+    if (total_grains == 0) return 0.0f;
+    const uint64_t target = static_cast<uint64_t>(std::ceil(p * 0.01 * total_grains));
+    uint64_t cum = 0;
+    for (size_t i = 0; i < kHistogramBins; ++i) {
+      cum += histogram[i];
+      if (cum >= target) {
+        return static_cast<float>(i) + 0.5f;
+      }
+    }
+    return max_slack_blocks;
+  }
+
+  void reset() {
+    *this = PsolaSchedulingSlackAudit{};
+  }
+};
+
+struct PsolaWarpCacheStats {
+  uint64_t total_calls = 0;
+  uint64_t local_hits = 0;
+  uint64_t shared_hits = 0;
+  uint64_t neutral_hits = 0;
+  uint64_t misses = 0;
+  double hit_rate_pct() const {
+    return total_calls > 0 ? 100.0 * static_cast<double>(local_hits + shared_hits + neutral_hits) / static_cast<double>(total_calls) : 0.0;
+  }
 };
 
 enum class GrainFailureReason : uint8_t {
@@ -439,6 +790,15 @@ struct PitchResult {
   float spectral_centroid = 0.0f;
   float high_frequency_ratio = 0.0f;
   float zero_crossing_rate = 0.0f;
+#ifndef ESP_PLATFORM
+  // Host-only B4B.4K observability. These mirror existing intermediates and do
+  // not alter the embedded PitchResult layout or the production algorithm.
+  float detector_rms_db = -160.0f;
+  float detector_linear_energy = 0.0f;
+  float previous_energy_before = 0.0f;
+  float previous_energy_after = 0.0f;
+  bool level_ok = false;
+#endif
   uint8_t pitch_track_state = 0;
   uint32_t coast_remaining = 0;
   // Centre of the analysis window in original input sample positions.
@@ -501,8 +861,12 @@ struct PitchAnalysisAuditTelemetry {
   uint64_t analysis_backlog_max_samples = 0;
   float analysis_backlog_ms = 0.0f;
   float analysis_backlog_max_ms = 0.0f;
+  float analysis_backlog_average_ms = 0.0f;
+  float analysis_backlog_p95_ms = 0.0f;
+  float analysis_backlog_p99_ms = 0.0f;
   float latest_pitch_age_ms = 0.0f;
   float pitch_age_average_ms = 0.0f;
+  float pitch_age_p50_ms = 0.0f;
   float pitch_age_p95_ms = 0.0f;
   float pitch_age_p99_ms = 0.0f;
   float pitch_age_max_ms = 0.0f;
@@ -547,6 +911,12 @@ struct YinForensicTelemetry {
   uint64_t periodic_rebases = 0;
   uint64_t incremental_update_terms = 0;
   uint64_t full_rebase_products = 0;
+  float yin_threshold = 0.0f;
+  float selected_cmnd_minimum = 1.0f;
+  float selected_cmnd_average = 0.0f;
+  float closest_threshold_distance = 1.0f;
+  uint32_t selected_tau_minimum = 0;
+  uint32_t selected_tau_maximum = 0;
 };
 
 struct PitchMarkForensicTelemetry {
@@ -701,7 +1071,20 @@ enum class VocalFxProfileSection : uint8_t {
   BusMixing,
   DelayPrep,
   ReverbPrep,
+  HarmonyVoice0,
+  HarmonyVoice1,
+  InputHpf,
+  InputGate,
+  MasterMix,
+  MasterLimiter,
   Count
+};
+
+struct VocalFxLimiterDiagnostics {
+  float harmony_pre_peak = 0.0f;
+  float harmony_post_peak = 0.0f;
+  float master_peak = 0.0f;
+  float max_reduction_db = 0.0f;
 };
 struct VocalFxProfileStats {
   uint64_t blocks = 0;
@@ -710,6 +1093,12 @@ struct VocalFxProfileStats {
   uint64_t deadline_misses = 0;
   uint64_t total_cycles = 0;
   uint64_t worst_cycles = 0;
+};
+struct VocalFxProfileDistribution {
+  uint32_t p50_us = 0;
+  uint32_t p95_us = 0;
+  uint32_t p99_us = 0;
+  uint32_t samples = 0;
 };
 
 struct VocalFxBufferAudit {
@@ -745,4 +1134,136 @@ struct PitchSyncDiagnostics {
   uint64_t try_marks_start_gt_end = 0;
   uint64_t last_mark_count = 0;
   uint64_t last_mark_end = 0;
+};
+
+// B4C.8: Voice-Other subcategory breakdown (18 non-overlapping categories).
+// Cycle counters only; no DSP behavior change.
+enum class B4c8OtherCategory : uint8_t {
+  DeferredDescriptorTraversal = 0,  // A: scan active deferred descriptors
+  ActiveDescriptorTests,             // B: deferred_grains_[i].active checks
+  SliceGeometryClipping,             // C: n_min, n_max computation
+  SourceRingIndex,                   // D: history_available / ring-index per sample
+  HistorySourceFetchScaffolding,     // E: history_at overhead (excluding measured fetch)
+  PerSampleLoopControl,              // F: loop overhead, branch, register spills
+  NormalizationDenomGuards,          // G: norm_[oi] > 1e-5 checks
+  OlaBufferIndexWrap,                // H: oi = (block_start + i) & mask
+  SynthesisStateScaffolding,         // I: synthesis_state_ load/store (excl IIR MAC)
+  FormantStatePreparation,           // J: formant checks (excl GainNorm/warp)
+  WetDryGainSmoothing,               // K: psola_gain_, active_mix_, current_wet_
+  RecoveryFallbackBranchTests,       // L: condition checks
+  CrossfadeBlendMix,                 // M: crossfade theta, w_old, w_new
+  TelemetryStateUpdate,              // N: debug_ assignments
+  DiagnosticTraceFill,               // O: HarmonizerBlockTraceRecord assembly
+  ProfilerOverhead,                  // P: VF_PROFILE_BEGIN/END cycle reads
+  BoundsSafetyChecks,                // Q: isfinite, range checks
+  OtherUnattributed,                 // R: everything else
+  Count
+};
+
+// B4C.8: Per-voice Other breakdown snapshot (per block).
+struct B4c8OtherBreakdown {
+  uint64_t cycles[static_cast<size_t>(B4c8OtherCategory::Count)] = {};
+  uint32_t total_accounted = 0;
+  uint32_t total_other = 0;
+  uint32_t total_block = 0;
+};
+
+// B4C.8: Slow-block event (DSP block exceeding threshold).
+// Fixed-size, low-overhead, no allocation during timed window.
+struct B4c8SlowBlockRecord {
+  uint64_t timestamp_us = 0;       // esp_timer_get_time at capture
+  uint32_t block_duration_us = 0;  // measured block wall time
+  uint32_t block_index = 0;        // sequential block number
+  uint8_t core = 0;                // executing core
+  uint8_t voice_active_mask = 0;   // bit 0=V0 enabled, bit 1=V1 enabled
+  uint8_t new_grains_v0 = 0;
+  uint8_t new_grains_v1 = 0;
+  uint8_t active_descriptors_v0 = 0;
+  uint8_t active_descriptors_v1 = 0;
+  uint8_t completed_grains_v0 = 0;
+  uint8_t completed_grains_v1 = 0;
+  uint8_t deferred_slices_v0 = 0;
+  uint8_t deferred_slices_v1 = 0;
+  uint16_t source_samples_v0 = 0;
+  uint16_t source_samples_v1 = 0;
+  uint16_t fir_samples_v0 = 0;
+  uint16_t fir_samples_v1 = 0;
+  uint16_t ola_samples = 0;
+  uint16_t synthesis_samples = 0;
+  uint8_t gainnorm_calls = 0;
+  uint8_t model_changes = 0;
+  uint8_t mark_count = 0;
+  float pitch_f0 = 0.0f;
+  uint32_t descriptor_create_calls = 0;
+  // Major section totals (us, accumulated across both voices)
+  uint32_t section_lpc_window_ola_us = 0;
+  uint32_t section_synthesis_iir_us = 0;
+  uint32_t section_residual_fir_us = 0;
+  uint32_t section_state_shift_us = 0;
+  uint32_t section_global_tap_us = 0;
+  uint32_t section_gain_match_us = 0;
+  uint32_t section_pitch_sync_us = 0;
+  uint32_t section_model_lookup_us = 0;
+  uint32_t section_mark_select_us = 0;
+  uint32_t section_other_combined_us = 0;
+};
+
+// B4C.8B: Per-block record for contingency table and MC delta breakdown.
+struct B4c8bBlockRecord {
+  uint32_t block_id = 0;        // global audio-block ID
+  uint32_t dsp_cycles = 0;      // this voice's total process_shared cycles
+  uint8_t voice_index = 0;      // 0 or 1
+  uint8_t model_change = 0;     // 0=no MC, 1=MC this block
+  uint8_t deadline_miss = 0;    // 0=met, 1=missed (>1333 us)
+  uint8_t voice_class = 0;      // 0=NEITHER, 1=V0_ONLY, 2=V1_ONLY, 3=BOTH
+  uint8_t new_grains = 0;
+  uint8_t active_descriptors = 0;
+  uint8_t deferred_slices = 0;
+  uint8_t model_warp_expensive = 0;
+  uint16_t fir_samples = 0;
+  float pitch_f0 = 0.0f;
+  // Section breakdown (cycles) for MC delta attribution.
+  uint32_t sec_mark_sel = 0;
+  uint32_t sec_grain_sched = 0;
+  uint32_t sec_hist_lookup = 0;
+  uint32_t sec_model_lookup = 0;
+  uint32_t sec_warp_poly = 0;
+  uint32_t sec_warp_gainnorm = 0;
+  uint32_t sec_residual_fir = 0;
+  uint32_t sec_window_ola = 0;
+  uint32_t sec_synth = 0;
+  uint32_t sec_state_shift = 0;
+  uint32_t sec_gain_match = 0;
+  uint32_t sec_soft_clip = 0;
+  uint32_t sec_blend = 0;
+  uint32_t sec_fallback = 0;
+  uint32_t sec_articulation = 0;
+  uint32_t sec_plosive = 0;
+  uint32_t sec_telemetry = 0;
+  uint32_t sec_other = 0;
+  uint32_t sec_deferred_render = 0;
+  uint32_t sec_usability = 0;
+};
+
+// B4C.8B: Voice activity class for audio block.
+enum class B4c8bVoiceClass : uint8_t {
+  NeitherActive = 0,
+  V0Only = 1,
+  V1Only = 2,
+  BothActive = 3,
+};
+
+// B4C.8: Stall event (single DSP block >10 ms).
+struct B4c8StallEvent {
+  uint64_t timestamp_us = 0;
+  uint32_t block_duration_us = 0;
+  uint32_t block_index = 0;
+  uint8_t core = 0;
+  uint8_t voice_active_mask = 0;
+  uint8_t pre_stall_section = 0;   // which section was active
+  uint8_t pitch_sync_state = 0;    // pitch tracker state
+  uint8_t analysis_published = 0;  // whether analysis was just published
+  uint8_t diag_ring_writes = 0;    // diagnostic ring write state
+  uint8_t psram_activity = 0;      // PSRAM diagnostic activity
+  uint8_t i2s_state = 0;           // I2S DMA state
 };

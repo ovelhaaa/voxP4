@@ -186,15 +186,15 @@ float HarmonyPlosiveBridge::process_sample(float source_sample,
     if (silence_samples_count_ >= phrase_start_thresh_samples_) {
       is_phrase_start_ = true;
     }
-    if (silence_samples_count_ >= 480) { // 10 ms closure resets cooldown
+    if (silence_samples_count_ >= static_cast<uint32_t>(0.010f * sample_rate_)) { // 10 ms closure resets cooldown
       cooldown_samples_ = 0;
     }
   } else {
     silence_samples_count_ = 0;
-    if (vocal_active_samples_ < 48000) {
+    if (vocal_active_samples_ < static_cast<uint32_t>(sample_rate_)) {
       ++vocal_active_samples_;
     }
-    if (vocal_active_samples_ >= 240) { // 5 ms vocal activity clears phrase-start
+    if (vocal_active_samples_ >= static_cast<uint32_t>(0.005f * sample_rate_)) { // 5 ms vocal activity clears phrase-start
       is_phrase_start_ = false;
     }
   }

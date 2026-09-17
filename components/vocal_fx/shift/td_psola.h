@@ -8,7 +8,92 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <algorithm>
+#include <cstring>
+
+struct FormantWarpCache {
+  uint64_t model_timestamp = 0;
+  uint16_t order = 0;
+  uint32_t lambda_bits = 0;
+  uint32_t gamma_bits = 0;
+  uint32_t sample_rate_bits = 0;
+  uint8_t norm_strategy = 0;
+  bool valid = false;
+  float formant_filter_gain = 1.0f;
+  std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> source_coefficients{};
+  std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> warped_coefficients{};
+
+  static uint32_t f2b(float f) {
+    uint32_t b;
+    std::memcpy(&b, &f, sizeof(b));
+    return b;
+  }
+
+  bool is_hit(uint64_t ts, uint16_t ord, const float *source, float lambda,
+              float gamma, FormantNormalizationStrategy strat,
+              float sample_rate) const {
+    if (!source || ord > VOCAL_FX_LPC_MAX_ORDER) return false;
+    if (!valid || model_timestamp != ts || order != ord ||
+        lambda_bits != f2b(lambda) || gamma_bits != f2b(gamma) ||
+        sample_rate_bits != f2b(sample_rate) ||
+        norm_strategy != static_cast<uint8_t>(strat)) return false;
+    for (size_t i = 0; i <= ord; ++i) {
+      if (f2b(source_coefficients[i]) != f2b(source[i])) return false;
+    }
+    return true;
+  }
+
+  void update(uint64_t ts, uint16_t ord, const float *source, float lambda, float gamma,
+              FormantNormalizationStrategy strat,
+              const std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> &coeffs,
+              float gain, float sample_rate) {
+    model_timestamp = ts;
+    order = ord;
+    lambda_bits = f2b(lambda);
+    gamma_bits = f2b(gamma);
+    sample_rate_bits = f2b(sample_rate);
+    norm_strategy = static_cast<uint8_t>(strat);
+    source_coefficients.fill(0.0f);
+    if (source) std::memcpy(source_coefficients.data(), source, (ord + 1) * sizeof(float));
+    warped_coefficients = coeffs;
+    formant_filter_gain = gain;
+    valid = true;
+  }
+
+  void reset() {
+    valid = false;
+    model_timestamp = 0;
+    sample_rate_bits = 0;
+    source_coefficients.fill(0.0f);
+  }
+
+  // B4D.2 (§7): true when every mathematical input matches the cached entry,
+  // i.e. only model_timestamp differs. Observability only; cache semantics are
+  // unchanged.
+  bool math_equal(uint16_t ord, const float *source, float lambda, float gamma,
+                  FormantNormalizationStrategy strat, float sample_rate) const {
+    if (!source || ord > VOCAL_FX_LPC_MAX_ORDER || !valid) return false;
+    if (order != ord || lambda_bits != f2b(lambda) ||
+        gamma_bits != f2b(gamma) ||
+        sample_rate_bits != f2b(sample_rate) ||
+        norm_strategy != static_cast<uint8_t>(strat))
+      return false;
+    for (size_t i = 0; i <= ord; ++i)
+      if (f2b(source_coefficients[i]) != f2b(source[i])) return false;
+    return true;
+  }
+};
+
+struct SourceResidualCacheEntry {
+  SourceGrainKey key{};
+  int half_window = 0;
+  uint32_t sample_count = 0;
+  uint32_t last_used_generation = 0;
+  float *residual = nullptr;          // points into buffer: length 2*half + 1
+  float *windowed_residual = nullptr; // for Candidate B
+  float *windowed_plain = nullptr;    // for Candidate B
+  float *window = nullptr;            // for Candidate B
+  bool valid = false;
+};
 
 // Single-writer, absolute-addressed historical TD-PSOLA renderer. All storage
 // is owned by the object and process() performs no allocation.
@@ -28,9 +113,114 @@ public:
   size_t history_bytes() const { return sizeof(history_); }
   const void* hann_ptr() const { return hann_.data(); }
   size_t hann_bytes() const { return sizeof(hann_); }
+  static constexpr size_t kMaxGrainScratch = 2048;
+  const float* get_contiguous_history(uint64_t center, uint32_t half, size_t order);
+  FormantWarpCache shared_warp_cache{};
+
+  struct RecentGrainEntry {
+    SourceGrainKey key{};
+    uint8_t voice_id = 0;
+    uint32_t block_index = 0;
+  };
+  static constexpr size_t kRecentGrainsCap = 64;
+  std::array<RecentGrainEntry, kRecentGrainsCap> recent_grains_{};
+  size_t recent_grains_count_ = 0;
+  size_t recent_grains_head_ = 0;
+
+  void register_source_grain(const SourceGrainKey &key, uint8_t voice, uint32_t blk,
+                             bool *out_same, bool *out_cross) {
+    bool same = false;
+    bool cross = false;
+    for (size_t i = 0; i < recent_grains_count_; ++i) {
+      if (recent_grains_[i].key == key) {
+        if (recent_grains_[i].voice_id == voice) same = true;
+        else cross = true;
+      }
+    }
+    if (out_same) *out_same = same;
+    if (out_cross) *out_cross = cross;
+
+    recent_grains_[recent_grains_head_] = {key, voice, blk};
+    recent_grains_head_ = (recent_grains_head_ + 1) % kRecentGrainsCap;
+    if (recent_grains_count_ < kRecentGrainsCap) {
+      recent_grains_count_++;
+    }
+  }
+
+  void reset_audit_forensics() {
+    recent_grains_count_ = 0;
+    recent_grains_head_ = 0;
+    shared_source_grain_audit.reset();
+    shared_scheduling_slack_audit.reset();
+  }
+
+  PsolaSourceGrainAudit shared_source_grain_audit{};
+  PsolaSchedulingSlackAudit shared_scheduling_slack_audit{};
+
+  // B4C.7 exact slice-level reuse audit (observability only; no DSP change).
+  // Deferred slices carry the full descriptor identity plus the rendered clip
+  // [n_min, n_max]. Matches require the complete SourceGrainKey AND the clip,
+  // so shared FIR work is bit-identical by construction. Fixed capacity, no
+  // allocation; disabled by default (zero production impact when off).
+  struct SliceAuditEntry {
+    SourceGrainKey key{};
+    int16_t n_min = 0;
+    int16_t n_max = 0;
+    uint8_t voice_id = 0;
+    uint16_t slice_samples = 0;
+    uint16_t fir_taps = 0;  // slice_samples * order (0 when not LPC)
+    uint32_t block_gen = 0;
+  };
+  // Link-budget constrained: the whole vocal_fx Engine `e` is ONE .bss
+  // input section that must share sram_high (384 KB); even 1.5 KB extra
+  // breaks the link, so ring storage is PSRAM-allocated on enable (cold
+  // path) and freed on disable. Hot-path record cost (~1 us/slice) applies
+  // ONLY to diagnostic windows; qualification windows keep the recorder
+  // disabled (single branch, zero contamination). 32 entries exactly cover
+  // the architectural maximum (16 descriptors/voice x 2 voices x 1 slice
+  // each = 32/block), so entry_drops must stay 0.
+  static constexpr size_t kSliceAuditCap = 32;
+  SliceAuditEntry *slice_ring_ = nullptr;
+  size_t slice_audit_count_ = 0;
+  uint32_t slice_audit_gen_ = 0;
+  bool slice_audit_enabled_ = false;
+  uint64_t slice_audit_entry_drops_ = 0;
+  // Cumulative case totals (audio loop snapshots deltas per block).
+  uint64_t slice_audit_requested_ = 0;
+  uint64_t slice_audit_duplicates_ = 0;
+  uint64_t slice_audit_cross_voice_ = 0;
+  uint64_t slice_audit_same_voice_ = 0;
+  uint64_t slice_audit_samples_ = 0;
+  uint64_t slice_audit_reusable_samples_ = 0;
+  uint64_t slice_audit_taps_ = 0;
+  uint64_t slice_audit_reusable_taps_ = 0;
+
+  void set_slice_audit_enabled(bool enabled);
+  bool slice_audit_enabled() const { return slice_audit_enabled_; }
+  void reset_slice_audit() {
+    slice_audit_count_ = 0;
+    slice_audit_gen_ = 0;
+    slice_audit_entry_drops_ = 0;
+    slice_audit_requested_ = 0;
+    slice_audit_duplicates_ = 0;
+    slice_audit_cross_voice_ = 0;
+    slice_audit_same_voice_ = 0;
+    slice_audit_samples_ = 0;
+    slice_audit_reusable_samples_ = 0;
+    slice_audit_taps_ = 0;
+    slice_audit_reusable_taps_ = 0;
+  }
+  void next_slice_audit_block() {
+    slice_audit_gen_++;
+    slice_audit_count_ = 0;
+  }
+  void record_slice_render(const SourceGrainKey &key, int n_min, int n_max,
+                           uint8_t voice, uint16_t samples, uint16_t taps);
+
 private:
   std::array<float, kHistorySize> history_{};
   std::array<float, kHannSize> hann_{};
+  std::array<float, kMaxGrainScratch> grain_scratch_{};
   uint64_t input_end_ = 0;
 };
 
@@ -44,7 +234,11 @@ public:
   static constexpr size_t kOlaSize = 2048;
   static constexpr size_t kMaxGrainsPerBlock = 32;
   static constexpr uint32_t kHistoryOffset = 1536; // 32 ms at 48 kHz
+  static constexpr size_t kMaxResidualCacheCapacity = 16;
+  static constexpr size_t kMaxGrainSamples = 1601; // half <= 800 (period <= 800 samples)
+  static constexpr size_t kPrecomputeQueueCap = 4;
 
+  ~TdPsola();
   bool init(float sample_rate, const PitchShiftConfig &config,
             SharedPitchShiftResources *shared, const SharedLpcAnalysis *lpc = nullptr,
             uint32_t voice_index = 0);
@@ -94,8 +288,194 @@ public:
   void set_formant_bandwidth_expansion(float bw) { formant_bandwidth_expansion_ = std::clamp(bw, 0.90f, 1.0f); }
   FormantNormalizationStrategy formant_normalization_strategy() const { return formant_normalization_strategy_; }
   void set_formant_normalization_strategy(FormantNormalizationStrategy s) { formant_normalization_strategy_ = s; }
+  void set_kernels(PsolaLpcKernel lpc, PsolaOlaKernel ola,
+                   PsolaGrainKernel grain, PsolaSynthesisKernel synth) {
+    lpc_kernel_ = lpc;
+    ola_kernel_ = ola;
+    grain_kernel_ = grain;
+    synthesis_kernel_ = synth;
+  }
+  PsolaLpcKernel lpc_kernel() const { return lpc_kernel_; }
+  PsolaOlaKernel ola_kernel() const { return ola_kernel_; }
+  PsolaGrainKernel grain_kernel() const { return grain_kernel_; }
+  PsolaSynthesisKernel synthesis_kernel() const { return synthesis_kernel_; }
+
+  void set_warp_cache_enabled(bool enabled) { warp_cache_enabled_ = enabled; }
+  bool warp_cache_enabled() const { return warp_cache_enabled_; }
+  void set_shared_warp_cache_enabled(bool enabled) { shared_warp_cache_enabled_ = enabled; }
+  bool shared_warp_cache_enabled() const { return shared_warp_cache_enabled_; }
+  void set_neutral_warp_fast_path_enabled(bool enabled) { neutral_warp_fast_path_enabled_ = enabled; }
+  bool neutral_warp_fast_path_enabled() const { return neutral_warp_fast_path_enabled_; }
+  PsolaWarpCacheStats warp_cache_stats() const { return warp_stats_; }
+  void reset_warp_cache_stats() { warp_stats_ = PsolaWarpCacheStats{}; }
+  void reset_profiler() { profiler_.reset(); }
+  void reset_forensic_stats() {
+    profiler_.reset();
+    warp_stats_ = PsolaWarpCacheStats{};
+    warp_audit_.reset();
+    residual_cache_stats_.reset();
+    precompute_stats_.reset();
+  }
+  const PsolaModelWarpAudit &model_warp_audit() const { return warp_audit_; }
+
+  void configure_source_residual_cache(size_t entries, bool enable_residual, bool enable_windowed, bool force_psram = false);
+  void set_residual_cache_enabled(bool enabled) { residual_cache_enabled_ = enabled; }
+  bool residual_cache_enabled() const { return residual_cache_enabled_; }
+  void set_windowed_cache_enabled(bool enabled) { windowed_cache_enabled_ = enabled; }
+  bool windowed_cache_enabled() const { return windowed_cache_enabled_; }
+  size_t residual_cache_configured_size() const { return residual_cache_configured_size_; }
+  bool residual_cache_is_psram() const { return residual_cache_in_psram_; }
+  size_t residual_cache_bytes() const { return residual_cache_pool_bytes_; }
+  const void* residual_cache_pool_ptr() const { return residual_cache_pool_; }
+  void set_precompute_enabled(bool enabled, float horizon = 1.0f) { precompute_enabled_ = enabled; precompute_horizon_blocks_ = horizon; }
+  bool precompute_enabled() const { return precompute_enabled_; }
+  PsolaSourceResidualCacheStats residual_cache_stats() const { return residual_cache_stats_; }
+  void reset_residual_cache_stats() { residual_cache_stats_.reset(); }
+  PsolaPrecomputeStats precompute_stats() const { return precompute_stats_; }
+  void reset_precompute_stats() { precompute_stats_.reset(); }
+
+  uint8_t last_model_warp_calls() const { return model_warp_calls_this_block_; }
+  uint8_t last_model_warp_lookups() const { return model_warp_calls_this_block_; }
+  uint8_t last_model_warp_expensive_calls() const { return model_warp_expensive_this_block_; }
+  uint32_t last_model_warp_cycles() const { return model_warp_cycles_this_block_; }
+  uint64_t last_model_timestamp() const { return last_model_timestamp_; }
+  uint8_t last_model_changed() const { return model_changed_this_block_; }
+  uint8_t last_grains_scheduled() const { return grains_scheduled_this_block_; }
+  uint8_t last_grains_rendered() const { return grains_rendered_this_block_; }
+  uint8_t last_source_grains_built() const { return source_grains_built_this_block_; }
+  uint8_t last_unique_source_grains() const { return unique_source_grains_this_block_; }
+  uint8_t last_duplicate_source_grains() const { return duplicate_source_grains_this_block_; }
+  uint16_t last_grain_samples_processed() const { return grain_samples_processed_this_block_; }
+  uint16_t last_unique_grain_samples() const { return unique_grain_samples_this_block_; }
+  float last_render_slack_blocks_min() const { return render_slack_blocks_min_this_block_; }
+  uint32_t last_block_cycles() const { return last_block_cycles_; }
+  // B4C.7 LPC-order forensic gate (observability only): effective runtime
+  // synthesis order of this voice (0 when the current model is invalid/LPC off).
+  uint16_t synthesis_order() const {
+    return grain_model_.valid ? grain_model_.order : 0;
+  }
+  // B4C.7 Other-bucket decomposition (§35) as plain cumulative cycle
+  // counters (NOT profiler sections: 5 more Profiler sections would cost
+  // ~2.5 KB engine .bss and break the sram_high link budget). Indices:
+  // 0 DescriptorSetup, 1 HistoryFetch, 2 HannWindow, 3 OlaNorm,
+  // 4 RecoveryXfade. Observability only; DSP arithmetic untouched.
+  static constexpr size_t kB4C7Sections = 5;
+  uint64_t b4c7_section_cycles_[kB4C7Sections] = {};
+  uint64_t b4c7_section_cycles(size_t idx) const {
+    return idx < kB4C7Sections ? b4c7_section_cycles_[idx] : 0;
+  }
+  // B4C.8 Other decomposition: 18 non-overlapping subcategory cycle counters.
+  // Plain uint64_t to avoid Profiler section overhead and .bss pressure.
+  static constexpr size_t kB4C8OtherCategories = static_cast<size_t>(B4c8OtherCategory::Count);
+  uint64_t b4c8_other_cycles_[kB4C8OtherCategories] = {};
+  uint64_t b4c8_other_cycles(size_t idx) const {
+    return idx < kB4C8OtherCategories ? b4c8_other_cycles_[idx] : 0;
+  }
+  uint32_t b4c8_accounted_this_block_ = 0;
+  uint32_t b4c8_total_this_block_ = 0;
+
+  // B4C.8A: Deferred traversal zero-vs-active split.
+  uint64_t b4c8_deferred_zero_cycles_ = 0;
+  uint64_t b4c8_deferred_zero_calls_ = 0;
+  uint64_t b4c8_deferred_active_cycles_ = 0;
+  uint64_t b4c8_deferred_active_calls_ = 0;
+
+  // B4C.8A: PerSampleLoopControl sub-decomposition.
+  uint64_t b4c8_loop_history_fetch_cycles_ = 0;
+  uint64_t b4c8_loop_ola_norm_reset_cycles_ = 0;
+  uint64_t b4c8_loop_indexing_cycles_ = 0;
+
+  // B4C.8A: Model-change paired comparison.
+  uint64_t b4c8_model_change_blocks_ = 0;
+  uint64_t b4c8_model_change_cycles_ = 0;
+  uint64_t b4c8_no_model_change_blocks_ = 0;
+  uint64_t b4c8_no_model_change_cycles_ = 0;
+  uint64_t b4c8_model_change_max_cycles_ = 0;
+  uint64_t b4c8_no_model_change_max_cycles_ = 0;
+
+  // B4C.8B: MC delta section breakdown — PSRAM-allocated.
+  static constexpr size_t kSectionCount = static_cast<size_t>(PitchShiftProfileSection::Count);
+  static constexpr size_t kBlockRecordCapacity = 48000;
+  // PSRAM layout: [mc_kSectionCount] [nmc_kSectionCount] [mc_count] [nmc_count]
+  uint64_t *b4c8b_psram_buf_ = nullptr;
+  B4c8bBlockRecord *b4c8b_block_ring_ = nullptr;
+
+  // B4C.8 slow-block recorder: fixed ring, no allocation during timed window.
+  static constexpr size_t kSlowBlockCapacity = 128;
+  B4c8SlowBlockRecord *slow_block_ring_ = nullptr;
+  uint32_t slow_block_head_ = 0;
+  uint32_t slow_block_count_ = 0;
+  uint32_t slow_block_drops_ = 0;
+
+  // B4C.8 stall detector: blocks >10 ms.
+  static constexpr size_t kStallCapacity = 64;
+  B4c8StallEvent *stall_ring_ = nullptr;
+  uint32_t stall_head_ = 0;
+  uint32_t stall_count_ = 0;
+  uint32_t stall_drops_ = 0;
+
+  // B4C.8 cumulative totals for end-of-run summary.
+  uint64_t b4c8_total_blocks_ = 0;
+  uint64_t b4c8_total_cycles_ = 0;
+  uint64_t b4c8_max_block_cycles_ = 0;
+  uint64_t b4c8_slow_block_count_ = 0;
+  uint64_t b4c8_stall_count_ = 0;
+
+  void b4c8_init_recorders();
+  void b4c8_free_recorders();
+  void b4c8_record_slow_block(uint32_t block_duration_us, uint32_t block_index,
+                              uint8_t voice_mask, float pitch_f0, uint8_t mark_count);
+  void b4c8_record_stall(uint32_t block_duration_us, uint32_t block_index,
+                         uint8_t voice_mask, uint8_t section);
+  void b4c8_print_slow_blocks() const;
+  void b4c8_print_stall_events() const;
+  void b4c8_print_other_breakdown(uint32_t voice_index) const;
+  void b4c8_print_summary() const;
+  bool b4c8_get_slow_block(size_t index, B4c8SlowBlockRecord *out) const;
+  bool b4c8_get_stall_event(size_t index, B4c8StallEvent *out) const;
+
+  // B4C.8B: Per-block recording and MC delta breakdown.
+  void b4c8b_init_recorder();
+  void b4c8b_free_recorder();
+  void b4c8b_record_block(uint32_t block_id, uint8_t voice_index,
+                           uint8_t voice_class, float pitch_f0);
+  void b4c8b_print_block_records() const;
+  void b4c8b_print_mc_delta_breakdown() const;
+  size_t b4c8b_block_record_count() const { return 0; }
+  bool b4c8b_get_block_record(size_t index, B4c8bBlockRecord *out) const;
+
+  uint8_t last_residual_cache_hits() const { return residual_cache_hits_this_block_; }
+  uint8_t last_residual_cache_misses() const { return residual_cache_misses_this_block_; }
+  uint16_t last_fir_samples_computed() const { return fir_samples_computed_this_block_; }
+  uint16_t last_fir_samples_reused() const { return fir_samples_reused_this_block_; }
+  uint8_t last_active_overlapping_grains() const { return active_overlapping_grains_this_block_; }
+  uint8_t last_precompute_queue_depth() const { return precompute_queue_depth_this_block_; }
+  uint8_t last_precompute_expired_count() const { return precompute_expired_this_block_; }
+
+  // Stage B4C.4: Grain render mode and FIR kernels
+  void set_grain_render_mode(PsolaGrainRenderMode mode) { grain_render_mode_ = mode; }
+  PsolaGrainRenderMode grain_render_mode() const { return grain_render_mode_; }
+
+  void set_fir_kernel(PsolaFirKernel kernel) { fir_kernel_ = kernel; }
+  PsolaFirKernel fir_kernel() const { return fir_kernel_; }
+
+  PsolaDeferredStats deferred_stats() const { return deferred_stats_; }
+  void reset_deferred_stats() { deferred_stats_.reset(); }
+
+  uint8_t last_deferred_active_grains() const { return deferred_active_grains_this_block_; }
+  uint8_t last_deferred_slices_rendered() const { return deferred_slices_rendered_this_block_; }
+  uint16_t last_deferred_fir_samples() const { return deferred_fir_samples_this_block_; }
+  const void *deferred_grains_ptr() const { return deferred_grains_; }
+  size_t deferred_grains_bytes() const { return kMaxDeferredGrains * sizeof(DeferredGrainDescriptor); }
+
+  static SingleGrainBenchmarkResult benchmark_single_grain(
+      size_t grain_length, size_t order,
+      SharedPitchShiftResources &resources,
+      SharedLpcAnalysis &lpc,
+      PsolaFirKernel kernel = PsolaFirKernel::Multi8);
   bool enabled() const { return target_enabled_; }
   bool is_releasing() const { return release_remaining_ > 0; }
+  bool fallback_active() const { return state_ == PitchShiftState::Fallback || !target_enabled_ || psola_gain_ < 0.99f; }
   bool has_usable_output() const {
     return block_has_psola_ || (release_remaining_ > 0) ||
            unvoiced_articulation_.is_active() ||
@@ -172,6 +552,74 @@ private:
                    double *distance, double *allowed_distance) const;
   bool add_grain(double destination, double source, const PitchMark *marks,
                  size_t count);
+  void add_grain_reference(int n_min, int n_max, int64_t dst, int half,
+                           uint64_t center, const SharedLpcModel &model,
+                           bool use_lpc, bool mark_predicted);
+  void add_grain_contiguous_exact(int n_min, int n_max, int64_t dst, int half,
+                                  const float *src, const SharedLpcModel &model,
+                                  bool use_lpc, bool mark_predicted);
+  void add_grain_contiguous_multi4(int n_min, int n_max, int64_t dst, int half,
+                                   const float *src, const SharedLpcModel &model,
+                                   bool use_lpc, bool mark_predicted);
+  void add_grain_contiguous_multi8(int n_min, int n_max, int64_t dst, int half,
+                                   const float *src, const SharedLpcModel &model,
+                                   bool use_lpc, bool mark_predicted);
+  void add_grain_ola_contiguous(int n_min, int n_max, int64_t dst, int half,
+                                const float *src, const SharedLpcModel &model,
+                                bool use_lpc, bool mark_predicted);
+  void add_grain_combined_multi4(int n_min, int n_max, int64_t dst, int half,
+                                 const float *src, const SharedLpcModel &model,
+                                 bool use_lpc, bool mark_predicted);
+  void add_grain_combined_multi8(int n_min, int n_max, int64_t dst, int half,
+                                 const float *src, const SharedLpcModel &model,
+                                 bool use_lpc, bool mark_predicted);
+  static void compute_lpc_residual_fir_contiguous_scalar(
+      const float *src, size_t count, const SharedLpcModel &model, float *residual_out);
+  static void compute_lpc_residual_fir_multi2(
+      const float *src, size_t count, const SharedLpcModel &model, float *residual_out);
+  static void compute_lpc_residual_fir_multi4(
+      const float *src, size_t count, const SharedLpcModel &model, float *residual_out);
+  static void compute_lpc_residual_fir_multi8(
+      const float *src, size_t count, const SharedLpcModel &model, float *residual_out);
+  static void compute_lpc_residual_fir_multi8(
+      const float *src, int half, const SharedLpcModel &model, float *residual_out);
+  static void compute_lpc_residual_fir_multi_fma(
+      const float *src, size_t count, const SharedLpcModel &model, float *residual_out);
+  static void compute_fir_by_kernel(
+      PsolaFirKernel kernel, const float *src, size_t count,
+      const SharedLpcModel &model, float *residual_out);
+
+  struct DeferredGrainDescriptor {
+    uint32_t sequence_id = 0;
+    int64_t destination = 0;
+    uint64_t center = 0;
+    int half = 0;
+    SharedLpcModel grain_model{};
+    float lambda = 0.0f;
+    float gamma = 1.0f;
+    FormantNormalizationStrategy norm_strategy = FormantNormalizationStrategy::StrategyC_IntegratedSpectral;
+    float formant_filter_gain = 1.0f;
+    bool use_lpc = false;
+    bool mark_predicted = false;
+    bool active = false;
+  };
+  static constexpr size_t kMaxDeferredGrains = 16;
+  DeferredGrainDescriptor *deferred_grains_ = nullptr;
+  uint32_t grain_sequence_counter_ = 0;
+
+  void render_deferred_slices(uint64_t block_start, size_t frames);
+  void render_single_grain_slice(DeferredGrainDescriptor &grain, int n_min, int n_max);
+  static void compute_windowed_grain(
+      const float *src, const float *residual, int half,
+      const SharedPitchShiftResources *resources,
+      float *win_residual_out, float *win_plain_out, float *window_out);
+  void add_grain_ola_from_cached_residual(
+      int n_min, int n_max, int64_t dst, int half,
+      const float *src, const float *residual, bool mark_predicted);
+  void add_grain_ola_from_cached_windowed(
+      int n_min, int n_max, int64_t dst, int half,
+      const float *win_plain, const float *win_residual, const float *window,
+      bool mark_predicted);
   void record_grain_failure(GrainFailureReason reason, double destination,
                             double source, uint64_t center = 0,
                             uint32_t half = 0, double distance = 0.0,
@@ -286,4 +734,79 @@ private:
   SampleTelemetryRecord *sample_telemetry_ = nullptr;
 #endif
   PitchShiftDebug debug_{};
+  PsolaLpcKernel lpc_kernel_ = PsolaLpcKernel::ContiguousMulti8;
+  PsolaOlaKernel ola_kernel_ = PsolaOlaKernel::Contiguous;
+  PsolaGrainKernel grain_kernel_ = PsolaGrainKernel::ContiguousMulti8;
+  PsolaSynthesisKernel synthesis_kernel_ = PsolaSynthesisKernel::UnrolledExact;
+  FormantWarpCache warp_cache_{};
+  bool warp_cache_enabled_ = true;
+  bool shared_warp_cache_enabled_ = true;
+  bool neutral_warp_fast_path_enabled_ = true;
+  PsolaWarpCacheStats warp_stats_{};
+  uint8_t model_warp_calls_this_block_ = 0;
+  uint8_t model_warp_expensive_this_block_ = 0;
+  uint32_t model_warp_cycles_this_block_ = 0;
+  uint64_t last_model_timestamp_ = 0;
+  uint8_t model_changed_this_block_ = 0;
+  uint8_t grains_scheduled_this_block_ = 0;
+  uint8_t grains_rendered_this_block_ = 0;
+  uint8_t source_grains_built_this_block_ = 0;
+  uint8_t unique_source_grains_this_block_ = 0;
+  uint8_t duplicate_source_grains_this_block_ = 0;
+  uint16_t grain_samples_processed_this_block_ = 0;
+  uint16_t unique_grain_samples_this_block_ = 0;
+  float render_slack_blocks_min_this_block_ = 9999.0f;
+  uint32_t current_block_frames_ = 64;
+  uint32_t last_block_cycles_ = 0;
+  uint32_t accounted_cycles_this_block_ = 0;
+  PsolaModelWarpAudit warp_audit_{};
+
+  size_t residual_cache_configured_size_ = 2;
+  bool residual_cache_enabled_ = true;
+  bool windowed_cache_enabled_ = false;
+  bool precompute_enabled_ = false;
+  float precompute_horizon_blocks_ = 1.0f;
+  float *residual_cache_pool_ = nullptr;
+  size_t residual_cache_pool_bytes_ = 0;
+  bool residual_cache_in_psram_ = false;
+  std::array<SourceResidualCacheEntry, kMaxResidualCacheCapacity> residual_cache_entries_{};
+  uint32_t residual_cache_generation_ = 0;
+  PsolaSourceResidualCacheStats residual_cache_stats_{};
+  PsolaPrecomputeStats precompute_stats_{};
+
+  uint8_t residual_cache_hits_this_block_ = 0;
+  uint8_t residual_cache_misses_this_block_ = 0;
+  uint16_t fir_samples_computed_this_block_ = 0;
+  uint16_t fir_samples_reused_this_block_ = 0;
+  uint8_t active_overlapping_grains_this_block_ = 0;
+  uint8_t precompute_queue_depth_this_block_ = 0;
+  uint8_t precompute_expired_this_block_ = 0;
+
+  PsolaGrainRenderMode grain_render_mode_ = PsolaGrainRenderMode::Eager;
+  PsolaFirKernel fir_kernel_ = PsolaFirKernel::Multi8;
+  PsolaDeferredStats deferred_stats_{};
+  uint8_t deferred_active_grains_this_block_ = 0;
+  uint8_t deferred_slices_rendered_this_block_ = 0;
+  uint16_t deferred_fir_samples_this_block_ = 0;
 };
+
+// B4D.2 warp-cache audit accessors (file scope).
+uint64_t td_psola_warp_miss_total();
+uint64_t td_psola_warp_math_only_miss();
+void td_psola_reset_warp_audit();
+
+// B4D.4 per-grain-count section attribution (voice 0, diagnostic).
+bool td_psola_b4d4_class_init();
+void td_psola_b4d4_class_free();
+uint64_t td_psola_b4d4_class_cycles(size_t bucket, size_t sec);
+uint64_t td_psola_b4d4_class_blocks(size_t bucket);
+
+// B4D.5 mark-selection decomposition (diagnostic).
+void td_psola_b4d5_mark_audit_reset();
+void td_psola_b4d5_mark_audit_enable(bool on);
+bool td_psola_b4d5_mark_audit_enabled();
+void td_psola_b4d5_mark_audit(uint64_t *calls, uint64_t *candidates,
+                              uint64_t *scan_cycles, uint64_t *total_cycles);
+// B4D.5 equivalence-gate hook: exact production nearest-mark search.
+size_t td_psola_nearest_mark_index(double source, const PitchMark *marks,
+                                   size_t count);

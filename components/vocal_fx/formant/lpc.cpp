@@ -1,6 +1,7 @@
 #include "lpc.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
@@ -8,9 +9,41 @@
 
 #ifdef ESP_PLATFORM
 TCM_DRAM_ATTR std::array<float, 1024> SharedLpcAnalysis::hann_{};
+std::array<std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1>, 24>
+    SharedLpcAnalysis::gainnorm_cos_basis_{};
+std::array<std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1>, 24>
+    SharedLpcAnalysis::gainnorm_sin_basis_{};
 #else
 std::array<float, 1024> SharedLpcAnalysis::hann_{};
+std::array<std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1>, 24>
+    SharedLpcAnalysis::gainnorm_cos_basis_{};
+std::array<std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1>, 24>
+    SharedLpcAnalysis::gainnorm_sin_basis_{};
 #endif
+bool SharedLpcAnalysis::gainnorm_basis_ready_ = false;
+float SharedLpcAnalysis::gainnorm_basis_rate_ = 0.0f;
+// B4D.4 LPC invalid-reason counters (file scope; no engine .bss growth).
+static uint64_t s_lpc_unvoiced = 0;
+static uint64_t s_lpc_solve_fail = 0;
+
+// B4D.5 model-lookup decomposition (observability only, opt-in).
+static bool s_b4d5_model_audit = false;
+static uint64_t s_b4d5_model_calls = 0;
+static uint64_t s_b4d5_model_candidates = 0;
+static uint64_t s_b4d5_model_scan_cycles = 0;
+static uint64_t s_b4d5_model_copies = 0;
+static uint64_t s_b4d5_model_repeat = 0;
+static uint64_t s_b4d5_model_last_ts = UINT64_MAX;
+
+void SharedLpcAnalysis::invalid_reason_counts(uint64_t *unvoiced,
+                                              uint64_t *solve_fail) {
+  if (unvoiced) *unvoiced = s_lpc_unvoiced;
+  if (solve_fail) *solve_fail = s_lpc_solve_fail;
+}
+void SharedLpcAnalysis::reset_invalid_reason_counts() {
+  s_lpc_unvoiced = 0;
+  s_lpc_solve_fail = 0;
+}
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
@@ -199,6 +232,25 @@ const char *lpc_window_variant_name(LpcWindowVariant variant) {
   return "LPC_WINDOW_REFERENCE";
 }
 
+const char *lpc_autocorrelation_variant_name(
+    LpcAutocorrelationVariant variant) {
+  switch (variant) {
+  case LpcAutocorrelationVariant::AutocorrReferenceDouble:
+    return "AUTOCORR_REFERENCE_DOUBLE";
+  case LpcAutocorrelationVariant::AutocorrFloatScalar:
+    return "AUTOCORR_FLOAT_SCALAR";
+  case LpcAutocorrelationVariant::AutocorrFloatMultiacc:
+    return "AUTOCORR_FLOAT_MULTIACC";
+  case LpcAutocorrelationVariant::AutocorrF32Kahan:
+    return "AUTOCORR_F32_KAHAN";
+  case LpcAutocorrelationVariant::AutocorrF32FmaProduct:
+    return "AUTOCORR_F32_FMA_PRODUCT";
+  case LpcAutocorrelationVariant::AutocorrF32DoubleSingle:
+    return "AUTOCORR_F32_DOUBLE_SINGLE";
+  }
+  return "AUTOCORR_UNKNOWN";
+}
+
 bool SharedLpcAnalysis::init(float rate, const LpcConfig &c) {
   if (!std::isfinite(rate) || rate < 8000 || c.order < 1 ||
       c.order > VOCAL_FX_LPC_MAX_ORDER || c.window_size < c.order + 2 ||
@@ -207,6 +259,7 @@ bool SharedLpcAnalysis::init(float rate, const LpcConfig &c) {
       c.preemphasis < 0 || c.preemphasis >= 1)
     return false;
   sample_rate_ = rate;
+  prepare_gainnorm_basis(rate);
   config_ = c;
   if (!prepare_hann(hann_.data(), config_.window_size))
     return false;
@@ -222,6 +275,71 @@ void SharedLpcAnalysis::reset() {
   for (auto &m : models_) { m.sequence.store(0); m.valid.store(0); }
   publish_telemetry();
 }
+void SharedLpcAnalysis::reset_measurement_telemetry() {
+  profiler_.reset();
+  frame_cost_histogram_.fill(0);
+  frame_cost_count_ = 0;
+  frame_cost_total_us_ = 0;
+  frame_cost_max_us_ = 0;
+}
+
+void SharedLpcAnalysis::prepare_gainnorm_basis(float sample_rate) {
+  constexpr size_t kPoints = 24;
+  static constexpr float kFrequencies[kPoints] = {
+      200.0f, 240.0f, 290.0f, 350.0f, 420.0f, 500.0f,
+      600.0f, 720.0f, 860.0f, 1030.0f, 1230.0f, 1470.0f,
+      1760.0f, 2100.0f, 2500.0f, 2900.0f, 3300.0f, 3700.0f,
+      4000.0f, 4200.0f, 4400.0f, 4600.0f, 4800.0f, 5000.0f};
+  gainnorm_basis_ready_ = false;
+  if (!(sample_rate >= 8000.0f)) return;
+  for (size_t p = 0; p < kPoints; ++p) {
+    const float w = 2.0f * kPi * (kFrequencies[p] / sample_rate);
+    for (size_t k = 0; k <= VOCAL_FX_LPC_MAX_ORDER; ++k) {
+      const float phase = -static_cast<float>(k) * w;
+      gainnorm_cos_basis_[p][k] = std::cos(phase);
+      gainnorm_sin_basis_[p][k] = std::sin(phase);
+    }
+  }
+  gainnorm_basis_rate_ = sample_rate;
+  gainnorm_basis_ready_ = true;
+}
+
+void SharedLpcAnalysis::set_gainnorm_basis_enabled(bool enabled) {
+  if (!enabled) {
+    gainnorm_basis_ready_ = false;
+    return;
+  }
+  if (!gainnorm_basis_ready_)
+    prepare_gainnorm_basis(gainnorm_basis_rate_ >= 8000.0f ? gainnorm_basis_rate_
+                                                            : 48000.0f);
+}
+
+bool SharedLpcAnalysis::gainnorm_basis_enabled() {
+  return gainnorm_basis_ready_;
+}
+
+size_t SharedLpcAnalysis::gainnorm_basis_bit_mismatches(float sample_rate) {
+  if (!gainnorm_basis_ready_ || sample_rate != gainnorm_basis_rate_) return 0;
+  constexpr size_t kPoints = 24;
+  static constexpr float kFrequencies[kPoints] = {
+      200.0f, 240.0f, 290.0f, 350.0f, 420.0f, 500.0f,
+      600.0f, 720.0f, 860.0f, 1030.0f, 1230.0f, 1470.0f,
+      1760.0f, 2100.0f, 2500.0f, 2900.0f, 3300.0f, 3700.0f,
+      4000.0f, 4200.0f, 4400.0f, 4600.0f, 4800.0f, 5000.0f};
+  size_t mismatches = 0;
+  for (size_t p = 0; p < kPoints; ++p) {
+    const float w = 2.0f * kPi * (kFrequencies[p] / sample_rate);
+    for (size_t k = 0; k <= VOCAL_FX_LPC_MAX_ORDER; ++k) {
+      const float phase = -static_cast<float>(k) * w;
+      const float c = std::cos(phase);
+      const float s = std::sin(phase);
+      mismatches += std::memcmp(&c, &gainnorm_cos_basis_[p][k], sizeof(float)) != 0;
+      mismatches += std::memcmp(&s, &gainnorm_sin_basis_[p][k], sizeof(float)) != 0;
+    }
+  }
+  return mismatches;
+}
+
 void SharedLpcAnalysis::tap(const float *x, size_t n) {
   for (size_t i=0;i<n;++i)
     (void)fifo_.push({std::isfinite(x[i]) ? x[i] : 0.0f,
@@ -515,18 +633,33 @@ float SharedLpcAnalysis::compute_gain_normalization(const float *a_orig, const f
     double sum_mag_orig_sq = 0.0;
     double sum_mag_warp_sq = 0.0;
 
+    const bool use_basis = gainnorm_basis_ready_ && sample_rate == gainnorm_basis_rate_;
     for (size_t p = 0; p < kPoints; ++p) {
       const float w = 2.0f * kPi * (kFrequencies[p] / sample_rate);
       float re_o = 0.0f, im_o = 0.0f;
       float re_w = 0.0f, im_w = 0.0f;
-      for (size_t k = 0; k <= order; ++k) {
-        const float phase = -static_cast<float>(k) * w;
-        const float c = std::cos(phase);
-        const float s = std::sin(phase);
-        re_o += a_orig[k] * c;
-        im_o += a_orig[k] * s;
-        re_w += a_warped[k] * c;
-        im_w += a_warped[k] * s;
+      if (use_basis) {
+        // Basis precomputed: branch-free inner loop, identical order/values.
+        const float *cb = gainnorm_cos_basis_[p].data();
+        const float *sb = gainnorm_sin_basis_[p].data();
+        for (size_t k = 0; k <= order; ++k) {
+          const float c = cb[k];
+          const float s = sb[k];
+          re_o += a_orig[k] * c;
+          im_o += a_orig[k] * s;
+          re_w += a_warped[k] * c;
+          im_w += a_warped[k] * s;
+        }
+      } else {
+        for (size_t k = 0; k <= order; ++k) {
+          const float phase = -static_cast<float>(k) * w;
+          const float c = std::cos(phase);
+          const float s = std::sin(phase);
+          re_o += a_orig[k] * c;
+          im_o += a_orig[k] * s;
+          re_w += a_warped[k] * c;
+          im_w += a_warped[k] * s;
+        }
       }
       sum_mag_orig_sq += (re_o * re_o + im_o * im_o);
       sum_mag_warp_sq += (re_w * re_w + im_w * im_w);
@@ -597,6 +730,7 @@ size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
                 linear_frame_.begin() + first_count);
       VF_PROFILE_END(profiler_, section(LpcProfileSection::FrameLinearization), 0);
       const bool voiced=pitch.voiced && pitch.confidence>.25f;
+      if (!voiced) ++s_lpc_unvoiced;
       m.valid=config_.enabled && voiced &&
           solve_with_kernels(
               linear_frame_.data(), config_.window_size, config_.order,
@@ -604,7 +738,7 @@ size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
               config_.windowing, hann_.data(), &m,
               &profiler_);
       m.confidence*=std::clamp(pitch.confidence,0.0f,1.0f);
-      if(!m.valid)++telemetry_.lpc_invalid_frames;
+      if(!m.valid){++telemetry_.lpc_invalid_frames; if (voiced) ++s_lpc_solve_fail;}
       telemetry_.max_prediction_error=std::max(telemetry_.max_prediction_error,m.prediction_error);
       VF_PROFILE_BEGIN(profiler_, section(LpcProfileSection::Publication));
       publish(m); ++telemetry_.lpc_frames; ++made;
@@ -629,6 +763,34 @@ size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
   publish_telemetry();
   VF_PROFILE_END(profiler_, section(LpcProfileSection::Total), 0);
   return made;
+}
+size_t SharedLpcAnalysis::snapshot_models(SharedLpcModel *out,
+                                          size_t cap) const {
+  if (!out || cap == 0) return 0;
+  const uint32_t newest = published_.load(std::memory_order_acquire);
+  const uint32_t count = std::min<uint32_t>(newest, kModelCount);
+  size_t n = 0;
+  for (uint32_t k = 0; k < count && n < cap; ++k) {
+    const auto &p = models_[(newest - k) % kModelCount];
+    SharedLpcModel m;
+    uint32_t before, after;
+    do {
+      before = p.sequence.load(std::memory_order_acquire);
+      if (before & 1U) { after = before; continue; }
+      for (size_t i = 0; i < m.coefficients.size(); ++i)
+        m.coefficients[i] = p.coefficients[i].load(std::memory_order_relaxed);
+      m.prediction_error = p.error.load(std::memory_order_relaxed);
+      m.confidence = p.confidence.load(std::memory_order_relaxed);
+      m.timestamp = uint64_t(p.timestamp_low.load(std::memory_order_relaxed)) |
+                    (uint64_t(p.timestamp_high.load(std::memory_order_relaxed)) << 32);
+      m.order = uint16_t(p.order.load(std::memory_order_relaxed));
+      m.valid = p.valid.load(std::memory_order_relaxed) != 0;
+      after = p.sequence.load(std::memory_order_acquire);
+    } while (before != after || (after & 1U));
+    if (!m.valid) continue;
+    out[n++] = m;
+  }
+  return n;
 }
 bool SharedLpcAnalysis::latest_model(SharedLpcModel *out) const {
   if (!out) return false;
@@ -680,13 +842,34 @@ bool SharedLpcAnalysis::model_near(uint64_t ts,SharedLpcModel *out) const {
   const uint32_t newest=published_.load(std::memory_order_acquire);
   bool found=false; uint64_t best=UINT64_MAX;
   const uint32_t count=std::min<uint32_t>(newest,kModelCount);
+  const uint64_t b4d5_scan_start =
+      s_b4d5_model_audit ? Profiler::now_cycles() : 0;
   for(uint32_t k=0;k<count;++k){const auto &p=models_[(newest-k)%kModelCount]; const uint32_t before=p.sequence.load(std::memory_order_acquire); if(before&1)continue;
+    // B4D.5: read the cheap fields first and copy the coefficient block only
+    // when this candidate can actually beat the current best.  This is exactly
+    // equivalent to the previous "copy every candidate, keep if d < best"
+    // (same strict comparison and newest-first tie-break) but avoids ~16
+    // coefficient-block copies per lookup.
+    if(p.valid.load(std::memory_order_relaxed)==0) continue;
+    const uint64_t t=uint64_t(p.timestamp_low.load(std::memory_order_relaxed))|
+                     (uint64_t(p.timestamp_high.load(std::memory_order_relaxed))<<32);
+    if(before!=p.sequence.load(std::memory_order_acquire)) continue;
+    const uint64_t d=ts>t?ts-t:t-ts;
+    if(d>=best) continue;
     SharedLpcModel m; for(size_t i=0;i<m.coefficients.size();++i)m.coefficients[i]=p.coefficients[i].load();
-    m.prediction_error=p.error.load();m.confidence=p.confidence.load();m.timestamp=uint64_t(p.timestamp_low.load())|(uint64_t(p.timestamp_high.load())<<32);m.order=uint16_t(p.order.load());m.valid=p.valid.load()!=0;
-    if(before!=p.sequence.load(std::memory_order_acquire)||!m.valid) continue;
-    const uint64_t d=ts>m.timestamp?ts-m.timestamp:m.timestamp-ts;
-    if(d<best){best=d;*out=m;found=true;}
-  } return found && best<=uint64_t(config_.window_size+config_.hop_size);
+    m.prediction_error=p.error.load();m.confidence=p.confidence.load();m.timestamp=t;m.order=uint16_t(p.order.load());m.valid=true;
+    if(before!=p.sequence.load(std::memory_order_acquire)) continue;
+    best=d;*out=m;found=true;
+    if(s_b4d5_model_audit){++s_b4d5_model_copies;
+      if(s_b4d5_model_last_ts==t) ++s_b4d5_model_repeat;}
+  }
+  if(s_b4d5_model_audit){
+    s_b4d5_model_scan_cycles += Profiler::now_cycles() - b4d5_scan_start;
+    ++s_b4d5_model_calls;
+    s_b4d5_model_candidates += count;
+    if(found) s_b4d5_model_last_ts = out->timestamp;
+  }
+  return found && best<=uint64_t(config_.window_size+config_.hop_size);
 }
 ProfileStats SharedLpcAnalysis::profile(LpcProfileSection s) const{return profiler_.stats(section(s));}
 void SharedLpcAnalysis::publish_telemetry() {
@@ -710,4 +893,25 @@ LpcTelemetry SharedLpcAnalysis::telemetry() const {
     result.max_prediction_error=published_telemetry_.max_error.load(std::memory_order_relaxed);
     after=published_telemetry_.sequence.load(std::memory_order_acquire);
   } while(before!=after || (after&1U)); return result;
+}
+
+// B4D.5 model-lookup decomposition accessors.
+void shared_lpc_b4d5_model_audit_reset() {
+  s_b4d5_model_calls = 0;
+  s_b4d5_model_candidates = 0;
+  s_b4d5_model_scan_cycles = 0;
+  s_b4d5_model_copies = 0;
+  s_b4d5_model_repeat = 0;
+  s_b4d5_model_last_ts = UINT64_MAX;
+}
+void shared_lpc_b4d5_model_audit_enable(bool on) { s_b4d5_model_audit = on; }
+bool shared_lpc_b4d5_model_audit_enabled() { return s_b4d5_model_audit; }
+void shared_lpc_b4d5_model_audit(uint64_t *calls, uint64_t *candidates,
+                                 uint64_t *scan_cycles, uint64_t *copies,
+                                 uint64_t *repeat) {
+  if (calls) *calls = s_b4d5_model_calls;
+  if (candidates) *candidates = s_b4d5_model_candidates;
+  if (scan_cycles) *scan_cycles = s_b4d5_model_scan_cycles;
+  if (copies) *copies = s_b4d5_model_copies;
+  if (repeat) *repeat = s_b4d5_model_repeat;
 }

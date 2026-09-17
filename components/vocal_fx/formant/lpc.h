@@ -30,6 +30,8 @@ enum class LpcWindowVariant : uint8_t {
 };
 
 const char *lpc_window_variant_name(LpcWindowVariant variant);
+const char *lpc_autocorrelation_variant_name(
+    LpcAutocorrelationVariant variant);
 
 struct LpcConfig {
   bool enabled = true;
@@ -97,6 +99,7 @@ public:
   static constexpr size_t kModelCount = 16;
   bool init(float sample_rate, const LpcConfig &config);
   void reset();
+  void reset_measurement_telemetry();
   void tap(const float *samples, size_t count);
   size_t run(size_t max_frames, const PitchResult &pitch);
   bool model_near(uint64_t timestamp, SharedLpcModel *model) const;
@@ -104,6 +107,11 @@ public:
   ProfileStats profile(LpcProfileSection section) const;
   bool latest_model(SharedLpcModel *model) const;
   LpcFrameCostSummary frame_cost_summary();
+  // B4D.5 test-only: snapshot the currently published valid models (newest
+  // first) so the exact model_near selection can be checked against a
+  // reference implementation.
+  size_t snapshot_models(SharedLpcModel *out, size_t cap) const;
+  const LpcConfig &effective_config() const { return config_; }
   size_t memory_bytes() const { return sizeof(*this); }
   const void* fifo_ptr() const { return &fifo_; }
   size_t fifo_bytes() const { return sizeof(fifo_); }
@@ -143,6 +151,18 @@ public:
   static float compute_gain_normalization(const float *a_orig, const float *a_warped,
                                           uint16_t order, FormantNormalizationStrategy strategy,
                                           float sample_rate = 48000.0f);
+  // B4C.6 exact invariant basis.  The production LPC path is fixed at 24
+  // frequencies and 48 kHz; other rates retain the reference trig path.
+  static void prepare_gainnorm_basis(float sample_rate = 48000.0f);
+  static void set_gainnorm_basis_enabled(bool enabled);
+  static bool gainnorm_basis_enabled();
+  static size_t gainnorm_basis_bit_mismatches(float sample_rate = 48000.0f);
+  // B4D.4: invalid LPC frame reasons (unvoiced vs voiced solve failure).
+  static void invalid_reason_counts(uint64_t *unvoiced, uint64_t *solve_fail);
+  static void reset_invalid_reason_counts();
+  static size_t gainnorm_basis_bytes() {
+    return sizeof(gainnorm_cos_basis_) + sizeof(gainnorm_sin_basis_);
+  }
 private:
   struct LpcSample { float value; uint32_t input_position; };
   struct PublishedModel {
@@ -170,6 +190,13 @@ private:
   // LPC analyzer. Its P4 definition is placed in fast internal TCM, never
   // PSRAM; the host definition remains ordinary fixed storage.
   static std::array<float, 1024> hann_;
+  static std::array<std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1>, 24>
+      gainnorm_cos_basis_;
+  static std::array<std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1>, 24>
+      gainnorm_sin_basis_;
+  static bool gainnorm_basis_ready_;
+  // B4D.3S: the sample rate the basis was prepared for (rate-agnostic basis).
+  static float gainnorm_basis_rate_;
   size_t write_index_ = 0, valid_count_ = 0, since_frame_ = 0;
   uint64_t last_position_ = 0;
   std::array<PublishedModel, kModelCount> models_{};
@@ -187,3 +214,11 @@ private:
   uint64_t frame_cost_total_us_ = 0;
   uint32_t frame_cost_max_us_ = 0;
 };
+
+// B4D.5 model-lookup decomposition accessors (file scope, diagnostic).
+void shared_lpc_b4d5_model_audit_reset();
+void shared_lpc_b4d5_model_audit_enable(bool on);
+bool shared_lpc_b4d5_model_audit_enabled();
+void shared_lpc_b4d5_model_audit(uint64_t *calls, uint64_t *candidates,
+                                 uint64_t *scan_cycles, uint64_t *copies,
+                                 uint64_t *repeat);

@@ -20,7 +20,7 @@ float AllPass::process(float x) {
   float d = buffer_[pos_];
   float y = d - gain_ * x;
   buffer_[pos_] = x + gain_ * y;
-  pos_ = (pos_ + 1) % size_;
+  if (++pos_ == size_) pos_ = 0;
   return y;
 }
 bool Diffuser::init(float sr) {

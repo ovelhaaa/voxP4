@@ -40,6 +40,165 @@ const char *yin_difference_variant_name(YinDifferenceVariant variant) {
   return "YIN_DIFF_UNKNOWN";
 }
 
+const char *yin_cmnd_variant_name(YinCmndVariant variant) {
+  switch (variant) {
+  case YinCmndVariant::ReferenceDouble:
+    return "YIN_CMND_REFERENCE_DOUBLE";
+  case YinCmndVariant::DoubleSumF32Div:
+    return "YIN_CMND_DOUBLE_SUM_F32_DIV";
+  case YinCmndVariant::F32:
+    return "YIN_CMND_F32";
+  case YinCmndVariant::F32Compensated:
+    return "YIN_CMND_F32_COMPENSATED";
+  }
+  return "YIN_CMND_UNKNOWN";
+}
+
+const char *yin_energy_variant_name(YinEnergyVariant variant) {
+  switch (variant) {
+  case YinEnergyVariant::ReferenceDouble:
+    return "YIN_ENERGY_REFERENCE_DOUBLE";
+  case YinEnergyVariant::F32:
+    return "YIN_ENERGY_F32";
+  case YinEnergyVariant::F32Compensated:
+    return "YIN_ENERGY_F32_COMPENSATED";
+  }
+  return "YIN_ENERGY_UNKNOWN";
+}
+
+extern "C" YIN_NOINLINE double
+YIN_ENERGY_REFERENCE_DOUBLE(const float *samples, size_t frames) {
+  double energy = 0.0;
+  for (size_t i = 0; i < frames; ++i)
+    energy += static_cast<double>(samples[i]) * samples[i];
+  return energy;
+}
+
+extern "C" YIN_NOINLINE double
+YIN_ENERGY_F32(const float *samples, size_t frames) {
+  float energy = 0.0f;
+  for (size_t i = 0; i < frames; ++i)
+    energy += samples[i] * samples[i];
+  return static_cast<double>(energy);
+}
+
+extern "C" YIN_NOINLINE double
+YIN_ENERGY_F32_COMPENSATED(const float *samples, size_t frames) {
+  float hi = 0.0f;
+  float lo = 0.0f;
+  for (size_t i = 0; i < frames; ++i) {
+    const float value = samples[i];
+    const float product_hi = value * value;
+    const float product_lo = std::fma(value, value, -product_hi);
+
+    // The same TwoSum + deterministic renormalization qualified for LPC
+    // frame energy.  The hot loop contains binary32 arithmetic only.
+    const float sum = hi + product_hi;
+    const float product_virtual = sum - hi;
+    const float sum_error =
+        (hi - (sum - product_virtual)) + (product_hi - product_virtual);
+    const float tail = (lo + sum_error) + product_lo;
+    const float renormalized = sum + tail;
+    const float tail_virtual = renormalized - sum;
+    lo = (sum - (renormalized - tail_virtual)) + (tail - tail_virtual);
+    hi = renormalized;
+  }
+  return static_cast<double>(hi) + static_cast<double>(lo);
+}
+
+double yin_energy_compute(YinEnergyVariant variant, const float *samples,
+                          size_t frames) {
+  switch (variant) {
+  case YinEnergyVariant::ReferenceDouble:
+    return YIN_ENERGY_REFERENCE_DOUBLE(samples, frames);
+  case YinEnergyVariant::F32:
+    return YIN_ENERGY_F32(samples, frames);
+  case YinEnergyVariant::F32Compensated:
+    return YIN_ENERGY_F32_COMPENSATED(samples, frames);
+  }
+  return YIN_ENERGY_REFERENCE_DOUBLE(samples, frames);
+}
+
+extern "C" YIN_NOINLINE void
+YIN_CMND_REFERENCE_DOUBLE(const float *difference, size_t tau_count,
+                          float *cmnd) {
+  cmnd[0] = 1.0f;
+  double cumulative = 0.0;
+  for (size_t tau = 1; tau <= tau_count; ++tau) {
+    cumulative += difference[tau];
+    // Usual arithmetic conversions form difference[tau] * tau in binary32,
+    // then extend that rounded numerator for the binary64 division.
+    cmnd[tau] = cumulative > 1e-20
+                    ? static_cast<float>(difference[tau] * tau / cumulative)
+                    : 1.0f;
+  }
+}
+
+extern "C" YIN_NOINLINE void
+YIN_CMND_DOUBLE_SUM_F32_DIV(const float *difference, size_t tau_count,
+                           float *cmnd) {
+  cmnd[0] = 1.0f;
+  double cumulative = 0.0;
+  for (size_t tau = 1; tau <= tau_count; ++tau) {
+    cumulative += difference[tau];
+    const float denominator = static_cast<float>(cumulative);
+    const float numerator = difference[tau] * static_cast<float>(tau);
+    cmnd[tau] = denominator > 1e-20f ? numerator / denominator : 1.0f;
+  }
+}
+
+extern "C" YIN_NOINLINE void
+YIN_CMND_F32(const float *difference, size_t tau_count, float *cmnd) {
+  cmnd[0] = 1.0f;
+  float cumulative = 0.0f;
+  for (size_t tau = 1; tau <= tau_count; ++tau) {
+    cumulative += difference[tau];
+    const float numerator = difference[tau] * static_cast<float>(tau);
+    cmnd[tau] = cumulative > 1e-20f ? numerator / cumulative : 1.0f;
+  }
+}
+
+extern "C" YIN_NOINLINE void
+YIN_CMND_F32_COMPENSATED(const float *difference, size_t tau_count,
+                         float *cmnd) {
+  cmnd[0] = 1.0f;
+  float hi = 0.0f;
+  float lo = 0.0f;
+  for (size_t tau = 1; tau <= tau_count; ++tau) {
+    // Knuth TwoSum followed by deterministic binary32 renormalization. The
+    // hot loop deliberately contains no binary64 arithmetic.
+    const float value = difference[tau];
+    const float sum = hi + value;
+    const float value_virtual = sum - hi;
+    const float error = (hi - (sum - value_virtual)) +
+                        (value - value_virtual);
+    const float residual = lo + error;
+    hi = sum + residual;
+    lo = residual - (hi - sum);
+    const float denominator = hi + lo;
+    const float numerator = value * static_cast<float>(tau);
+    cmnd[tau] = denominator > 1e-20f ? numerator / denominator : 1.0f;
+  }
+}
+
+void yin_cmnd_compute(YinCmndVariant variant, const float *difference,
+                      size_t tau_count, float *cmnd) {
+  switch (variant) {
+  case YinCmndVariant::ReferenceDouble:
+    YIN_CMND_REFERENCE_DOUBLE(difference, tau_count, cmnd);
+    break;
+  case YinCmndVariant::DoubleSumF32Div:
+    YIN_CMND_DOUBLE_SUM_F32_DIV(difference, tau_count, cmnd);
+    break;
+  case YinCmndVariant::F32:
+    YIN_CMND_F32(difference, tau_count, cmnd);
+    break;
+  case YinCmndVariant::F32Compensated:
+    YIN_CMND_F32_COMPENSATED(difference, tau_count, cmnd);
+    break;
+  }
+}
+
 uint64_t yin_difference_product_count(size_t frames, size_t tau_count) {
   if (tau_count >= frames)
     return 0;
@@ -249,6 +408,14 @@ void YinIncrementalDifference::reset() {
   full_rebase_products_ = 0;
 }
 
+void YinIncrementalDifference::reset_measurement_telemetry() {
+  incremental_rebases_ = 0;
+  gap_rebases_ = 0;
+  periodic_rebases_ = 0;
+  update_terms_ = 0;
+  full_rebase_products_ = 0;
+}
+
 void YinIncrementalDifference::invalidate_for_gap() {
   if (valid_)
     gap_pending_ = true;
@@ -370,6 +537,15 @@ bool YinDetector::init(const PitchAnalysisConfig &c) {
   config_ = c;
   tau_min_ = static_cast<size_t>(tau_min);
   tau_max_ = static_cast<size_t>(tau_max);
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  if (!profiler_.enable_distribution_range(
+          profile_section(PitchAnalysisProfileSection::YinEnergy),
+          profile_section(PitchAnalysisProfileSection::YinTotal)))
+    return false;
+#endif
   if ((c.yin_difference == YinDifferenceVariant::IncrementalF32 ||
        c.yin_difference == YinDifferenceVariant::IncrementalDoubleSingle) &&
       !incremental_.init(c.yin_difference, c.window_size, c.hop_size,
@@ -388,9 +564,7 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
                    profile_section(PitchAnalysisProfileSection::YinTotal));
   VF_PROFILE_BEGIN(profiler_,
                    profile_section(PitchAnalysisProfileSection::YinEnergy));
-  double energy = 0;
-  for (size_t i = 0; i < n; ++i)
-    energy += static_cast<double>(x[i]) * x[i];
+  const double energy = yin_energy_compute(config_.yin_energy, x, n);
   out.rms_db = 10.0f * std::log10(static_cast<float>(energy / n) + 1e-20f);
   VF_PROFILE_END(profiler_,
                  profile_section(PitchAnalysisProfileSection::YinEnergy), 0);
@@ -411,14 +585,8 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
                  0);
   VF_PROFILE_BEGIN(profiler_,
                    profile_section(PitchAnalysisProfileSection::YinCmnd));
-  cmnd_[0] = 1;
-  double cumulative = 0;
-  for (size_t tau = 1; tau <= tau_max_ + 1; ++tau) {
-    cumulative += difference_[tau];
-    cmnd_[tau] = cumulative > 1e-20
-                     ? static_cast<float>(difference_[tau] * tau / cumulative)
-                     : 1.0f;
-  }
+  yin_cmnd_compute(config_.yin_cmnd, difference_.data(), tau_max_ + 1,
+                   cmnd_.data());
   VF_PROFILE_END(profiler_,
                  profile_section(PitchAnalysisProfileSection::YinCmnd), 0);
   VF_PROFILE_BEGIN(profiler_,
@@ -453,6 +621,37 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
   const float period = candidate + offset;
   out.yin_min = cmnd_[candidate];
   out.yin_tau = static_cast<float>(candidate);
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  const uint32_t cmnd_nano = static_cast<uint32_t>(std::lround(
+      std::clamp(out.yin_min, 0.0f, 1.0f) * 1000000000.0f));
+  const uint32_t threshold_nano = static_cast<uint32_t>(std::lround(
+      std::fabs(out.yin_min - config_.yin_threshold) * 1000000000.0f));
+  selected_cmnd_sum_nano_.fetch_add(cmnd_nano, std::memory_order_relaxed);
+  uint32_t observed = selected_cmnd_min_nano_.load(std::memory_order_relaxed);
+  while (cmnd_nano < observed &&
+         !selected_cmnd_min_nano_.compare_exchange_weak(
+             observed, cmnd_nano, std::memory_order_relaxed)) {
+  }
+  observed = closest_threshold_nano_.load(std::memory_order_relaxed);
+  while (threshold_nano < observed &&
+         !closest_threshold_nano_.compare_exchange_weak(
+             observed, threshold_nano, std::memory_order_relaxed)) {
+  }
+  const uint32_t selected_tau = static_cast<uint32_t>(candidate);
+  observed = selected_tau_min_.load(std::memory_order_relaxed);
+  while (selected_tau < observed &&
+         !selected_tau_min_.compare_exchange_weak(
+             observed, selected_tau, std::memory_order_relaxed)) {
+  }
+  observed = selected_tau_max_.load(std::memory_order_relaxed);
+  while (selected_tau > observed &&
+         !selected_tau_max_.compare_exchange_weak(
+             observed, selected_tau, std::memory_order_relaxed)) {
+  }
+#endif
   out.confidence = std::clamp(1.0f - cmnd_[candidate], 0.0f, 1.0f);
   if (period > 0 && std::isfinite(period)) {
     out.period_samples = period;
@@ -467,6 +666,23 @@ PitchDetectorMeasurement YinDetector::analyze(const float *x, size_t n,
                  profile_section(PitchAnalysisProfileSection::YinTotal), 0);
   return out;
 }
+
+void YinDetector::reset_measurement_telemetry() {
+  profiler_.reset();
+  executions_.store(0, std::memory_order_relaxed);
+  inner_iterations_.store(0, std::memory_order_relaxed);
+  incremental_.reset_measurement_telemetry();
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  selected_cmnd_sum_nano_.store(0, std::memory_order_relaxed);
+  selected_cmnd_min_nano_.store(1000000000U, std::memory_order_relaxed);
+  closest_threshold_nano_.store(1000000000U, std::memory_order_relaxed);
+  selected_tau_min_.store(UINT32_MAX, std::memory_order_relaxed);
+  selected_tau_max_.store(0, std::memory_order_relaxed);
+#endif
+}
 void YinDetector::reset() {
   difference_.fill(0);
   cmnd_.fill(0);
@@ -474,12 +690,29 @@ void YinDetector::reset() {
   incremental_.reset();
   executions_.store(0, std::memory_order_relaxed);
   inner_iterations_.store(0, std::memory_order_relaxed);
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  selected_cmnd_sum_nano_.store(0, std::memory_order_relaxed);
+  selected_cmnd_min_nano_.store(1000000000U, std::memory_order_relaxed);
+  closest_threshold_nano_.store(1000000000U, std::memory_order_relaxed);
+  selected_tau_min_.store(UINT32_MAX, std::memory_order_relaxed);
+  selected_tau_max_.store(0, std::memory_order_relaxed);
+#endif
 }
 ProfileStats YinDetector::profile(PitchAnalysisProfileSection s) const {
   if (s < PitchAnalysisProfileSection::YinEnergy ||
       s > PitchAnalysisProfileSection::YinTotal)
     return {};
   return profiler_.stats(profile_section(s));
+}
+ProfileDistributionStats
+YinDetector::profile_distribution(PitchAnalysisProfileSection s) const {
+  if (s < PitchAnalysisProfileSection::YinEnergy ||
+      s > PitchAnalysisProfileSection::YinTotal)
+    return {};
+  return profiler_.distribution_stats(profile_section(s));
 }
 YinForensicTelemetry YinDetector::forensic_telemetry() const {
   YinForensicTelemetry result{};
@@ -499,5 +732,23 @@ YinForensicTelemetry YinDetector::forensic_telemetry() const {
   result.periodic_rebases = incremental_.periodic_rebases();
   result.incremental_update_terms = incremental_.update_terms();
   result.full_rebase_products = incremental_.full_rebase_products();
+  result.yin_threshold = config_.yin_threshold;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  result.selected_cmnd_minimum =
+      selected_cmnd_min_nano_.load(std::memory_order_relaxed) * 1.0e-9f;
+  result.closest_threshold_distance =
+      closest_threshold_nano_.load(std::memory_order_relaxed) * 1.0e-9f;
+  result.selected_cmnd_average = result.executions
+      ? static_cast<float>(selected_cmnd_sum_nano_.load(
+            std::memory_order_relaxed) * 1.0e-9 / result.executions)
+      : 0.0f;
+  const uint32_t tau_min = selected_tau_min_.load(std::memory_order_relaxed);
+  result.selected_tau_minimum = tau_min == UINT32_MAX ? 0 : tau_min;
+  result.selected_tau_maximum =
+      selected_tau_max_.load(std::memory_order_relaxed);
+#endif
   return result;
 }

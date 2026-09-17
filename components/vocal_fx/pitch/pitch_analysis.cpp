@@ -2,6 +2,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <new>
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 
 namespace {
 constexpr float kReferenceHz = 440.0f;
@@ -16,6 +20,32 @@ float cents_to_hz(float cents) {
 }
 } // namespace
 
+bool PitchAnalysis::ensure_age_histograms() {
+  if (!pitch_age_histogram_) {
+#ifdef ESP_PLATFORM
+    pitch_age_histogram_ = static_cast<std::atomic<uint32_t> *>(
+        heap_caps_calloc(kPitchAgeHistogramBins,
+                         sizeof(std::atomic<uint32_t>),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    pitch_age_histogram_ =
+        new (std::nothrow) std::atomic<uint32_t>[kPitchAgeHistogramBins]();
+#endif
+  }
+  if (!analysis_backlog_histogram_) {
+#ifdef ESP_PLATFORM
+    analysis_backlog_histogram_ = static_cast<std::atomic<uint32_t> *>(
+        heap_caps_calloc(kBacklogHistogramBins,
+                         sizeof(std::atomic<uint32_t>),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    analysis_backlog_histogram_ =
+        new (std::nothrow) std::atomic<uint32_t>[kBacklogHistogramBins]();
+#endif
+  }
+  return pitch_age_histogram_ && analysis_backlog_histogram_;
+}
+
 bool PitchAnalysis::init(const PitchAnalysisConfig &c) {
   if (!std::isfinite(c.input_sample_rate) || c.input_sample_rate < 8000 ||
       c.input_sample_rate > 192000 || c.voiced_attack_frames == 0 ||
@@ -27,9 +57,20 @@ bool PitchAnalysis::init(const PitchAnalysisConfig &c) {
       !yin_.init(c))
     return false;
   config_ = c;
+#if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4I_PITCH_RESIDUAL_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4J_YIN_CMND_AUDIT) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4B_4K_YIN_ENERGY_AUDIT)
+  if (!profiler_.enable_distribution_range(
+          ps(PitchAnalysisProfileSection::FifoDrain),
+          ps(PitchAnalysisProfileSection::RunTotal)))
+    return false;
+#endif
   latency_samples_ = static_cast<uint64_t>(std::llround(
       decimator_.group_delay_input_samples() +
       .5 * c.window_size * c.input_sample_rate / c.analysis_sample_rate));
+  if (!ensure_age_histograms())
+    return false;
   reset();
   return true;
 }
@@ -49,6 +90,8 @@ void PitchAnalysis::reset() {
     mark.confidence.store(0, std::memory_order_relaxed);
   }
   rolling_write_ = rolling_count_ = since_hop_ = 0;
+  profile_fifo_cycles_since_hop_ = 0;
+  profile_rolling_cycles_since_hop_ = 0;
   previous_fifo_position_ = 0;
   have_previous_fifo_position_ = false;
   input_position_ = latest_analysis_position_ = 0;
@@ -73,8 +116,13 @@ void PitchAnalysis::reset() {
   pitch_age_sum_samples_.store(0, std::memory_order_relaxed);
   pitch_age_observations_.store(0, std::memory_order_relaxed);
   pitch_age_max_samples_.store(0, std::memory_order_relaxed);
-  for (auto &bin : pitch_age_histogram_)
-    bin.store(0, std::memory_order_relaxed);
+  for (size_t i = 0; i < kPitchAgeHistogramBins && pitch_age_histogram_; ++i)
+    pitch_age_histogram_[i].store(0, std::memory_order_relaxed);
+  analysis_backlog_sum_samples_.store(0, std::memory_order_relaxed);
+  analysis_backlog_observations_.store(0, std::memory_order_relaxed);
+  for (size_t i = 0; i < kBacklogHistogramBins && analysis_backlog_histogram_;
+       ++i)
+    analysis_backlog_histogram_[i].store(0, std::memory_order_relaxed);
   coherent_marks_audit_.store(0, std::memory_order_relaxed);
   coherent_marks_maximum_.store(0, std::memory_order_relaxed);
   mark_failures_audit_.store(0, std::memory_order_relaxed);
@@ -105,6 +153,39 @@ void PitchAnalysis::reset() {
   mark_pairs_per_search_.fill(0);
   mark_geometry_count_ = 0;
   publish({});
+}
+
+void PitchAnalysis::reset_measurement_telemetry() {
+  profiler_.reset();
+  yin_.reset_measurement_telemetry();
+  profile_fifo_cycles_since_hop_ = 0;
+  profile_rolling_cycles_since_hop_ = 0;
+  audit_backlog_max_samples_.store(0, std::memory_order_relaxed);
+  pitch_age_sum_samples_.store(0, std::memory_order_relaxed);
+  pitch_age_observations_.store(0, std::memory_order_relaxed);
+  pitch_age_max_samples_.store(0, std::memory_order_relaxed);
+  for (size_t i = 0; i < kPitchAgeHistogramBins && pitch_age_histogram_; ++i)
+    pitch_age_histogram_[i].store(0, std::memory_order_relaxed);
+  analysis_backlog_sum_samples_.store(0, std::memory_order_relaxed);
+  analysis_backlog_observations_.store(0, std::memory_order_relaxed);
+  for (size_t i = 0; i < kBacklogHistogramBins && analysis_backlog_histogram_;
+       ++i)
+    analysis_backlog_histogram_[i].store(0, std::memory_order_relaxed);
+  coherent_mark_increments_.store(0, std::memory_order_relaxed);
+  coherent_mark_resets_.store(0, std::memory_order_relaxed);
+  for (auto &reason : mark_reset_reasons_)
+    reason.store(0, std::memory_order_relaxed);
+  accepted_marks_.store(0, std::memory_order_relaxed);
+  rejected_marks_.store(0, std::memory_order_relaxed);
+  audit_event_drops_.store(0, std::memory_order_relaxed);
+  mark_correlation_searches_.store(0, std::memory_order_relaxed);
+  mark_candidate_offsets_.store(0, std::memory_order_relaxed);
+  mark_sample_pairs_.store(0, std::memory_order_relaxed);
+  mark_mac_like_operations_.store(0, std::memory_order_relaxed);
+  mark_windows_.fill(0);
+  mark_offsets_per_search_.fill(0);
+  mark_pairs_per_search_.fill(0);
+  mark_geometry_count_ = 0;
 }
 void PitchAnalysis::tap(const float *samples, size_t n, bool audit_identity) {
   if (!samples)
@@ -139,6 +220,13 @@ void PitchAnalysis::tap(const float *samples, size_t n, bool audit_identity) {
          !audit_backlog_max_samples_.compare_exchange_weak(
              backlog_maximum, backlog, std::memory_order_relaxed)) {
   }
+  analysis_backlog_sum_samples_.fetch_add(backlog, std::memory_order_relaxed);
+  analysis_backlog_observations_.fetch_add(1, std::memory_order_relaxed);
+  const size_t backlog_bin = std::min<size_t>(
+      backlog / kPitchAgeBinSamples, kBacklogHistogramBins - 1);
+  if (analysis_backlog_histogram_)
+    analysis_backlog_histogram_[backlog_bin].fetch_add(
+        1, std::memory_order_relaxed);
   if (audit_identity) {
     const float rms = n ? static_cast<float>(std::sqrt(audit_sum_sq / n)) : 0.0f;
     uint32_t rms_bits = 0;
@@ -168,12 +256,10 @@ size_t PitchAnalysis::run(size_t max_hops) {
   VF_PROFILE_BEGIN(profiler_, ps(PitchAnalysisProfileSection::RunTotal));
   size_t completed = 0;
   AnalysisSample sample;
-  uint64_t fifo_drain_cycles = 0;
-  uint64_t rolling_window_cycles = 0;
   while (completed < max_hops) {
     uint32_t cycle_start = Profiler::now_cycles();
     const bool have_sample = fifo_.pop(sample);
-    fifo_drain_cycles +=
+    profile_fifo_cycles_since_hop_ +=
         static_cast<uint32_t>(Profiler::now_cycles() - cycle_start);
     if (!have_sample)
       break;
@@ -198,11 +284,17 @@ size_t PitchAnalysis::run(size_t max_hops) {
                                    std::memory_order_release);
     const bool needs_more_samples =
         rolling_count_ < config_.window_size || ++since_hop_ < config_.hop_size;
-    rolling_window_cycles +=
+    profile_rolling_cycles_since_hop_ +=
         static_cast<uint32_t>(Profiler::now_cycles() - cycle_start);
     if (needs_more_samples)
       continue;
     since_hop_ = 0;
+    profiler_.record_cycles(ps(PitchAnalysisProfileSection::FifoDrain),
+                            profile_fifo_cycles_since_hop_);
+    profiler_.record_cycles(ps(PitchAnalysisProfileSection::RollingWindow),
+                            profile_rolling_cycles_since_hop_);
+    profile_fifo_cycles_since_hop_ = 0;
+    profile_rolling_cycles_since_hop_ = 0;
     VF_PROFILE_BEGIN(
         profiler_, ps(PitchAnalysisProfileSection::LinearWindowCopy));
     for (size_t i = 0; i < config_.window_size; ++i)
@@ -345,6 +437,9 @@ size_t PitchAnalysis::run(size_t max_hops) {
     }
 
     const float energy = std::pow(10.0f, measurement.rms_db / 10.0f);
+#ifndef ESP_PLATFORM
+    const float previous_energy_before = previous_energy_;
+#endif
     const bool onset = energy > 1e-12f && previous_energy_ > 1e-12f &&
                        energy > previous_energy_ * config_.onset_ratio;
     previous_energy_ = .8f * previous_energy_ + .2f * energy;
@@ -365,6 +460,13 @@ size_t PitchAnalysis::run(size_t max_hops) {
     result.spectral_centroid = spectral_centroid;
     result.high_frequency_ratio = hfr;
     result.zero_crossing_rate = zcr;
+#ifndef ESP_PLATFORM
+    result.detector_rms_db = measurement.rms_db;
+    result.detector_linear_energy = energy;
+    result.previous_energy_before = previous_energy_before;
+    result.previous_energy_after = previous_energy_;
+    result.level_ok = level_ok;
+#endif
 
     const bool reliable_measurement =
         level_ok &&
@@ -460,10 +562,6 @@ size_t PitchAnalysis::run(size_t max_hops) {
                                          config_.analysis_sample_rate));
     ++completed;
   }
-  profiler_.record_cycles(ps(PitchAnalysisProfileSection::FifoDrain),
-                          fifo_drain_cycles);
-  profiler_.record_cycles(ps(PitchAnalysisProfileSection::RollingWindow),
-                          rolling_window_cycles);
   VF_PROFILE_END(profiler_, ps(PitchAnalysisProfileSection::RunTotal), 0);
   return completed;
 }
@@ -541,7 +639,8 @@ void PitchAnalysis::record_pitch_age(uint64_t samples) {
   }
   const size_t bin = std::min<size_t>(
       samples / kPitchAgeBinSamples, kPitchAgeHistogramBins - 1);
-  pitch_age_histogram_[bin].fetch_add(1, std::memory_order_relaxed);
+  if (pitch_age_histogram_)
+    pitch_age_histogram_[bin].fetch_add(1, std::memory_order_relaxed);
 }
 void PitchAnalysis::record_correlation(float best, bool accepted) {
   const int32_t micros = static_cast<int32_t>(std::lround(best * 1000000.0f));
@@ -984,6 +1083,40 @@ PitchAnalysisAuditTelemetry PitchAnalysis::audit_telemetry() const {
   result.analysis_backlog_max_ms = static_cast<float>(
       1000.0 * result.analysis_backlog_max_samples /
       config_.input_sample_rate);
+  {
+    const uint64_t backlog_observations =
+        analysis_backlog_observations_.load(std::memory_order_relaxed);
+    if (backlog_observations) {
+      result.analysis_backlog_average_ms = static_cast<float>(
+          1000.0 * analysis_backlog_sum_samples_.load(std::memory_order_relaxed) /
+          (config_.input_sample_rate * backlog_observations));
+      const uint64_t bp95 = (backlog_observations * 95U + 99U) / 100U;
+      const uint64_t bp99 = (backlog_observations * 99U + 99U) / 100U;
+      uint64_t acc = 0;
+      bool have95 = false, have99 = false;
+      for (size_t i = 0;
+           i < kBacklogHistogramBins && analysis_backlog_histogram_; ++i) {
+        acc += analysis_backlog_histogram_[i].load(std::memory_order_relaxed);
+        const float upper_ms = static_cast<float>(
+            1000.0 * (i + 1) * kPitchAgeBinSamples /
+            config_.input_sample_rate);
+        if (!have95 && acc >= bp95) {
+          result.analysis_backlog_p95_ms = upper_ms;
+          have95 = true;
+        }
+        if (!have99 && acc >= bp99) {
+          result.analysis_backlog_p99_ms = upper_ms;
+          have99 = true;
+          break;
+        }
+      }
+      const float backlog_max = result.analysis_backlog_max_ms;
+      if (result.analysis_backlog_p95_ms > backlog_max)
+        result.analysis_backlog_p95_ms = backlog_max;
+      if (result.analysis_backlog_p99_ms > backlog_max)
+        result.analysis_backlog_p99_ms = backlog_max;
+    }
+  }
   const uint64_t latest_age_samples =
       result.audio_input_position > result.published_analysis_timestamp
           ? result.audio_input_position - result.published_analysis_timestamp
@@ -992,29 +1125,48 @@ PitchAnalysisAuditTelemetry PitchAnalysis::audit_telemetry() const {
       1000.0 * latest_age_samples / config_.input_sample_rate);
   const uint64_t age_observations =
       pitch_age_observations_.load(std::memory_order_relaxed);
+  result.pitch_age_max_ms = static_cast<float>(
+      1000.0 * pitch_age_max_samples_.load(std::memory_order_relaxed) /
+      config_.input_sample_rate);
   if (age_observations) {
     result.pitch_age_average_ms = static_cast<float>(
         1000.0 * pitch_age_sum_samples_.load(std::memory_order_relaxed) /
         (config_.input_sample_rate * age_observations));
+    const uint64_t p50_target = (age_observations * 50U + 99U) / 100U;
     const uint64_t p95_target = (age_observations * 95U + 99U) / 100U;
     const uint64_t p99_target = (age_observations * 99U + 99U) / 100U;
     uint64_t cumulative = 0;
-    for (size_t i = 0; i < pitch_age_histogram_.size(); ++i) {
+    bool have_p50 = false, have_p95 = false, have_p99 = false;
+    for (size_t i = 0; i < kPitchAgeHistogramBins && pitch_age_histogram_; ++i) {
       cumulative += pitch_age_histogram_[i].load(std::memory_order_relaxed);
       const float upper_ms = static_cast<float>(
           1000.0 * (i + 1) * kPitchAgeBinSamples /
           config_.input_sample_rate);
-      if (result.pitch_age_p95_ms == 0.0f && cumulative >= p95_target)
+      if (!have_p50 && cumulative >= p50_target) {
+        result.pitch_age_p50_ms = upper_ms;
+        have_p50 = true;
+      }
+      if (!have_p95 && cumulative >= p95_target) {
         result.pitch_age_p95_ms = upper_ms;
-      if (result.pitch_age_p99_ms == 0.0f && cumulative >= p99_target) {
+        have_p95 = true;
+      }
+      if (!have_p99 && cumulative >= p99_target) {
         result.pitch_age_p99_ms = upper_ms;
+        have_p99 = true;
         break;
       }
     }
+    // A percentile estimated from a histogram is only known to the bin's upper
+    // edge; clamp to the exact observed maximum so the invariant
+    // P50 <= P95 <= P99 <= max holds for the same sample set.
+    auto clamp_to_max = [&](float v) {
+      return v > result.pitch_age_max_ms ? result.pitch_age_max_ms : v;
+    };
+    result.pitch_age_p50_ms = clamp_to_max(result.pitch_age_p50_ms);
+    result.pitch_age_p95_ms = clamp_to_max(result.pitch_age_p95_ms);
+    result.pitch_age_p99_ms = clamp_to_max(result.pitch_age_p99_ms);
   }
-  result.pitch_age_max_ms = static_cast<float>(
-      1000.0 * pitch_age_max_samples_.load(std::memory_order_relaxed) /
-      config_.input_sample_rate);
+
   result.fifo_pushes = fifo_.pushes();
   result.fifo_pops = fifo_.pops();
   result.fifo_drops = fifo_.dropped();
@@ -1103,6 +1255,15 @@ ProfileStats PitchAnalysis::profile(PitchAnalysisProfileSection s) const {
       s <= PitchAnalysisProfileSection::YinTotal)
     return yin_.profile(s);
   return profiler_.stats(ps(s));
+}
+ProfileDistributionStats
+PitchAnalysis::profile_distribution(PitchAnalysisProfileSection s) const {
+  if (s >= PitchAnalysisProfileSection::Count)
+    return {};
+  if (s >= PitchAnalysisProfileSection::YinEnergy &&
+      s <= PitchAnalysisProfileSection::YinTotal)
+    return yin_.profile_distribution(s);
+  return profiler_.distribution_stats(ps(s));
 }
 
 PitchMarkForensicTelemetry PitchAnalysis::mark_forensic_telemetry() const {

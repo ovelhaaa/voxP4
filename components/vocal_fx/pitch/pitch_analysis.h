@@ -20,6 +20,7 @@ public:
   static constexpr size_t kMarkCapacity = 64;
   bool init(const PitchAnalysisConfig &);
   void reset();
+  void reset_measurement_telemetry();
   void tap(const float *, size_t, bool audit_identity = false); // audio-task producer, bounded/non-blocking
   size_t run(size_t max_hops);     // analysis-task consumer
   PitchResult latest() const;
@@ -30,7 +31,10 @@ public:
   bool try_marks(uint64_t, uint64_t, PitchMark *, size_t, size_t *) const;
   PitchTrackState track_state() const;
   uint64_t latency_samples() const { return latency_samples_; }
+  const PitchAnalysisConfig &effective_config() const { return config_; }
   ProfileStats profile(PitchAnalysisProfileSection) const;
+  ProfileDistributionStats
+  profile_distribution(PitchAnalysisProfileSection) const;
   PitchAnalysisAuditTelemetry audit_telemetry() const;
   PitchMarkForensicTelemetry mark_forensic_telemetry() const;
   YinForensicTelemetry yin_forensic_telemetry() const {
@@ -82,6 +86,8 @@ private:
   AnalysisFifo<kFifoCapacity> fifo_;
   std::array<float, YinDetector::kMaxWindow> rolling_{}, linear_{};
   size_t rolling_write_ = 0, rolling_count_ = 0, since_hop_ = 0;
+  uint64_t profile_fifo_cycles_since_hop_ = 0;
+  uint64_t profile_rolling_cycles_since_hop_ = 0;
   uint64_t previous_fifo_position_ = 0;
   bool have_previous_fifo_position_ = false;
   std::array<float, kAudioHistory> audio_{};
@@ -113,12 +119,21 @@ private:
       audit_published_timestamp_{0}, audit_backlog_max_samples_{0};
   std::atomic<uint64_t> pitch_age_sum_samples_{0}, pitch_age_observations_{0},
       pitch_age_max_samples_{0};
-  static constexpr size_t kPitchAgeHistogramBins = 128;
-  // 50 ms bins keep the 128-bin histogram useful even during multi-second
-  // worker stalls.  This is passive telemetry and does not affect analysis.
-  static constexpr uint32_t kPitchAgeBinSamples = 2400;
-  std::array<std::atomic<uint32_t>, kPitchAgeHistogramBins>
-      pitch_age_histogram_{};
+  // B4D.5 fix: the percentile loop reports a bin's *upper edge*.  With the old
+  // general-audit bin of 2400 samples (54.4 ms at 44.1 kHz) every observation
+  // below 54 ms landed in bin 0, so P95/P99 were reported as 54.42 ms while the
+  // true max was 30.57 ms -- i.e. P99 > max.  Use 1 ms bins (48 samples at
+  // 48 kHz) in every mode so the percentile is meaningful.  The histograms are
+  // PSRAM-backed so the internal .bss link budget is unchanged.
+  static constexpr size_t kPitchAgeHistogramBins = 1024;
+  static constexpr uint32_t kPitchAgeBinSamples = 48; // ~1 ms at 48 kHz
+  // B4D.5: sample-domain analysis backlog distribution (same 1 ms bins).
+  static constexpr size_t kBacklogHistogramBins = 512;
+  std::atomic<uint32_t> *pitch_age_histogram_ = nullptr;
+  std::atomic<uint32_t> *analysis_backlog_histogram_ = nullptr;
+  bool ensure_age_histograms();
+  std::atomic<uint64_t> analysis_backlog_sum_samples_{0},
+      analysis_backlog_observations_{0};
   std::atomic<uint8_t> coherent_marks_audit_{0}, coherent_marks_maximum_{0},
       mark_failures_audit_{0}, mark_failures_maximum_{0};
   std::atomic<uint64_t> coherent_mark_increments_{0}, coherent_mark_resets_{0};

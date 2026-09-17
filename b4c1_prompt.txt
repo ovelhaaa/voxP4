@@ -1,0 +1,1626 @@
+<USER_REQUEST>
+Trabalhe no repositório local:
+
+`C:\progs\VoxP4\voxP4`
+
+# Stage B4C.1 — Audio/Render Core DSP Budget Audit
+
+## Contexto confirmado
+
+A sequência B4B encerrou a qualificação do analysis core.
+
+Estado atual:
+
+```text
+Production P4 defaults:
+- YIN_DIFF_INCREMENTAL_F32
+- rebase = 64
+- YIN_ENERGY_F32_COMPENSATED
+- YIN_CMND_F32_COMPENSATED
+- PITCH_MARK_NCC_CONTIGUOUS_MULTI8
+- LPC_ENERGY_F32_COMPENSATED
+- AUTOCORR_F32_DOUBLE_SINGLE
+
+B4B override:
+NO
+```
+
+A matriz musical B4B.6/B4B.6A demonstrou:
+
+```text
+65–1000 Hz hard realtime:
+PASS
+
+full range <=900 ms/s:
+PASS
+
+representative vocal range <=800 ms/s:
+PASS
+
+worst synthetic:
+~812 ms/s
+
+worst representative vocal:
+~792 ms/s
+
+real vocal:
+substantially below worst synthetic
+
+FIFO:
+bounded
+
+transport:
+clean
+
+teardown:
+clean
+```
+
+O `LOW_F0_PITCHMARK_CPU_LIMIT` foi resolvido sem alteração de geometria ou decisões musicais.
+
+Portanto:
+
+```text
+ANALYSIS CORE:
+CLOSED FOR RC
+```
+
+Não reabrir otimizações de pitch/LPC nesta milestone.
+
+---
+
+# 1. OBJETIVO
+
+Medir rigorosamente o orçamento computacional do:
+
+```text
+AUDIO / RENDER CORE
+```
+
+com o harmonizer realmente produzindo áudio e com os efeitos disponíveis ativados progressivamente.
+
+A pergunta central é:
+
+```text
+How much DSP budget remains after
+the complete harmonizer/render path,
+and which additional vocal effects
+can safely run in production?
+```
+
+---
+
+# 2. NÃO otimizar nesta milestone
+
+B4C.1 é primeiro:
+
+```text
+MEASURE
++
+DECOMPOSE
++
+CAPACITY PLAN
+```
+
+NÃO fazer refactor amplo.
+
+NÃO otimizar kernels antes de localizar custo.
+
+NÃO mudar qualidade de efeitos.
+
+NÃO reduzir taps, voices, delay lengths, reverb quality ou interpolation apenas para fazer o teste passar.
+
+---
+
+# 3. Freeze do analysis core
+
+Não modificar:
+
+```text
+YIN
+CMND
+YinEnergy
+PitchMark
+LPC
+pitch smoothing
+tracking
+voicing
+onset
+PSOLA mark selection rules
+analysis FIFO
+analysis scheduling
+analysis priorities
+```
+
+Os defaults P4 qualificados devem permanecer ativos.
+
+Startup deve confirmar:
+
+```text
+B4B override active = NO
+```
+
+---
+
+# 4. Identificar arquitetura real dos cores
+
+Antes de benchmarkar:
+
+documentar quais tasks/callbacks executam em:
+
+```text
+Core 0
+Core 1
+```
+
+Registrar:
+
+```text
+task name
+core affinity
+priority
+stack size
+wake cadence
+deadline
+```
+
+Especialmente:
+
+```text
+I2S RX/TX
+audio render
+analysis worker
+control/UI tasks
+diagnostic tasks
+```
+
+Não assumir que o render está totalmente isolado no Core 0 sem verificar.
+
+---
+
+# 5. Deadline real de áudio
+
+Confirmar:
+
+```text
+sample rate
+audio block size
+number of channels
+```
+
+Calcular:
+
+```text
+block_deadline_us =
+block_frames / sample_rate * 1e6
+```
+
+Se o caminho atual usa:
+
+```text
+64 frames @ 48 kHz
+```
+
+então:
+
+```text
+deadline ≈ 1333.333 us/block
+```
+
+Mas usar o valor REAL do firmware.
+
+---
+
+# 6. Métricas principais
+
+Para o audio/render core medir:
+
+```text
+average us/block
+P50
+P95
+P99
+max
+
+cycles/block
+cycles/sample
+
+CPU utilization %
+deadline margin us
+deadline margin %
+```
+
+Além de:
+
+```text
+number of blocks
+late blocks
+deadline misses
+```
+
+Se deadline miss não existir atualmente como contador:
+
+adicionar apenas instrumentação diagnóstica.
+
+---
+
+# 7. Profiler overhead
+
+Medir custo do próprio profiler:
+
+```text
+cycle counter reads
+section begin/end
+atomic counters
+histograms
+```
+
+Separar:
+
+```text
+MEASURED INSTRUMENTED LOAD
+
+ESTIMATED PRODUCTION LOAD
+```
+
+Pass/fail conservador deve usar inicialmente:
+
+```text
+instrumented measured load
+```
+
+---
+
+# 8. Decomposição obrigatória do render path
+
+Instrumentar separadamente tudo que existir no caminho.
+
+No mínimo:
+
+```text
+I2S input conversion
+input conditioning
+
+dry path
+
+PSOLA voice 1
+PSOLA voice 2
+additional harmony voices if configured
+
+grain fetch
+grain interpolation
+grain windowing
+OLA accumulation
+
+formant restoration
+harmony envelope
+harmony mix
+
+harmony limiter
+
+compressor
+gate
+EQ / HPF
+
+chorus
+microshift
+modulated delay
+
+stereo delay
+
+FDN reverb
+
+saturation / waveshaper
+
+master limiter
+
+stereo output mix
+
+float -> PCM output conversion
+
+other/unaccounted
+```
+
+Se algum módulo ainda não existe:
+
+marcar:
+
+```text
+NOT IMPLEMENTED
+```
+
+Não inventar custo.
+
+---
+
+# 9. PSOLA detalhado
+
+Separar por voice:
+
+```text
+PSOLA voice 1
+PSOLA voice 2
+PSOLA voice N
+```
+
+Dentro de cada voice, se possível:
+
+```text
+mark lookup
+grain scheduling
+history lookup
+interpolation
+window multiply
+OLA accumulation
+normalization
+```
+
+Objetivo:
+
+descobrir custo marginal de cada harmony voice.
+
+---
+
+# 10. Harmony voice matrix
+
+Executar:
+
+```text
+0 harmony voices
+1 harmony voice
+2 harmony voices
+```
+
+Se o engine suporta mais:
+
+também:
+
+```text
+3
+4
+```
+
+somente se forem configurações válidas atuais.
+
+Para cada configuração medir:
+
+```text
+audio-core us/block
+CPU %
+PSOLA us/block
+additional cost per voice
+```
+
+---
+
+# 11. Pitch intervals
+
+Harmony cost pode variar com ratio/pitch shift.
+
+Testar pelo menos:
+
+```text
+-12 semitones
+-7
+-5
++3
++5
++7
++12
+```
+
+Com duas vozes:
+
+testar combinações representativas:
+
+```text
+-3 / +3
+-5 / +5
+-7 / +7
+-12 / +12
+```
+
+Não alterar PSOLA quality.
+
+---
+
+# 12. Formant preservation
+
+Para cada configuração importante testar:
+
+```text
+formant OFF
+formant ON
+```
+
+Medir custo marginal:
+
+```text
+delta us/block
+delta CPU %
+```
+
+Se formant processing ocorrer em outro core:
+
+documentar separadamente.
+
+---
+
+# 13. Worst realistic harmony configuration
+
+Identificar a configuração de harmonizer mais cara entre as suportadas.
+
+Não assumir que:
+
+```text
++12
+```
+
+é automaticamente pior.
+
+Medir.
+
+---
+
+# 14. Stimulus matrix
+
+Usar pelo menos:
+
+```text
+65 Hz
+80 Hz
+110 Hz
+147 Hz
+220 Hz
+440 Hz
+```
+
+e:
+
+```text
+harmonic voiced signal
+real vocal corpus
+```
+
+O analysis core já foi qualificado, mas o número e densidade de grains podem variar com F0.
+
+---
+
+# 15. Real vocal corpus
+
+Usar os mesmos trechos versionados já utilizados em B4B.6.
+
+Preferir o corpus completo equivalente já definido.
+
+Manter:
+
+```text
+real PCM1808 RX active
+real PCM5102 TX active
+```
+
+Mesmo se o DSP tap receber replay determinístico.
+
+---
+
+# 16. Baseline A — transport only
+
+Criar a baseline mínima:
+
+```text
+I2S RX
+pass-through
+I2S TX
+```
+
+Sem harmonizer e sem efeitos.
+
+Medir:
+
+```text
+us/block
+CPU %
+deadline margin
+```
+
+Esse é o custo fixo do sistema de áudio.
+
+---
+
+# 17. Baseline B — dry processing
+
+Ativar somente os blocos obrigatórios do dry path:
+
+```text
+input conversion
+HPF/EQ if mandatory
+dry mix
+output conversion
+```
+
+Sem harmony/effects.
+
+Medir delta contra transport-only.
+
+---
+
+# 18. Baseline C — harmonizer only
+
+Ativar:
+
+```text
+full production harmonizer
+```
+
+com:
+
+```text
+maximum supported production harmony voices
+formant preservation ON
+normal envelopes
+normal interpolation
+harmony limiter ON
+```
+
+Desligar efeitos opcionais.
+
+Este é o principal baseline para capacidade adicional.
+
+---
+
+# 19. Efeitos existentes
+
+Inventariar primeiro o código atual.
+
+Tabela:
+
+```text
+effect
+implemented?
+production-ready?
+currently wired into render path?
+bypass mode cost?
+active cost?
+state memory
+delay memory
+```
+
+Não assumir lista.
+
+---
+
+# 20. Compressor
+
+Se implementado:
+
+testar:
+
+```text
+OFF
+ON no gain reduction
+ON active gain reduction
+```
+
+Medir custo marginal.
+
+---
+
+# 21. Limiter
+
+Testar:
+
+```text
+OFF
+ON below threshold
+ON actively limiting
+```
+
+Se harmony limiter e master limiter forem distintos:
+
+medir ambos separadamente.
+
+---
+
+# 22. Chorus / microshift
+
+Se implementado:
+
+testar:
+
+```text
+OFF
+ON nominal
+ON worst supported modulation setting
+```
+
+Registrar:
+
+```text
+delay taps
+interpolation type
+channels
+modulation rate
+```
+
+---
+
+# 23. Stereo delay
+
+Testar:
+
+```text
+OFF
+ON mono
+ON stereo
+ON feedback
+maximum practical taps/config
+```
+
+Delay length normalmente não altera muito CPU, mas confirmar.
+
+Separar:
+
+```text
+RAM/PSRAM cost
+CPU cost
+```
+
+---
+
+# 24. FDN reverb
+
+Se implementado:
+
+testar isoladamente:
+
+```text
+OFF
+
+production nominal
+
+production high-quality / largest supported config
+```
+
+Registrar:
+
+```text
+number of delay lines
+feedback matrix size
+filters
+modulation
+stereo outputs
+```
+
+Medir:
+
+```text
+us/block
+cycles/sample
+CPU %
+```
+
+---
+
+# 25. Reverb memory
+
+Reportar:
+
+```text
+internal SRAM
+PSRAM
+total delay memory
+state memory
+```
+
+Também medir se delay-line placement em PSRAM afeta CPU/jitter.
+
+Não mover memória nesta milestone.
+
+---
+
+# 26. Saturation
+
+Se implementada:
+
+testar:
+
+```text
+bypass
+active
+```
+
+Registrar função:
+
+```text
+polynomial
+tanh approximation
+table
+hard/soft clip
+```
+
+Apenas medir.
+
+---
+
+# 27. Full FX chain
+
+Após medir individualmente:
+
+executar a cadeia completa existente:
+
+```text
+Input
+-> conditioning
+-> harmonizer
+-> compressor
+-> chorus/microshift
+-> delay
+-> FDN reverb
+-> saturation
+-> limiter
+-> output
+```
+
+A ordem deve ser a ordem REAL do projeto.
+
+Não reorganizar nesta milestone.
+
+---
+
+# 28. Combinações obrigatórias
+
+No mínimo medir:
+
+```text
+A. transport-only
+
+B. dry path
+
+C. harmonizer only
+
+D. harmonizer + compressor
+
+E. harmonizer + delay
+
+F. harmonizer + reverb
+
+G. harmonizer + chorus
+
+H. harmonizer + delay + reverb
+
+I. harmonizer + chorus + delay + reverb
+
+J. full current FX chain
+```
+
+---
+
+# 29. Worst-case FX settings
+
+Para cada efeito identificar settings que maximizam CPU.
+
+Não usar settings absurdos não disponíveis ao usuário.
+
+Usar:
+
+```text
+worst valid production configuration
+```
+
+---
+
+# 30. Audio-core pass criteria
+
+Hard deadline:
+
+```text
+max block runtime < block deadline
+```
+
+Mais importante:
+
+```text
+zero deadline misses
+```
+
+em steady state.
+
+---
+
+# 31. Production headroom target
+
+Definir:
+
+```text
+audio render average <= 70% of block deadline
+```
+
+como target saudável.
+
+Também reportar:
+
+```text
+P99 <= 80%
+max <= 90%
+```
+
+como metas desejáveis.
+
+Não reprovar automaticamente se alguma meta desejável for excedida, desde que deadline nunca seja perdido.
+
+Mas classificar claramente.
+
+---
+
+# 32. Capacity classes
+
+Classificar cada configuração:
+
+```text
+GREEN:
+average <=70%
+P99 <=80%
+max <=90%
+
+YELLOW:
+average <=80%
+P99 <=90%
+no deadline miss
+
+RED:
+deadline miss
+or persistent >90% block load
+```
+
+---
+
+# 33. Long-run test
+
+Para:
+
+```text
+harmonizer only
+```
+
+e:
+
+```text
+full FX chain
+```
+
+executar:
+
+```text
+>=60 seconds
+```
+
+com real-vocal replay.
+
+Registrar:
+
+```text
+avg/P95/P99/max block runtime
+deadline misses
+RX/TX errors
+drops
+FIFO state
+watchdog
+```
+
+---
+
+# 34. Worst synthetic stability
+
+Também executar:
+
+```text
+worst harmony synthetic case
+```
+
+por:
+
+```text
+>=60 seconds
+```
+
+com full FX chain.
+
+---
+
+# 35. Cross-core interference
+
+Durante os runs:
+
+medir simultaneamente:
+
+```text
+analysis Core1 normalized budget
+audio Core0 block cost
+```
+
+Objetivo:
+
+detectar:
+
+```text
+cache contention
+PSRAM contention
+memory-bus contention
+interrupt interference
+```
+
+Não assumir independência perfeita dos cores.
+
+---
+
+# 36. Compare effects OFF vs ON on analysis core
+
+Verificar se ativar:
+
+```text
+reverb
+delay
+chorus
+```
+
+causa regressão mensurável no Core1.
+
+Reportar:
+
+```text
+Core1 delta %
+```
+
+Isso é importante se ambos competem por memória/PSRAM.
+
+---
+
+# 37. PSRAM bandwidth observation
+
+Se delay/reverb usam PSRAM:
+
+medir mudança em:
+
+```text
+audio P99/max
+analysis P99/max
+```
+
+quando:
+
+```text
+PSRAM effects OFF
+vs ON
+```
+
+Não alterar clock nesta milestone.
+
+---
+
+# 38. Grain load
+
+Para cada harmony configuration reportar:
+
+```text
+grain attempts
+scheduled
+rendered
+grains/block avg
+P95
+max
+```
+
+Relacionar custo PSOLA a:
+
+```text
+grains rendered per block
+```
+
+---
+
+# 39. Marginal cost per harmony voice
+
+Produzir:
+
+```text
+voice count
+audio cost us/block
+delta from previous
+```
+
+Exemplo:
+
+```text
+0 -> 1 voice
+1 -> 2 voices
+2 -> 3 voices
+```
+
+Objetivo:
+
+permitir estimar capacidade futura.
+
+---
+
+# 40. Marginal cost per effect
+
+Tabela obrigatória:
+
+```text
+effect                  delta us/block   delta CPU %
+compressor
+limiter
+chorus
+delay
+FDN reverb
+saturation
+...
+```
+
+Medir delta real.
+
+---
+
+# 41. Remaining budget
+
+Para cada configuração calcular:
+
+```text
+remaining_us =
+deadline_us - max_measured_or_conservative_cost
+```
+
+e:
+
+```text
+remaining_percent
+```
+
+Produzir pelo menos:
+
+```text
+harmonizer-only budget remaining
+full-FX budget remaining
+```
+
+---
+
+# 42. Capacity planning
+
+Com base SOMENTE em medidas, responder:
+
+```text
+Can another harmony voice fit?
+
+Can stereo chorus fit?
+
+Can stereo delay fit?
+
+Can FDN reverb fit?
+
+Can all of them fit together?
+
+How much safe budget remains?
+```
+
+Não responder por estimativa vaga.
+
+---
+
+# 43. Additional-effects projection
+
+Somente depois de medir kernels existentes:
+
+pode calcular upper-bound para futuros efeitos.
+
+Separar claramente:
+
+```text
+MEASURED
+```
+
+de:
+
+```text
+PROJECTED
+```
+
+---
+
+# 44. Memory budget
+
+Reportar também:
+
+```text
+internal SRAM free
+largest internal block
+
+PSRAM free
+largest PSRAM block
+
+audio effect state memory
+
+delay/reverb memory
+PSOLA history
+scratch buffers
+```
+
+Antes e depois da full FX chain.
+
+---
+
+# 45. Stack
+
+Para cada relevant task:
+
+```text
+configured stack
+minimum free/high-water
+```
+
+Não aumentar stack nesta milestone.
+
+---
+
+# 46. Transport
+
+Exigir em todos os qualification runs:
+
+```text
+DMA RX errors = 0
+DMA TX errors = 0
+
+I2S read failures = 0
+I2S write failures = 0
+
+dropped RX frames = 0
+dropped TX frames = 0
+```
+
+Diagnostic queue overflow continua separado.
+
+---
+
+# 47. Teardown
+
+Exigir:
+
+```text
+no assertion
+no reboot
+no watchdog
+no timeout
+no callback-after-free
+```
+
+---
+
+# 48. Audio correctness sanity
+
+Para cada major configuration:
+
+verificar:
+
+```text
+NaN/Inf = 0
+unexpected clipping = 0
+DC regression = none/materially bounded
+```
+
+Não fazer julgamento musical subjetivo como critério primário.
+
+---
+
+# 49. Limiter sanity
+
+Como já houve anteriormente picos na voz harmonizada:
+
+registrar:
+
+```text
+harmony pre-limiter peak
+harmony post-limiter peak
+master peak
+gain-reduction max
+```
+
+Não retunar limiter nesta milestone.
+
+Apenas medir.
+
+---
+
+# 50. Render/reference capture
+
+Se infraestrutura permitir:
+
+salvar pequenos renders/captures de:
+
+```text
+harmonizer only
+harmonizer + reverb
+full FX chain
+```
+
+para inspeção posterior.
+
+Isso não substitui performance qualification.
+
+---
+
+# 51. Unaccounted time
+
+Somar todas as seções do render.
+
+Exigir:
+
+```text
+>=95% reconciliation
+```
+
+Ideal:
+
+```text
+>=98%
+```
+
+Se ficar abaixo:
+
+localizar `other/unaccounted`.
+
+---
+
+# 52. Bypass cost
+
+Medir efeitos:
+
+```text
+compiled but bypassed
+```
+
+porque um bypass mal implementado ainda pode consumir CPU.
+
+Registrar:
+
+```text
+true bypass cost
+```
+
+---
+
+# 53. Avoid benchmark distortion
+
+Não:
+
+```text
+printf inside audio callback
+write files inside audio callback
+allocate/free inside hot path
+```
+
+Telemetria deve ser acumulada e impressa fora do deadline.
+
+---
+
+# 54. Dynamic allocation audit
+
+Durante steady-state:
+
+exigir:
+
+```text
+no malloc/free from audio hot path
+```
+
+Se houver:
+
+documentar exatamente.
+
+Não refatorar nesta milestone salvo se a própria instrumentação introduziu allocation.
+
+---
+
+# 55. Lock/blocking audit
+
+Registrar se audio hot path usa:
+
+```text
+mutex
+semaphore wait
+queue blocking
+critical section
+```
+
+Reportar tempo máximo se mensurável.
+
+Não alterar ainda.
+
+---
+
+# 56. Worst-case selection
+
+Depois da matriz:
+
+identificar:
+
+```text
+worst audio-core configuration
+```
+
+por:
+
+```text
+P99 block cost
+```
+
+e separadamente:
+
+```text
+max block cost
+```
+
+---
+
+# 57. Final qualification uses worst measured case
+
+Não usar média de cenários.
+
+Para capacity planning:
+
+usar:
+
+```text
+worst valid production configuration
+```
+
+---
+
+# 58. Recommended budget reserve
+
+Depois das medições:
+
+reservar pelo menos:
+
+```text
+20–25%
+```
+
+do block deadline para:
+
+```text
+jitter
+interrupts
+future control/UI work
+cache/PSRAM variation
+real-world combination variance
+```
+
+Se full FX deixa menos:
+
+classificar como capacidade limitada mesmo sem deadline miss.
+
+---
+
+# 59. Artifacts
+
+Criar:
+
+```text
+artifacts/alpha01c/
+
+b4c1_audio_core_budget_report.md
+
+b4c1_task_core_map.csv
+b4c1_block_profile.csv
+b4c1_psola_voice_scaling.csv
+b4c1_effect_costs.csv
+b4c1_fx_matrix.csv
+b4c1_memory_budget.csv
+b4c1_cross_core_interference.csv
+b4c1_fullfx_60s.txt
+b4c1_worst_synthetic_60s.txt
+```
+
+Opcionalmente:
+
+```text
+b4c1_harmonizer_only.wav
+b4c1_harmonizer_reverb.wav
+b4c1_full_fx.wav
+```
+
+---
+
+# 60. Respostas obrigatórias
+
+Responder:
+
+1. Qual é o block size real?
+2. Qual é o deadline por bloco?
+3. Qual é o custo transport-only?
+4. Qual é o custo dry path?
+5. Qual é o custo harmonizer-only?
+6. Qual configuração de harmony é mais cara?
+7. Qual F0 gera maior render cost?
+8. Quanto custa uma harmony voice?
+9. Quanto custa a segunda voice adicional?
+10. Formant preservation custa quanto?
+11. Quanto custa grain rendering?
+12. Qual grains/block avg/P95/max?
+13. Quanto custa compressor?
+14. Quanto custa harmony limiter?
+15. Quanto custa master limiter?
+16. Quanto custa chorus/microshift?
+17. Quanto custa delay?
+18. Quanto custa FDN reverb?
+19. Quanto custa saturation?
+20. Qual é o custo da full FX chain?
+21. Qual é average/P95/P99/max da full chain?
+22. Houve deadline miss?
+23. Qual configuração teve maior P99?
+24. Qual teve maior max?
+25. Full FX 60 s passou?
+26. Worst synthetic 60 s passou?
+27. Transport ficou limpo?
+28. Houve audio drops?
+29. Houve NaN/Inf?
+30. Houve clipping inesperado?
+31. Quanto SRAM adicional os efeitos usam?
+32. Quanto PSRAM adicional?
+33. Stack high-water está saudável?
+34. Houve malloc/free em hot path?
+35. Houve blocking em audio callback?
+36. Ativar efeitos degradou Core1?
+37. Qual foi o maior delta Core1?
+38. PSRAM contention apareceu?
+39. Quanto orçamento sobra com harmonizer only?
+40. Quanto sobra com full FX?
+41. Outra harmony voice caberia?
+42. Chorus caberia?
+43. Delay caberia?
+44. FDN reverb caberia?
+45. Todos juntos cabem?
+46. Qual reserva percentual ainda sobra?
+47. Qual é agora o maior hotspot do audio core?
+48. Qual otimização futura teria maior retorno?
+49. O audio/render core está production-capacity-qualified?
+50. Qual deve ser a próxima etapa?
+
+---
+
+# 61. Formato final
+
+```text
+B4C.1 RESULT:
+PASS / FAIL
+
+AUDIO BLOCK:
+<frames> frames @ <rate> Hz
+
+BLOCK DEADLINE:
+xxxx.xx us
+
+TRANSPORT-ONLY:
+xxx.xx us/block
+xx.xx%
+
+HARMONIZER-ONLY:
+xxx.xx us/block
+xx.xx%
+
+FULL FX:
+xxx.xx us/block average
+xxx.xx us P95
+xxx.xx us P99
+xxx.xx us max
+
+DEADLINE MISSES:
+0 / x
+
+HARMONY VOICES:
+<number>
+
+FORMANT:
+ON / OFF
+
+PSOLA:
+xxx.xx us/block
+
+COMPRESSOR:
+xx.xx us/block
+
+CHORUS:
+xx.xx us/block
+
+DELAY:
+xx.xx us/block
+
+FDN REVERB:
+xx.xx us/block
+
+LIMITERS:
+xx.xx us/block
+
+OTHER:
+xx.xx us/block
+
+RECONCILIATION:
+xx.xx%
+
+CORE1 REGRESSION WITH FULL FX:
+x.xx%
+
+FULL-FX 60-S:
+PASS / FAIL
+
+WORST-SYNTHETIC 60-S:
+PASS / FAIL
+
+TRANSPORT:
+PASS / FAIL
+
+DROPS:
+0 / x
+
+STACK:
+healthy / insufficient
+
+INTERNAL SRAM:
+xxxx bytes free
+
+PSRAM:
+xxxx bytes free
+
+HARMONIZER-ONLY REMAINING BUDGET:
+xxx.xx us
+xx.xx%
+
+FULL-FX REMAINING BUDGET:
+xxx.xx us
+xx.xx%
+
+ANOTHER HARMONY VOICE FITS:
+YES / NO / NOT MEASURED
+
+CHORUS FITS:
+YES / NO
+
+DELAY FITS:
+YES / NO
+
+FDN REVERB FITS:
+YES / NO
+
+FULL MULTI-FX CHAIN FITS:
+YES / NO
+
+AUDIO/RENDER CORE CAPACITY QUALIFIED:
+YES / NO
+
+NEXT BOTTLENECK:
+<section>
+
+NEXT STEP:
+<strictly based on measured result>
+```
+
+# REGRA FINAL
+
+B4C.1 não deve tentar tornar os efeitos mais rápidos.
+
+Primeiro responder quantitativamente:
+
+```text
+What does the complete harmonizer actually cost?
+
+What does each additional effect cost?
+
+How much safe audio-core budget remains?
+```
+
+Somente depois abrir uma milestone de otimização do maior hotspot medido.
+
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-13T08:56:54-03:00.
+</ADDITIONAL_METADATA>

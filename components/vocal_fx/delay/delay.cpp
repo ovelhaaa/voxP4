@@ -57,7 +57,10 @@ float StereoDelay::read(float d) const {
   float p = (float)pos_ - d;
   if (p < 0)
     p += size_;
-  size_t i = (size_t)p, j = (i + 1) % size_;
+  size_t i = (size_t)p;
+  size_t j = i + 1;
+  if (j >= size_)
+    j = 0;
   float f = p - i;
   return l_[i] + (l_[j] - l_[i]) * f;
 }
@@ -67,14 +70,18 @@ void StereoDelay::advance(float x, float &a, float &b, float &wet) {
   float p = (float)pos_ - right_delay;
   if (p < 0)
     p += size_;
-  size_t i = (size_t)p, j = (i + 1) % size_;
+  size_t i = (size_t)p;
+  size_t j = i + 1;
+  if (j >= size_)
+    j = 0;
   float f = p - i;
   b = r_[i] + (r_[j] - r_[i]) * f;
   lp_l_ = (1 - lp_alpha_) * a + lp_alpha_ * lp_l_;
   lp_r_ = (1 - lp_alpha_) * b + lp_alpha_ * lp_r_;
   l_[pos_] = x + feedback_ * lp_l_;
   r_[pos_] = x + feedback_ * lp_r_;
-  pos_ = (pos_ + 1) % size_;
+  if (++pos_ >= size_)
+    pos_ = 0;
   wet = wet_.next();
 }
 void StereoDelay::process(float x, float &ol, float &orr) {

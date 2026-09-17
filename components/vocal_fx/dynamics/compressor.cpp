@@ -14,6 +14,10 @@ void Compressor::set(float t, float r, float a, float rel, float m, float k) {
   makeup_ = std::pow(10.0f, m / 20);
   attack_ = std::exp(-1 / (sr_ * std::max(a, .01f) * .001f));
   release_ = std::exp(-1 / (sr_ * std::max(rel, .01f) * .001f));
+  // Linear guard 1 dB below the knee edge. Below it the exact gain computer is
+  // 0 dB, so process() may return x*makeup_ directly (bit-identical).
+  threshold_lo_linear_ =
+      std::pow(10.0f, (threshold_ - knee_ * 0.5f - 1.0f) * 0.05f);
 }
 float Compressor::gain_db_for(float x) const {
   float over = x - threshold_;
@@ -27,6 +31,10 @@ float Compressor::process(float x) {
   float p = std::fabs(x);
   float c = p > env_ ? attack_ : release_;
   env_ = p + (env_ - p) * c;
+  // Exact fast path: provably 0 dB gain, so pow(10, 0) == 1 and log10 is not
+  // needed. Identical output to the general path.
+  if (env_ <= threshold_lo_linear_)
+    return x * makeup_;
   float db = 20 * std::log10(std::max(env_, 1e-12f));
   return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
 }

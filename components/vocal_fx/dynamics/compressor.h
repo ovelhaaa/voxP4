@@ -11,4 +11,8 @@ public:
 private:
   float sr_ = 48000, threshold_ = -18, ratio_ = 3, knee_ = 6, makeup_ = 1,
         attack_ = 0, release_ = 0, env_ = 0;
+  // B4D.2 exact fast-path guard: linear envelope level at or below which the
+  // gain computer is provably 0 dB (1 dB below the knee edge), so log10/pow
+  // can be skipped with bit-identical output.
+  float threshold_lo_linear_ = 0.0f;
 };

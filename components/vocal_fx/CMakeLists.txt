@@ -9,6 +9,11 @@ idf_component_register(SRCS ${SRCS} INCLUDE_DIRS include dsp dynamics delay reve
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror
     -Wno-missing-field-initializers)
+# B4C.7 link budget: the ESP32-P4 gp-relative small-data window is 4 KB and
+# shared with IDF smalls; app small globals use absolute addressing instead
+# so only IDF smalls compete for the window. No semantic change (a few extra
+# address instructions on diagnostic-flag accesses, outside DSP kernels).
+target_compile_options(${COMPONENT_LIB} PRIVATE -msmall-data-limit=0)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     VOCAL_FX_ENABLE_PROFILING=$<BOOL:${CONFIG_VOCAL_FX_ENABLE_PROFILING}>)
 if(CONFIG_VOCAL_FX_PITCH_DEBUG)
