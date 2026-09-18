@@ -29,6 +29,9 @@ void vocal_fx_reset();
 void vocal_fx_process(const float *input, float *output_l, float *output_r,
                       size_t frames);
 void vocal_fx_set_parameter(VocalFxParameter parameter, float value);
+// Control-plane variant: reports whether the bounded SPSC queue accepted the
+// update. Retained DSP behavior is identical to vocal_fx_set_parameter.
+bool vocal_fx_try_set_parameter(VocalFxParameter parameter, float value);
 void vocal_fx_set_pitch_shift_enabled(bool enabled);
 void vocal_fx_set_pitch_shift_semitones(float semitones);
 void vocal_fx_set_pitch_shift_mix(float wet);
@@ -103,6 +106,9 @@ bool vocal_fx_try_get_pitch_marks(uint64_t start_sample, uint64_t end_sample,
 PitchTrackState vocal_fx_pitch_track_state();
 PitchAnalysisDebug vocal_fx_pitch_analysis_debug();
 PitchAnalysisAuditTelemetry vocal_fx_pitch_analysis_audit_telemetry();
+// B4D.12: cheap current pitch-analysis backlog (ms) for per-block burn-in
+// telemetry. Does not copy the full audit snapshot.
+float vocal_fx_pitch_backlog_ms();
 YinForensicTelemetry vocal_fx_yin_forensic_telemetry();
 PitchMarkForensicTelemetry vocal_fx_pitch_mark_forensic_telemetry();
 size_t vocal_fx_read_pitch_audit_events(PitchAuditEvent *events,
@@ -211,6 +217,35 @@ struct VocalFxLastBlockStats {
   // B4D.5 paired-block matching inputs (voice 0).
   float f0 = 0.0f;
   uint8_t source_grains = 0;
+  // B4D.7: scheduler iterations in the block.
+  uint16_t schedule_attempts = 0;
+  uint32_t sched_cycles = 0;
+  uint32_t addgrain_cycles = 0;
+  uint32_t deferred_cycles = 0;
+  uint8_t model_new_count = 0;
+  uint8_t warp_hit_count = 0;
+  uint8_t warp_miss_count = 0;
+  uint32_t mark_cycles = 0;
+  uint32_t warp_phase_cycles = 0;
+  uint32_t desc_cycles = 0;
+  uint32_t near_cycles = 0;
+  uint32_t poly_cycles = 0;
+  uint32_t gn_cycles = 0;
+  uint32_t cl_cycles = 0;
+  uint32_t ch_cycles = 0;
+  // B4D.8 per-grain ordinals (0,1,2).
+  uint32_t ord_mark[3]{};
+  uint32_t ord_warp[3]{};
+  uint32_t ord_desc[3]{};
+  uint32_t ord_near[3]{};
+  uint32_t ord_sel[3]{};
+  uint32_t ord_align[3]{};
+  uint16_t mark_count = 0;
+  uint32_t prewarm_cycles = 0;
+  int32_t debt_samples = 0;
+  uint32_t output_period_q8 = 0;
+  int32_t g_dest[4]{};
+  uint16_t g_half[4]{};
 };
 VocalFxLastBlockStats vocal_fx_last_block_stats();
 
@@ -260,6 +295,12 @@ void vocal_fx_b4d5_global_class_free();
 uint64_t vocal_fx_b4d5_global_class_cycles(size_t bucket, size_t group);
 uint64_t vocal_fx_b4d5_global_class_blocks(size_t bucket);
 const char *vocal_fx_b4d5_global_class_name(size_t group);
+
+// B4D.9 diagnostic prewarm variant (0=off; bit0 marks, bit1 model ring,
+// bit2 GainNorm tables). Read-only; no DSP effect.
+void vocal_fx_b4d9_set_prewarm_variant(int v);
+// B4D.10 scheduler geometry variant (0=S0, 1=S1). Diagnostic only.
+void vocal_fx_b4d10_set_sched_variant(int v);
 
 // B4D.2 warp-cache audit (§7): total model-change warp-cache misses and how
 // many differ only by model_timestamp (all mathematical inputs identical).

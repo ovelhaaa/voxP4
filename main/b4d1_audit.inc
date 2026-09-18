@@ -6,7 +6,8 @@
 // forensics, the model-change x deadline-miss contingency, TX-prep breakdown,
 // incremental FX costs and the F0 matrix.  No DSP arithmetic is changed here.
 
-#if defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+#if defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || \
+    defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN)
 
 #include "esp_timer.h"
 #include "esp_cpu.h"
@@ -236,14 +237,15 @@ inline void b4d1_print_class_sections(const char *name) {
       "formant_soft_clip",    "formant_blend",      "fallback",
       "articulation",         "plosive_bridge",     "telemetry",
       "other",                "total"};
-  for (size_t b = 0; b < 4; ++b) {
+  for (size_t b = 0; b < 8; ++b) {
     const uint64_t blocks = vocal_fx_b4d4_class_blocks(b);
     if (!blocks) continue;
     for (size_t s = 0; s < 20; ++s) {
       const uint64_t cyc = vocal_fx_b4d4_class_cycles(b, s);
-      printf("B4D4_CLASS_SECTION name=%s bucket=%zu blocks=%llu sec=%s "
-             "avg_us=%.2f\n",
-             name, b, static_cast<unsigned long long>(blocks), sec_names[s],
+      printf("B4D4_CLASS_SECTION name=%s bucket=%zu mc=%zu grains=%zu "
+             "blocks=%llu sec=%s avg_us=%.2f\n",
+             name, b, b / 4, b % 4,
+             static_cast<unsigned long long>(blocks), sec_names[s],
              static_cast<double>(cyc) / blocks /
                  static_cast<double>(Profiler::cycles_per_us()));
     }
@@ -390,8 +392,7 @@ void b4d1_run_case(const char *name, uint32_t seconds, int voices, bool comp,
          name, voices, comp ? 1 : 0, delay ? 1 : 0, reverb ? 1 : 0,
          forensic ? 1 : 0, wall_s, count, expected);
   printf("B4D1_PHYSICAL name=%s rx_blocks=%llu tx_blocks=%llu dsp_blocks=%llu "
-         "rx_frames=%llu tx_frames=%llu effective_fs=%.3f err_pct=%.4f\n",
-         name,
+         "rx_frames=%llu tx_frames=%llu effective_fs=%.3f err_pct=%.4f\n",         name,
          static_cast<unsigned long long>(c.rx_blocks_read.load()),
          static_cast<unsigned long long>(c.tx_blocks_written.load()),
          static_cast<unsigned long long>(c.audio_blocks_processed.load()),
@@ -400,6 +401,9 @@ void b4d1_run_case(const char *name, uint32_t seconds, int voices, bool comp,
          expected > 0.0 ? (static_cast<double>(c.rx_blocks_read.load()) - expected) /
                               expected * 100.0
                         : 0.0);
+  printf("B4D1_TXHASH name=%s tx_frames=%llu tx_pcm_fnv=%08lx\n", name,
+         static_cast<unsigned long long>(c.tx_frames_written.load()),
+         static_cast<unsigned long>(c.tx_pcm_fnv.load()));
   printf("B4D1_TRANSPORT name=%s rx_overruns=%llu tx_underruns=%llu "
          "dma_errors=%llu actual_rx_dma_errors=%llu actual_tx_dma_errors=%llu "
          "read_failures=%llu write_failures=%llu rx_dropped_frames=%llu "
@@ -719,14 +723,74 @@ void b4d1_run_case(const char *name, uint32_t seconds, int voices, bool comp,
       uint16_t fir = 0;
       float f0 = 0.0f;
       printf("B4D1_LATE_BLOCK name=%s blk=%u dsp_us=%u loop_us=%u mc=%u "
-             "new_grains=%u active_desc=%u slices=%u fir=%u exp_warp=%u f0=%.1f\n",
+             "new_grains=%u active_desc=%u slices=%u fir=%u exp_warp=%u "
+             "att=%u sch_us=%.1f ag_us=%.1f df_us=%.1f mk_us=%.1f "
+             "wp_us=%.1f dc_us=%.1f nr_us=%.1f po_us=%.1f gn_us=%.1f "
+             "cl_us=%.1f ch_us=%.1f mn=%u wh=%u wm=%u f0=%.1f\n",
              name, static_cast<unsigned>(rec.block_id),
              static_cast<unsigned>(rec.dsp_us),
              static_cast<unsigned>(rec.loop_us),
              static_cast<unsigned>(rec.model_changed),
              static_cast<unsigned>(ng), static_cast<unsigned>(ad),
              static_cast<unsigned>(ds), static_cast<unsigned>(fir),
-             static_cast<unsigned>(exp), static_cast<double>(f0));
+             static_cast<unsigned>(exp),
+             static_cast<unsigned>(rec.schedule_attempts),
+             static_cast<double>(rec.sched_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.addgrain_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.deferred_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.mark_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.warp_phase_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.desc_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.near_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.poly_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.gn_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.cl_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<double>(rec.ch_cycles) /
+                 static_cast<double>(Profiler::cycles_per_us()),
+             static_cast<unsigned>(rec.model_new_count),
+             static_cast<unsigned>(rec.warp_hit_count),
+             static_cast<unsigned>(rec.warp_miss_count),
+             static_cast<double>(f0));
+      if (rec.new_grains >= 2) {
+        const double cpu = static_cast<double>(Profiler::cycles_per_us());
+        printf("B4D8_ORD name=%s blk=%u "
+               "g0_mk=%.1f g0_wp=%.1f g0_nr=%.1f g0_dc=%.1f "
+               "g1_mk=%.1f g1_wp=%.1f g1_nr=%.1f g1_dc=%.1f "
+               "g2_mk=%.1f g2_wp=%.1f g2_nr=%.1f g2_dc=%.1f mc=%u "
+               "g0_sel=%.1f g0_al=%.1f g1_sel=%.1f g1_al=%.1f pw=%.1f "
+               "debt=%d op=%.1f g0=%d,%u g1=%d,%u g2=%d,%u g3=%d,%u\n",
+               name, static_cast<unsigned>(rec.block_id),
+               rec.ord_mark[0] / cpu, rec.ord_warp[0] / cpu,
+               rec.ord_near[0] / cpu, rec.ord_desc[0] / cpu,
+               rec.ord_mark[1] / cpu, rec.ord_warp[1] / cpu,
+               rec.ord_near[1] / cpu, rec.ord_desc[1] / cpu,
+               rec.ord_mark[2] / cpu, rec.ord_warp[2] / cpu,
+               rec.ord_near[2] / cpu, rec.ord_desc[2] / cpu,
+               static_cast<unsigned>(rec.mark_count),
+               rec.ord_sel[0] / cpu, rec.ord_align[0] / cpu,
+               rec.ord_sel[1] / cpu, rec.ord_align[1] / cpu,
+               rec.prewarm_cycles / cpu,
+               static_cast<int>(rec.debt_samples),
+               static_cast<double>(rec.output_period_q8) / 256.0,
+               static_cast<int>(rec.g_dest[0]),
+               static_cast<unsigned>(rec.g_half[0]),
+               static_cast<int>(rec.g_dest[1]),
+               static_cast<unsigned>(rec.g_half[1]),
+               static_cast<int>(rec.g_dest[2]),
+               static_cast<unsigned>(rec.g_half[2]),
+               static_cast<int>(rec.g_dest[3]),
+               static_cast<unsigned>(rec.g_half[3]));
+      }
       printed++;
     }
   }
@@ -926,7 +990,7 @@ void b4d1_run_case(const char *name, uint32_t seconds, int voices, bool comp,
       B4D1BlockRecord rec;
       if (!s_audio.b4d1_recorder_get(i, &rec)) break;
       printf("B4D5_PAIRED name=%s blk=%u dsp_us=%u mc=%u ng=%u ad=%u sl=%u "
-             "sg=%u f0=%.2f\n",
+             "sg=%u att=%u mkc=%u f0=%.2f\n",
              name, static_cast<unsigned>(rec.block_id),
              static_cast<unsigned>(rec.dsp_us),
              static_cast<unsigned>(rec.model_changed),
@@ -934,6 +998,8 @@ void b4d1_run_case(const char *name, uint32_t seconds, int voices, bool comp,
              static_cast<unsigned>(rec.active_desc),
              static_cast<unsigned>(rec.slices),
              static_cast<unsigned>(rec.source_grains),
+             static_cast<unsigned>(rec.schedule_attempts),
+             static_cast<unsigned>(rec.mark_count),
              static_cast<double>(rec.f0));
     }
   }
@@ -1046,6 +1112,23 @@ void b4d1_coordinator_task(void *) {
         b4d1_print_memory(label);
       }
     }
+
+    // B4D.11: two identical S0 production runs for TX-PCM-hash reproducibility
+    // and phase-debt capture.
+    {
+      for (int rep = 0; rep < 2; ++rep) {
+        vocal_fx_b4d10_set_sched_variant(0);
+        char label[64];
+        std::snprintf(label, sizeof(label), "b4d11_s0_fullfx_%s_r%d", rc.tag,
+                      rep);
+        if (b4d1_prestage(label, B4B6StimulusKind::VocalReplay, 220.0f,
+                          kB4b6VocalMulaw, kB4b6VocalMulawSize,
+                          s_b4d1_stage_frames)) {
+          s_audio.set_b4c7_prestaged(s_b4d1_stage, s_b4d1_stage_frames);
+          b4d1_run_case(label, 60, 1, true, true, true, false, false, false);
+        }
+      }
+    }
   }
 
   printf("B4D1_STABILITY total_audio_s=%.1f dma_errors=%llu\n",
@@ -1065,4 +1148,4 @@ void b4d1_coordinator_task(void *) {
 
 } // namespace
 
-#endif // CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION
+#endif // CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION || B4D_12_BURN_IN

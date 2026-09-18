@@ -1,4 +1,14 @@
-# Milestone 4: two-voice harmony
+# Milestone 4: harmony engine (historical two-voice design)
+
+> **HISTORICAL MILESTONE DOCUMENT**
+>
+> This file documents the state of the project at the time of this milestone.
+> **DO NOT use it to infer current product features.**
+> For the current product architecture see `docs/product_architecture.md`.
+
+> **Production baseline note.** The qualified product has a **single** harmony
+> voice (`MAX_HARMONY_VOICES == 1`); B4D.6 removed the second voice and this
+> document's two-voice material is retained as historical design context.
 
 ## Architecture and musical model
 

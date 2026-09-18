@@ -115,6 +115,7 @@ void Profiler::record_distribution(size_t index, uint64_t elapsed_us) {
     return;
   }
 }
+#if VOCAL_FX_ENABLE_PROFILING
 void Profiler::begin(ProfileSection s) {
   const size_t index = static_cast<size_t>(s);
   start_[index] = now_us();
@@ -151,6 +152,12 @@ void Profiler::record_cycles(ProfileSection s, uint64_t cycles,
   record_distribution(index, elapsed_us);
   publish(index);
 }
+#else
+// B4D.6 production-equivalent build: the detailed profiler is compiled out.
+void Profiler::begin(ProfileSection) {}
+void Profiler::end(ProfileSection, uint64_t) {}
+void Profiler::record_cycles(ProfileSection, uint64_t, uint64_t) {}
+#endif
 ProfileStats Profiler::stats(ProfileSection s) const {
   const auto &source = published_[(size_t)s];
   ProfileStats result;

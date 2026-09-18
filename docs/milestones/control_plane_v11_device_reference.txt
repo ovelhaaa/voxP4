@@ -1,0 +1,51 @@
+VoxP4 Control Plane v1.1 — device / build reference
+Generated: 2026-09-18
+
+== Source identity ==
+git commit      : c3b5d6a8344d96700630f27f3368c999576b9676
+git short       : c3b5d6a
+branch          : main
+dirty           : yes (64 uncommitted entries; includes pre-existing B4D work
+                  plus the Control Plane v1/v1.1 additions)
+dirty flag      : TRUE (not a clean-commit build)
+
+== Toolchain / build ==
+ESP-IDF         : ESP-IDF v5.3-dirty
+Target          : esp32p4
+Compiler        : riscv32-esp-elf-gcc 13.2.0 (crosstool-NG esp-13.2.0_20240530)
+CMake           : 3.24.0
+Ninja           : 1.11.1
+Optimization    : -O2, fast-math OFF (production DSP configuration unchanged)
+
+== sdkconfig (relevant) ==
+CONFIG_IDF_TARGET=esp32p4
+CONFIG_ESP32P4_DEFAULT_CPU_FREQ_360=y
+CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN=y
+# VoxLink disabled build (default):
+# CONFIG_VOXLINK_ENABLE_SERVER is not set
+# VoxLink enabled measurement build:
+CONFIG_VOXLINK_ENABLE_SERVER=y
+CONFIG_VOXLINK_UART_PORT=1
+CONFIG_VOXLINK_UART_BAUD=921600
+CONFIG_VOXLINK_UART_TX_GPIO=-1   (UNASSIGNED — pending board schematic)
+CONFIG_VOXLINK_UART_RX_GPIO=-1   (UNASSIGNED — pending board schematic)
+
+== Frozen audio baseline ==
+Fs = 44100 Hz, block = 64 frames, deadline = 1451.247 us
+single harmony voice (MAX_HARMONY_VOICES == 1), S0 scheduler
+TD-PSOLA geometry, LPC16 formant preservation, GainNorm, dry alignment,
+harmony limiter, compressor, delay, FDN reverb, master/output path unchanged.
+
+== ELF SHA256 ==
+VoxLink OFF : 50F7191538C33D671E2B19BC26B215CFF03D5E0D483D7AB6AC3CA8EF28CED7CC
+VoxLink ON  : FA7912B6909D654C92BAE0D53A56E40B945F0D20A6A4306552DD505CB29CF284
+
+The ON hash is from the enabled measurement build; the working tree now holds
+the default disabled build (OFF ELF above).
+
+== UART electrical contract (final, once pins assigned) ==
+P4 TX -> CYD RX, P4 RX <- CYD TX, GND <-> GND. 3.3 V logic only, never 5 V.
+Baud 921600 8N1, no flow control. Manual 460800 fallback only.
+Pins pending: do not assign until verified against WT9932P4-TINY schematic.
+Audio pins in use: GPIO19 (MCLK), GPIO20 (BCLK), GPIO21 (WS), GPIO22 (DOUT),
+GPIO23 (DIN). GPIO37/GPIO38 reserved (console/JTAG).

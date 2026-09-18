@@ -253,16 +253,16 @@ void component_stem_regression() {
               "PSOLA plus fallback stems reconstruct final output");
   }
 }
-void isolated_second_voice_output() {
+void isolated_single_voice_output() {
   VocalFxConfig c{};
   c.enable_gate = c.enable_compressor = c.enable_delay = c.enable_reverb = false;
   c.isolate_pitch_shift_output = true;
-  c.isolated_pitch_shift_voice = 1;
+  c.isolated_pitch_shift_voice = 0;
   c.pitch_shift = {false, 0, 1, 1};
-  require(vocal_fx_init(c), "isolated voice-2 engine init");
-  vocal_fx_set_harmony_enabled(1, true);
-  vocal_fx_set_harmony_interval(1, 7);
-  vocal_fx_set_harmony_gain(1, 1);
+  require(vocal_fx_init(c), "isolated voice engine init");
+  vocal_fx_set_harmony_enabled(0, true);
+  vocal_fx_set_harmony_interval(0, 7);
+  vocal_fx_set_harmony_gain(0, 1);
   constexpr size_t total = 48000 * 3, block = 64;
   std::vector<float> in(total), out(total);
   std::array<float, block> right{};
@@ -279,10 +279,10 @@ void isolated_second_voice_output() {
       tone_power(out, total - 24000, 220 * std::exp2(7.0 / 12));
   const double dry = tone_power(out, total - 24000, 220);
   require(shifted > dry * 10,
-          "isolated voice-2 path must contain its configured pitch");
-  const auto debug = vocal_fx_harmony_debug(1);
+          "isolated single-voice path must contain its configured pitch");
+  const auto debug = vocal_fx_harmony_debug(0);
   require(std::fabs(debug.requested_semitones - 7.0f) < .01f,
-          "voice-2 debug selects voice 2");
+          "debug selects the configured harmony voice");
 }
 void attenuation_bypass_debug() {
   SharedPitchShiftResources normal_shared, bypass_shared;
@@ -435,7 +435,7 @@ int main() {
   ola_ring_wrap_regression();
   component_stem_regression();
   isolated_engine_output();
-  isolated_second_voice_output();
+  isolated_single_voice_output();
   attenuation_bypass_debug();
   for (int field = 0; field < 3; ++field) {
     SharedPitchShiftResources invalid_shared; invalid_shared.init();

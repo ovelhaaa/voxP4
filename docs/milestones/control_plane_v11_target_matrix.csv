@@ -1,0 +1,11 @@
+case,duration_s,traffic_profile,commands_rx,commands_rejected,queue_full,crc_errors,uart_errors,dsp_avg_us,dsp_p99_us,dsp_p999_us,dsp_max_us,dsp_misses,max_consecutive_late,backlog_avg_ms,backlog_max_ms,rx_overruns,tx_underruns,dma_errors,fifo_drops,seq_gaps,nan_inf,effective_fs,result
+A_idle,0,no_client_but_server_enabled,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+B_heartbeat,0,heartbeat_only_1Hz,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+C_telemetry,0,normal_telemetry,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+D_realistic_slider,0,20_50Hz_continuous,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+E_aggressive_slider,0,100_200Hz_continuous,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+F_rapid_toggles,0,effect_enable_bypass_rapid,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+G_rapid_interval,0,harmony_interval_5_10Hz_adversarial,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+H_mixed_worst_case,0,mixed_worst_case_control,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+NORMAL_SOAK,1800,full_fx_plus_normal_control,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW
+ADVERSARIAL_STRESS,900,full_fx_plus_aggressive_control,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NOT_RUN_HW

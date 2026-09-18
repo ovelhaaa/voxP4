@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.16)
 project(vocal_fx_host_tests CXX)
 enable_testing()
 set(VF ../components/vocal_fx)
+set(VOXLINK ../components/voxlink)
+add_library(voxlink_core
+ ${VOXLINK}/src/voxlink_codec.cpp
+ ${VOXLINK}/src/voxlink_crc.cpp
+ ${VOXLINK}/src/voxlink_registry.cpp
+ ${VOXLINK}/src/voxlink_state.cpp
+ ${VOXLINK}/src/voxlink_session.cpp)
+target_include_directories(voxlink_core PUBLIC ${VOXLINK}/include)
+target_compile_features(voxlink_core PUBLIC cxx_std_17)
+target_compile_options(voxlink_core PRIVATE -Wall -Wextra -Werror)
 add_library(vocal_fx_dsp
  ${VF}/dsp/biquad.cpp ${VF}/dsp/smoothing.cpp ${VF}/dsp/limiter.cpp
  ${VF}/dynamics/gate.cpp ${VF}/dynamics/compressor.cpp ${VF}/delay/delay.cpp
@@ -155,3 +165,47 @@ add_test(NAME b4d5_ola_ab COMMAND b4d5_ola_ab)
 add_executable(b4d5_model_equivalence_tests test_b4d5_model_equivalence.cpp)
 target_link_libraries(b4d5_model_equivalence_tests PRIVATE vocal_fx_dsp)
 add_test(NAME b4d5_model_equivalence_tests COMMAND b4d5_model_equivalence_tests)
+
+# VoxLink control-plane host tests.
+add_executable(voxlink_registry_tests test_voxlink_registry.cpp)
+target_link_libraries(voxlink_registry_tests PRIVATE voxlink_core)
+target_include_directories(voxlink_registry_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME voxlink_registry_tests COMMAND voxlink_registry_tests)
+
+add_executable(voxlink_framing_tests test_voxlink_framing.cpp)
+target_link_libraries(voxlink_framing_tests PRIVATE voxlink_core)
+add_test(NAME voxlink_framing_tests COMMAND voxlink_framing_tests)
+
+add_executable(voxlink_fuzz_tests test_voxlink_fuzz.cpp)
+target_link_libraries(voxlink_fuzz_tests PRIVATE voxlink_core)
+add_test(NAME voxlink_fuzz_tests COMMAND voxlink_fuzz_tests)
+
+add_executable(voxlink_state_sync_tests test_voxlink_state_sync.cpp)
+target_link_libraries(voxlink_state_sync_tests PRIVATE voxlink_core)
+add_test(NAME voxlink_state_sync_tests COMMAND voxlink_state_sync_tests)
+
+find_package(Threads REQUIRED)
+add_executable(voxlink_concurrency_tests test_voxlink_concurrency.cpp)
+target_link_libraries(voxlink_concurrency_tests PRIVATE voxlink_core Threads::Threads)
+target_include_directories(voxlink_concurrency_tests PRIVATE
+ ${CMAKE_CURRENT_SOURCE_DIR} ${VF}/src ${VF}/include)
+add_test(NAME voxlink_concurrency_tests COMMAND voxlink_concurrency_tests)
+
+add_executable(voxlink_golden_tests test_voxlink_golden.cpp)
+target_link_libraries(voxlink_golden_tests PRIVATE voxlink_core)
+target_include_directories(voxlink_golden_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME voxlink_golden_tests COMMAND voxlink_golden_tests)
+
+add_executable(voxlink_binding_tests
+ test_voxlink_binding.cpp ${VF}/control/vocal_fx_param_binding.cpp)
+target_link_libraries(voxlink_binding_tests PRIVATE vocal_fx_dsp voxlink_core)
+target_include_directories(voxlink_binding_tests PRIVATE
+ ${CMAKE_CURRENT_SOURCE_DIR} ${VF}/control)
+add_test(NAME voxlink_binding_tests COMMAND voxlink_binding_tests)
+
+add_executable(voxlink_protocol_conformance_tests test_voxlink_conformance.cpp)
+target_link_libraries(voxlink_protocol_conformance_tests PRIVATE voxlink_core)
+target_include_directories(voxlink_protocol_conformance_tests PRIVATE
+ ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME voxlink_protocol_conformance_tests
+ COMMAND voxlink_protocol_conformance_tests)

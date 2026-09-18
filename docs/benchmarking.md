@@ -1,7 +1,13 @@
 # Benchmarking
 
-`specs.md` is the source of truth. At 48 kHz the block deadline is
-`frames / 48000`: 1.333 ms (64), 2.667 ms (128), or 5.333 ms (256).
+> **Production baseline.** The qualified product runs at **44100 Hz** with
+> 64-frame blocks (deadline 1451.247 us), ESP32-P4 @ 360 MHz. See
+> `docs/product_architecture.md`. `specs.md` is the original target
+> specification, not the current configuration.
+
+At 48 kHz (host tooling default) the block deadline is `frames / 48000`:
+1.333 ms (64), 2.667 ms (128), or 5.333 ms (256). At the production 44.1 kHz the
+64-frame deadline is 1.451 ms.
 
 ## ESP32-P4 procedure
 

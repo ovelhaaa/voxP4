@@ -42,7 +42,7 @@
     defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
-    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+    (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
 #include "b4b6_vocal_fixture.h"
 #endif
 
@@ -161,7 +161,7 @@ TaskHandle_t s_pitch_task_handle = nullptr;
     defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
-    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+    (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
 // The J/K diagnostics add enough code/stdio state to split the internal heap's
 // largest block below 32 KiB even though total SRAM remains ample.  Reserve the
 // exact frozen audio-worker stack at link time; size, priority and core stay
@@ -179,7 +179,7 @@ alignas(16) std::array<StackType_t, 32768> s_b4b4j_audio_task_stack{};
     defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
-    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+    (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
 // The RC matrix repeatedly creates the same worker. Reserve its unchanged
 // 16 KiB stack at link time so allocator fragmentation between cases cannot
 // invalidate the harness; core, priority and scheduling remain identical.
@@ -405,8 +405,12 @@ void b4c7_coordinator_task(void *);
 void b4c8_coordinator_task(void *);
 #endif
 
-#if defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+#if (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
 void b4d1_coordinator_task(void *);
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN)
+void b4d12_coordinator_task(void *);
 #endif
 
 #if defined(CONFIG_VOXP4_MODE_I2S_B4B_6_RC_VALIDATION)
@@ -459,7 +463,7 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
     defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
-    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+    (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
   s_audio_task_handle = xTaskCreateStaticPinnedToCore(
       audio_task_entry, "vocal_audio", s_b4b4j_audio_task_stack.size(),
       nullptr, configMAX_PRIORITIES - 2, s_b4b4j_audio_task_stack.data(),
@@ -490,7 +494,7 @@ bool start_pipeline_tasks(vocal_fx_platform::AudioI2sMode mode, bool start_pitch
     defined(CONFIG_VOXP4_MODE_I2S_B4C_7_HARMONIZER_AUDIT) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_DIAGNOSTIC) || \
     defined(CONFIG_VOXP4_MODE_I2S_B4C_8_QUALIFICATION) || \
-    defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+    (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
     s_pitch_task_handle = xTaskCreateStaticPinnedToCore(
         pitch_worker_task, "vocal_pitch", s_b4b6_pitch_task_stack.size(),
         nullptr, configMAX_PRIORITIES - 5, s_b4b6_pitch_task_stack.data(),
@@ -6312,8 +6316,12 @@ void run_i2s_stage_b4b6_rc_validation(void) {
 #include "b4c8_audit.inc"
 #endif
 
-#if defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
+#if (defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION) || defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN))
 #include "b4d1_audit.inc"
+#endif
+
+#if defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN)
+#include "b4d12_audit.inc"
 #endif
 
 void run_i2s_stage_b4c_real_analog(void) {
@@ -6456,6 +6464,13 @@ void run_i2s_bringup_selected_mode(void) {
           tskIDLE_PRIORITY + 1, nullptr, 1,
           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(TAG, "Failed to create B4C.7 harmonizer-audit coordinator task");
+  }
+#elif defined(CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN)
+  if (xTaskCreatePinnedToCoreWithCaps(
+          b4d12_coordinator_task, "b4d12_diag", 65536, nullptr,
+          tskIDLE_PRIORITY + 1, nullptr, 1,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create B4D.12 burn-in coordinator task");
   }
 #elif defined(CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION)
   if (xTaskCreatePinnedToCoreWithCaps(

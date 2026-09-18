@@ -121,6 +121,9 @@ struct AudioTransportCounters {
   std::atomic<uint64_t> tx_frames_written{0};
   std::atomic<uint64_t> rx_blocks_read{0};
   std::atomic<uint64_t> tx_blocks_written{0};
+  // B4D.11: FNV-1a over the TX PCM32 samples written to I2S (device render
+  // reproducibility). Updated on the audio task only.
+  std::atomic<uint32_t> tx_pcm_fnv{2166136261u};
   std::atomic<uint64_t> rx_sequence_gaps{0};
   std::atomic<uint64_t> tx_sequence_gaps{0};
   std::atomic<uint64_t> dma_errors{0};
@@ -162,6 +165,7 @@ struct AudioTransportCounters {
     tx_frames_written.store(0, std::memory_order_relaxed);
     rx_blocks_read.store(0, std::memory_order_relaxed);
     tx_blocks_written.store(0, std::memory_order_relaxed);
+    tx_pcm_fnv.store(2166136261u, std::memory_order_relaxed);
     rx_sequence_gaps.store(0, std::memory_order_relaxed);
     tx_sequence_gaps.store(0, std::memory_order_relaxed);
     dma_errors.store(0, std::memory_order_relaxed);
@@ -343,9 +347,127 @@ struct B4D1BlockRecord {
   // B4D.5 paired-block matching inputs (voice 0).
   float f0 = 0.0f;
   uint8_t source_grains = 0;
+  // B4D.7 scheduler iterations in the block.
+  uint16_t schedule_attempts = 0;
+  uint32_t sched_cycles = 0;
+  uint32_t addgrain_cycles = 0;
+  uint32_t deferred_cycles = 0;
+  uint8_t model_new_count = 0;
+  uint8_t warp_hit_count = 0;
+  uint8_t warp_miss_count = 0;
+  uint32_t mark_cycles = 0;
+  uint32_t warp_phase_cycles = 0;
+  uint32_t desc_cycles = 0;
+  uint32_t near_cycles = 0;
+  uint32_t poly_cycles = 0;
+  uint32_t gn_cycles = 0;
+  uint32_t cl_cycles = 0;
+  uint32_t ch_cycles = 0;
+  uint32_t ord_mark[3]{};
+  uint32_t ord_warp[3]{};
+  uint32_t ord_desc[3]{};
+  uint32_t ord_near[3]{};
+  uint32_t ord_sel[3]{};
+  uint32_t ord_align[3]{};
+  uint16_t mark_count = 0;
+  uint32_t prewarm_cycles = 0;
+  int32_t debt_samples = 0;
+  uint32_t output_period_q8 = 0;
+  int32_t g_dest[4]{};
+  uint16_t g_half[4]{};
   uint8_t reserved = 0;
 };
 constexpr size_t kB4D1BlockRecordCapacity = 65536;
+
+// -----------------------------------------------------------------------------
+// B4D.12 burn-in streaming telemetry.
+//
+// The B4D.1 per-block ring cannot cover multi-hour soaks (it stores every
+// block). B4D.12 instead keeps bounded aggregates and rings, updated once per
+// audio block on the audio task. It never logs, and it is only allocated when
+// the burn-in harness calls b4d12_telemetry_init(), so production modes pay
+// nothing beyond a null-pointer check. PSRAM-backed.
+// -----------------------------------------------------------------------------
+
+// One late DSP block (dsp_us > deadline) plus its recovery context. nextN are
+// the DSP times of the next blocks; recovery_blocks is the number of blocks
+// after this one needed to return at or below the deadline (0xFF pending,
+// 0 = still late after three blocks, 8 = saturated).
+// Trivial (POD) so the PSRAM block can be zeroed with memset and no huge
+// temporary is ever placed on the stack.
+struct B4D12LateEvent {
+  uint32_t block_id;
+  uint16_t dsp_us;
+  uint16_t lateness_us;
+  uint8_t klass;  // 0=NMC, 1=MC+1, 2=MC+2, 3=MC+3+, 4=MC+0
+  uint8_t model_changed;
+  uint8_t new_grains;
+  uint8_t active_desc;
+  uint8_t slices;
+  uint8_t prev_miss;
+  uint16_t next1_dsp_us;
+  uint16_t next2_dsp_us;
+  uint16_t next3_dsp_us;
+  uint8_t recovery_blocks;
+  uint8_t reserved;
+  uint16_t backlog_before_ds;  // analysis backlog before, 0.1 ms units
+  uint16_t backlog_after_ds;   // analysis backlog at recovery
+};
+constexpr size_t kB4D12LateEventCapacity = 2048;
+constexpr uint32_t kB4D12Late1200Us = 1200;
+
+// One 10-minute window aggregate (capacity covers >150 h at 10-min windows).
+constexpr size_t kB4D12WindowHistBins = 24;  // 100 us bins, last is overflow
+struct B4D12WindowStats {
+  uint64_t blocks;
+  uint64_t dsp_sum_us;
+  uint32_t dsp_max_us;
+  uint32_t misses;
+  uint32_t mc2;
+  uint32_t mc3;
+  uint32_t max_consecutive_late;
+  uint32_t backlog_max_ds;
+  uint64_t transport_errors;
+  uint64_t cumulative_lateness_us;
+  uint32_t hist[kB4D12WindowHistBins];
+};
+constexpr size_t kB4D12WindowCapacity = 1024;
+
+struct B4D12Telemetry {
+  static constexpr size_t kLatenessBins = 6;
+  static constexpr size_t kDspHistBins = 65536;
+  static constexpr size_t kRecoveryBins = 8;
+  // Exact whole-DSP histogram (1 us bins) over every observed block.
+  uint32_t dsp_hist[kDspHistBins];
+  B4D12LateEvent late[kB4D12LateEventCapacity];
+  B4D12WindowStats windows[kB4D12WindowCapacity];
+  uint64_t blocks;
+  uint64_t dsp_sum_us;
+  uint32_t dsp_max_us;
+  uint64_t misses;
+  uint64_t late_1200_blocks;
+  uint64_t current_consecutive_late;
+  uint64_t max_consecutive_late;
+  uint64_t late_events;
+  uint64_t late_events_dropped;
+  uint64_t lateness_hist[kLatenessBins];
+  uint64_t miss_nmc, miss_mc0, miss_mc1, miss_mc2, miss_mc3;
+  uint64_t blocks_nmc, blocks_mc0, blocks_mc1, blocks_mc2, blocks_mc3;
+  uint64_t recovery_hist[kRecoveryBins];
+  uint64_t recovery_pending;
+  uint64_t cumulative_lateness_us;
+  uint64_t blocks_per_window;
+  uint64_t window_count;
+  uint64_t window_index;
+  uint64_t window_transport_base;
+  uint64_t window_lateness_base;
+  B4D12WindowStats window;
+  size_t late_write;
+  uint8_t open_event;
+  uint8_t open_next;
+  uint8_t prev_late;
+  uint8_t reserved;
+};
 
 // B4C.7 decomposition sections (§19): 20 global + 20 per voice.
 struct B4C7DecompTotals {
@@ -443,6 +565,11 @@ public:
   void run();
   void stop();
 
+  // Coordinator-only helper: makes pre-staged stimulus generation use the
+  // same nominal rate the pipeline will later run at (init() overwrites it
+  // with the same value). No effect on I2S until init().
+  void set_prestage_sample_rate(uint32_t fs) { config_.sample_rate = fs; }
+
   // Mode & Signal controls
   void set_mode(AudioI2sMode mode);
   void set_tx_signal(TxSignalType sig, float dbfs);
@@ -513,6 +640,19 @@ public:
     return b4d1_record_count_.load(std::memory_order_acquire);
   }
   bool b4d1_recorder_get(size_t index, B4D1BlockRecord *out) const;
+
+  // B4D.12 burn-in streaming telemetry (PSRAM, off until explicitly enabled).
+  bool b4d12_telemetry_init(uint32_t sample_rate,
+                            uint32_t window_seconds = 600);
+  void b4d12_telemetry_free();
+  void b4d12_telemetry_reset();
+  void b4d12_telemetry_enable(bool enabled) {
+    b4d12_enabled_.store(enabled, std::memory_order_release);
+  }
+  bool b4d12_telemetry_enabled() const {
+    return b4d12_enabled_.load(std::memory_order_acquire);
+  }
+  const B4D12Telemetry *b4d12_telemetry() const { return b4d12_tee_; }
   // Host-testable B4C.6A accounting helpers (no ESP dependency).
   static double b4c6a_reconciliation_pct(uint64_t accounted_us,
                                          uint64_t total_us);
@@ -707,6 +847,10 @@ private:
   std::atomic<size_t> b4d1_record_count_{0};
   uint32_t b4d1_record_origin_ = 0;
   std::atomic<bool> b4d1_record_enabled_{false};
+  // B4D.12 streaming telemetry accumulator (PSRAM pointer; 4 bytes of .bss).
+  B4D12Telemetry *b4d12_tee_ = nullptr;
+  std::atomic<bool> b4d12_enabled_{false};
+  void b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us, uint64_t block_idx);
   // PSRAM-backed: ~3.7 KB of per-block counters must not consume internal
   // .bss (the frozen static audio stacks already fill it near the limit).
   B4C7DecompTotals *b4c7_totals_ = nullptr;

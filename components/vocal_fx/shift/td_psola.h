@@ -341,6 +341,34 @@ public:
   uint64_t last_model_timestamp() const { return last_model_timestamp_; }
   uint8_t last_model_changed() const { return model_changed_this_block_; }
   uint8_t last_grains_scheduled() const { return grains_scheduled_this_block_; }
+  uint16_t last_schedule_attempts() const { return schedule_attempts_this_block_; }
+  uint32_t last_sched_cycles() const { return b4d7_sched_cycles_this_block_; }
+  uint32_t last_addgrain_cycles() const { return b4d7_addgrain_cycles_this_block_; }
+  uint32_t last_deferred_cycles() const { return b4d7_deferred_cycles_this_block_; }
+  uint8_t last_model_new_count() const { return b4d7_model_new_this_block_; }
+  uint8_t last_warp_hit_count() const { return b4d7_warp_hit_this_block_; }
+  uint8_t last_warp_miss_count() const { return b4d7_warp_miss_this_block_; }
+  uint32_t last_mark_cycles() const { return b4d7_mark_cycles_this_block_; }
+  uint32_t last_desc_cycles() const { return b4d7_desc_cycles_this_block_; }
+  uint32_t last_near_cycles() const { return b4d7_near_cycles_this_block_; }
+  uint32_t last_poly_cycles() const { return b4d7_poly_cycles_this_block_; }
+  uint32_t last_gn_cycles() const { return b4d7_gn_cycles_this_block_; }
+  uint32_t last_cl_cycles() const { return b4d7_cl_cycles_this_block_; }
+  uint32_t last_ch_cycles() const { return b4d7_ch_cycles_this_block_; }
+  uint32_t ord_mark(size_t i) const { return i < 4 ? b4d8_ord_mark[i] : 0; }
+  uint32_t ord_warp(size_t i) const { return i < 4 ? b4d8_ord_warp[i] : 0; }
+  uint32_t ord_desc(size_t i) const { return i < 4 ? b4d8_ord_desc[i] : 0; }
+  uint32_t ord_near(size_t i) const { return i < 4 ? b4d8_ord_near[i] : 0; }
+  uint32_t ord_sel(size_t i) const { return i < 4 ? b4d8_ord_sel[i] : 0; }
+  uint32_t ord_align(size_t i) const { return i < 4 ? b4d8_ord_align[i] : 0; }
+  uint16_t last_mark_count() const { return b4d8_mark_count_this_block_; }
+  uint32_t last_prewarm_cycles() const { return b4d9_prewarm_cycles_this_block_; }
+  int32_t last_debt_samples() const { return b4d11_debt_samples_; }
+  uint32_t last_output_period_q8() const { return b4d11_output_period_q8_; }
+  uint8_t grain_geom_count() const { return b4d11_g_count_; }
+  int32_t grain_dest(size_t i) const { return i < 4 ? b4d11_g_dest_[i] : 0; }
+  uint16_t grain_half(size_t i) const { return i < 4 ? b4d11_g_half_[i] : 0; }
+  uint32_t last_warp_phase_cycles() const { return model_warp_cycles_this_block_; }
   uint8_t last_grains_rendered() const { return grains_rendered_this_block_; }
   uint8_t last_source_grains_built() const { return source_grains_built_this_block_; }
   uint8_t last_unique_source_grains() const { return unique_source_grains_this_block_; }
@@ -749,6 +777,45 @@ private:
   uint64_t last_model_timestamp_ = 0;
   uint8_t model_changed_this_block_ = 0;
   uint8_t grains_scheduled_this_block_ = 0;
+  // B4D.7: number of scheduler iterations (add_grain attempts) in the block.
+  uint16_t schedule_attempts_this_block_ = 0;
+  // B4D.7 tail probe: coarse per-phase cycles for the block (opt-in).
+  uint32_t b4d7_sched_cycles_this_block_ = 0;
+  uint32_t b4d7_addgrain_cycles_this_block_ = 0;
+  uint32_t b4d7_deferred_cycles_this_block_ = 0;
+  uint8_t b4d7_model_new_this_block_ = 0;
+  uint8_t b4d7_warp_hit_this_block_ = 0;
+  uint8_t b4d7_warp_miss_this_block_ = 0;
+  uint32_t b4d7_mark_cycles_this_block_ = 0;
+  uint32_t b4d7_desc_cycles_this_block_ = 0;
+  // B4D.8: per-grain ordinal phase cycles (first 4 grains).
+  uint32_t b4d8_ord_mark[4]{};
+  uint32_t b4d8_ord_warp[4]{};
+  uint32_t b4d8_ord_desc[4]{};
+  uint32_t b4d8_ord_near[4]{};
+  uint32_t b4d8_ord_sel[4]{};
+  uint32_t b4d8_ord_align[4]{};
+  uint32_t b4d8_last_sel_cycles_ = 0;
+  uint32_t b4d8_last_align_cycles_ = 0;
+  // B4D.9 diagnostic prewarm cost (read-only touches, no state change).
+  uint32_t b4d9_prewarm_cycles_this_block_ = 0;
+  // B4D.11 synthesis-phase debt before the scheduler loop.
+  int32_t b4d11_debt_samples_ = 0;
+  uint32_t b4d11_output_period_q8_ = 0;  // output period * 256
+  // B4D.11.1: per-grain geometry for burst blocks (first 4 grains).
+  int32_t b4d11_g_dest_[4]{};
+  uint16_t b4d11_g_half_[4]{};
+  uint64_t b4d11_g_center_[4]{};
+  uint8_t b4d11_g_count_ = 0;
+  int32_t b4d11_last_dest_ = 0;
+  uint16_t b4d11_last_half_ = 0;
+  uint16_t b4d8_mark_count_this_block_ = 0;
+  uint32_t b4d7_near_cycles_this_block_ = 0;
+  uint32_t b4d7_poly_cycles_this_block_ = 0;
+  uint32_t b4d7_gn_cycles_this_block_ = 0;
+  uint32_t b4d7_cl_cycles_this_block_ = 0;
+  uint32_t b4d7_ch_cycles_this_block_ = 0;
+  PsolaModelWarpAudit b4d7_warp_prev_{};
   uint8_t grains_rendered_this_block_ = 0;
   uint8_t source_grains_built_this_block_ = 0;
   uint8_t unique_source_grains_this_block_ = 0;
@@ -810,3 +877,7 @@ void td_psola_b4d5_mark_audit(uint64_t *calls, uint64_t *candidates,
 // B4D.5 equivalence-gate hook: exact production nearest-mark search.
 size_t td_psola_nearest_mark_index(double source, const PitchMark *marks,
                                    size_t count);
+// B4D.9 diagnostic prewarm variant.
+void td_psola_b4d9_set_prewarm_variant(int v);
+// B4D.10 scheduler geometry variant (0=S0, 1=S1).
+void td_psola_b4d10_set_sched_variant(int v);

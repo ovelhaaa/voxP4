@@ -261,9 +261,6 @@ void test_synthetic_voiced_dsp_pipeline() {
   vocal_fx_set_harmony_enabled(0, true);
   vocal_fx_set_harmony_interval(0, 4.0f);
   vocal_fx_set_harmony_gain(0, 1.0f);
-  vocal_fx_set_harmony_enabled(1, true);
-  vocal_fx_set_harmony_interval(1, 7.0f);
-  vocal_fx_set_harmony_gain(1, 1.0f);
 
   float mono[64], l[64], r[64];
   for (int block = 0; block < 5000; ++block) {
@@ -286,12 +283,10 @@ void test_synthetic_voiced_dsp_pipeline() {
   }
 
   auto h0 = vocal_fx_harmony_telemetry(0);
-  auto h1 = vocal_fx_harmony_telemetry(1);
-  printf("H0 grains: %llu, H1 grains: %llu, H0 state: %d, invalid_mark: %llu, invalid_pitch: %llu\n",
-         (unsigned long long)h0.grains, (unsigned long long)h1.grains, (int)h0.state,
+  printf("H0 grains: %llu, H0 state: %d, invalid_mark: %llu, invalid_pitch: %llu\n",
+         (unsigned long long)h0.grains, (int)h0.state,
          (unsigned long long)h0.invalid_mark, (unsigned long long)h0.invalid_pitch);
   assert(h0.grains > 0);
-  assert(h1.grains > 0);
   printf("  -> PASS\n");
 }
 
@@ -376,9 +371,8 @@ void test_synthetic_voiced_threaded() {
   pitch_th.join();
 
   auto h0 = vocal_fx_harmony_telemetry(0);
-  auto h1 = vocal_fx_harmony_telemetry(1);
-  printf("Threaded Result: H0 grains: %llu, H1 grains: %llu, H0 state: %d (total hops=%llu)\n",
-         (unsigned long long)h0.grains, (unsigned long long)h1.grains, (int)h0.state,
+  printf("Threaded Result: H0 grains: %llu, H0 state: %d (total hops=%llu)\n",
+         (unsigned long long)h0.grains, (int)h0.state,
          (unsigned long long)total_hops_completed.load());
   printf("Final telem: pm_und=%llu, ah_und=%llu, resyncs=%llu, inv_p=%llu, inv_m=%llu, max_grn_ex=%llu\n",
          (unsigned long long)h0.pitch_mark_underflows,
@@ -388,7 +382,6 @@ void test_synthetic_voiced_threaded() {
          (unsigned long long)h0.invalid_mark,
          (unsigned long long)h0.max_grains_exceeded);
   assert(h0.grains > 0);
-  assert(h1.grains > 0);
   printf("  -> PASS\n");
 }
 

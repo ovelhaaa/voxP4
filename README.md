@@ -1,10 +1,18 @@
 # voxP4 vocal effects firmware
 
-ESP-IDF firmware foundation for a low-latency ESP32-P4 vocal processor. The
-current milestone implements the measurable audio core, asynchronous vocal
-analysis, and one fixed-interval monophonic TD-PSOLA pitch-shift voice.
-[`specs.md`](specs.md) is the architectural source of
-truth whenever this overview is incomplete.
+ESP-IDF firmware for a low-latency ESP32-P4 vocal processor. The qualified
+product implements the measurable audio core, asynchronous vocal analysis, one
+monophonic TD-PSOLA harmony voice, LPC16 formant preservation, and the VoxLink
+v1 control plane.
+
+**Current production baseline:** ESP32-P4 @ 360 MHz, 44100 Hz, 64-frame blocks,
+**one** harmony voice, S0 scheduler, `-O2` with fast-math off. The audio engine
+is B4D-qualified and frozen; see
+[`docs/product_architecture.md`](docs/product_architecture.md) for the
+authoritative configuration and [`docs/parameter_registry.md`](docs/parameter_registry.md)
+for the public parameter ABI. [`specs.md`](specs.md) is the original target /
+planned architecture and is labelled as such; it is no longer the description
+of current production.
 
 ## Current architecture
 
@@ -86,9 +94,22 @@ render from being mistaken for the normal dry-plus-harmony product output.
 `--history-offset-ms` and `--debug-csv` support offline timing investigations;
 they do not change the product defaults.
 
-The engine now provides two TD-PSOLA harmony voices with shared source history,
-fixed intervals, major/natural-minor diatonic targets, preserved cents
-deviation, hysteretic note identity, and lock-free MIDI chord targets. See
+The production engine provides a single TD-PSOLA harmony voice with shared
+source history, fixed/diatonic/MIDI-chord targets, preserved cents deviation,
+hysteretic note identity, LPC16 formant preservation and GainNorm. See
 [`docs/harmony_engine.md`](docs/harmony_engine.md). The optimized quality range
-is currently ±7 semitones; the API clamps synthesis to ±12. WSOLA, formant
-preservation, correction, and vocoder remain intentionally unimplemented.
+is currently ±7 semitones; the API clamps synthesis to ±12. B4D.6 removed the
+second voice (`MAX_HARMONY_VOICES == 1`). WSOLA, pitch correction and vocoder
+remain intentionally unimplemented.
+
+## VoxLink control plane
+
+The ESP32-P4 is the authoritative source of truth for parameters, effect
+enable state, capabilities, state revision and telemetry. A CYD controller
+speaks VoxLink v1 over UART; it never duplicates DSP implementation details or
+becomes the authority over product state. See
+[`docs/voxlink_v1.md`](docs/voxlink_v1.md) for the wire protocol and
+[`docs/product_architecture.md`](docs/product_architecture.md) for the data
+flow. The reference client is `tools/voxlink_cli.py`. The control server is
+compiled in but disabled by default (`CONFIG_VOXLINK_ENABLE_SERVER=n`) so the
+qualified realtime path is unchanged unless explicitly enabled.

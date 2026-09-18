@@ -1063,6 +1063,15 @@ PitchTrackState PitchAnalysis::track_state() const {
   return static_cast<PitchTrackState>(
       mark_state_.load(std::memory_order_acquire));
 }
+float PitchAnalysis::current_backlog_ms() const {
+  const uint64_t in = audit_input_position_.load(std::memory_order_acquire);
+  const uint64_t analysed =
+      audit_analysis_position_.load(std::memory_order_acquire);
+  if (in <= analysed || config_.input_sample_rate == 0) return 0.0f;
+  return static_cast<float>(1000.0 * static_cast<double>(in - analysed) /
+                            static_cast<double>(config_.input_sample_rate));
+}
+
 PitchAnalysisAuditTelemetry PitchAnalysis::audit_telemetry() const {
   PitchAnalysisAuditTelemetry result{};
   result.audio_input_position =

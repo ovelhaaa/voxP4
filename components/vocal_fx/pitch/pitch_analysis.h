@@ -36,6 +36,10 @@ public:
   ProfileDistributionStats
   profile_distribution(PitchAnalysisProfileSection) const;
   PitchAnalysisAuditTelemetry audit_telemetry() const;
+  // B4D.12: cheap per-block backlog read (two atomic loads + divide) so the
+  // burn-in telemetry can sample backlog on every audio block without copying
+  // the full audit snapshot.
+  float current_backlog_ms() const;
   PitchMarkForensicTelemetry mark_forensic_telemetry() const;
   YinForensicTelemetry yin_forensic_telemetry() const {
     return yin_.forensic_telemetry();

@@ -169,6 +169,17 @@ config VOXP4_MODE_I2S_B4D_1_QUALIFICATION
         breakdown, incremental compressor/delay/reverb budgets, Full-FX chain,
         and the worst-case F0 matrix.
 
+config VOXP4_MODE_I2S_B4D_12_BURN_IN
+    bool "Stage B4D.12: Physical Pass Qualification / Product Robustness Burn-In"
+    help
+        Qualifies the frozen 44.1 kHz S0 production architecture as a robust
+        realtime audio product. Runs a layered burn-in campaign (deterministic
+        reference, F0 stress, pitch-transition stress, harmony-interval stress,
+        voiced/unvoiced and plosive stress, parameter/control stress, Full-FX
+        and long-duration soaks) while collecting lightweight transport,
+        deadline-miss, lateness-histogram, recovery, backlog, FIFO and memory
+        telemetry. DSP semantics are frozen; only observability is added.
+
 config VOXP4_MODE_I2S_B4C_REAL_ANALOG
     bool "Stage B4C: Real Analog Live Musical DSP (Real Mic/Instrument -> DSP -> DAC)"
     help
@@ -189,6 +200,46 @@ config VOXP4_MODE_SAMPLE_FORMAT_FORENSIC
     help
         Captures and dumps first 256 raw words from RX DMA to verify bit alignment.
 endchoice
+
+config VOXP4_B4D12_REFERENCE_MINUTES
+    int "B4D.12 deterministic reference soak duration (minutes)"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    default 30
+    help
+        Duration of the Full-FX deterministic vocal-replay soak (Test A).
+
+config VOXP4_B4D12_STRESS_SECONDS
+    int "B4D.12 per-region stress window (seconds)"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    default 20
+    help
+        Duration of each F0 / transition / interval / voiced-unvoiced /
+        plosive stress region.
+
+config VOXP4_B4D12_CONTROL_MINUTES
+    int "B4D.12 parameter/control stress duration (minutes)"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    default 10
+    help
+        Duration of the rapid parameter-control and effect enable/disable
+        stress (Tests G/H/I).
+
+config VOXP4_B4D12_SOAK_MINUTES
+    int "B4D.12 long-duration production soak (minutes)"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    default 240
+    help
+        Duration of the final continuous Full-FX production soak (Test J).
+        The milestone minimum is 240 minutes (4 h).
+
+config VOXP4_B4D12_SOAK_ONLY
+    bool "B4D.12 run only the long-duration production soak"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    default n
+    help
+        Skip campaign categories A..I and run only the steady Full-FX
+        long-duration soak (Test J).  Used for a dedicated production soak
+        without repeating the short stress matrix.
 
 config VOXP4_HEADLESS_HW_TEST
     bool

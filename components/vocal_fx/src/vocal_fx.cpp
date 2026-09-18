@@ -48,13 +48,13 @@ struct Engine {
   PitchAnalysis pitch_analysis;
   SharedLpcAnalysis lpc_analysis;
   SharedPitchShiftResources pitch_resources;
-  TdPsola pitch_shift[2];
+  TdPsola pitch_shift[MAX_HARMONY_VOICES];
   HarmonyEngine harmony;
   MidiChordState midi;
   bool ready = false;
   float work[VOCAL_FX_MAX_BLOCK_SIZE], left[VOCAL_FX_MAX_BLOCK_SIZE],
       right[VOCAL_FX_MAX_BLOCK_SIZE];
-  float shifted[2][VOCAL_FX_MAX_BLOCK_SIZE];
+  float shifted[MAX_HARMONY_VOICES][VOCAL_FX_MAX_BLOCK_SIZE];
   float delay_wet_l[VOCAL_FX_MAX_BLOCK_SIZE]{};
   float delay_wet_r[VOCAL_FX_MAX_BLOCK_SIZE]{};
   float rev_wet_l[VOCAL_FX_MAX_BLOCK_SIZE]{};
@@ -62,8 +62,8 @@ struct Engine {
   float dry_bus[VOCAL_FX_MAX_BLOCK_SIZE]{};
   float harm_bus_mono[VOCAL_FX_MAX_BLOCK_SIZE]{};
   SmoothedValue delay_to_reverb_send;
-  float harmony_mix[2]{};
-  float last_wanted_mix[2]{};
+  float harmony_mix[MAX_HARMONY_VOICES]{};
+  float last_wanted_mix[MAX_HARMONY_VOICES]{};
   PitchMark pitch_shift_marks[TdPsola::kMaxMarks];
   PitchMark pitch_shift_candidate_marks[TdPsola::kMaxMarks];
   size_t pitch_shift_mark_count = 0;
@@ -74,6 +74,9 @@ struct Engine {
         delay_dry = 1, delay_wet = .2f;
 };
 Engine e;
+// B4D.6: the product has a single harmony voice, so any legacy voice index
+// resolves to voice 0 (the second TD-PSOLA instance no longer exists).
+inline TdPsola &vf_voice(size_t) { return e.pitch_shift[0]; }
 ParameterQueue<64> parameter_queue;
 struct PitchMailbox {
   std::atomic_flag publisher_lock = ATOMIC_FLAG_INIT;
@@ -266,8 +269,8 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   e.harmony_limiter.init(c.sample_rate, c.harmony_limiter_threshold_db,
                          c.harmony_limiter_attack_ms, c.harmony_limiter_release_ms,
                          c.harmony_limiter_max_reduction_db);
-  e.harmony_mix[0] = e.harmony_mix[1] = 0.0f;
-  e.last_wanted_mix[0] = e.last_wanted_mix[1] = 0.0f;
+  e.harmony_mix[0] = 0.0f;
+  e.last_wanted_mix[0] = 0.0f;
   const float send_target = (c.spatial_routing == SpatialFxRouting::DelayIntoReverb) ? 1.0f : 0.0f;
   e.delay_to_reverb_send.init(send_target, c.sample_rate, 20.0f);
   if (c.enable_pitch_analysis) {
@@ -349,8 +352,8 @@ void vocal_fx_reset() {
   e.limiter.reset();
   e.dry_delay.reset();
   e.harmony_limiter.reset();
-  e.harmony_mix[0] = e.harmony_mix[1] = 0.0f;
-  e.last_wanted_mix[0] = e.last_wanted_mix[1] = 0.0f;
+  e.harmony_mix[0] = 0.0f;
+  e.last_wanted_mix[0] = 0.0f;
   const float reset_send = (e.cfg.spatial_routing == SpatialFxRouting::DelayIntoReverb) ? 1.0f : 0.0f;
   e.delay_to_reverb_send.init(reset_send, e.cfg.sample_rate, 20.0f);
   e.pitch_resources.reset();
@@ -510,8 +513,7 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     if (mark_start > mark_end) {
       g_sync.try_marks_start_gt_end.fetch_add(1, std::memory_order_relaxed);
     }
-    if (e.cfg.enable_pitch_analysis &&
-        (e.pitch_shift[0].enabled() || e.pitch_shift[1].enabled())) {
+    if (e.cfg.enable_pitch_analysis && e.pitch_shift[0].enabled()) {
       size_t candidate_count = 0;
       g_sync.try_marks_attempts.fetch_add(1, std::memory_order_relaxed);
       if (vocal_fx_try_get_pitch_marks(mark_start, mark_end,
@@ -532,39 +534,30 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Harmony);
     const uint32_t c_harm_block_start = Profiler::now_cycles();
     e.pitch_resources.push(e.work,n);
-    const auto targets=e.harmony.update(current_pitch.frequency_hz,
+    const HarmonyVoiceTarget target=e.harmony.update(current_pitch.frequency_hz,
                                          current_pitch.voiced,e.midi);
 #ifndef ESP_PLATFORM
     SampleTelemetryRecord telem_records[64];
-    const size_t iso_v = (e.cfg.isolated_pitch_shift_voice < 2) ? e.cfg.isolated_pitch_shift_voice : 0;
+    const size_t iso_v = 0;
     if (s_sample_telemetry_cb) {
-      e.pitch_shift[iso_v].set_sample_telemetry_buffer(telem_records);
+      e.pitch_shift[0].set_sample_telemetry_buffer(telem_records);
     }
 #endif
-    for(size_t v=0;v<2;++v){
-      VF_PROFILE_BEGIN(e.profiler, v == 0 ? ProfileSection::HarmonyVoice0 : ProfileSection::HarmonyVoice1);
-      e.pitch_shift[v].set_enabled(e.harmony.voice(v).enabled);
-      if(targets[v].valid) {
-        g_funnel.harmony_target_activations.fetch_add(1, std::memory_order_relaxed);
-        e.pitch_shift[v].set_ratio(targets[v].target_frequency_hz/current_pitch.frequency_hz);
-      }
-      e.pitch_shift[v].process_shared(e.work,e.shifted[v],n,current_pitch,
-          vocal_fx_pitch_track_state(),e.pitch_shift_marks,e.pitch_shift_mark_count);
-      VF_PROFILE_END(e.profiler, v == 0 ? ProfileSection::HarmonyVoice0 : ProfileSection::HarmonyVoice1, 0);
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::HarmonyVoice0);
+    e.pitch_shift[0].set_enabled(e.harmony.voice().enabled);
+    if(target.valid) {
+      g_funnel.harmony_target_activations.fetch_add(1, std::memory_order_relaxed);
+      e.pitch_shift[0].set_ratio(target.target_frequency_hz/current_pitch.frequency_hz);
     }
-    // B4C.8B: Record per-block data after both voices are processed.
+    e.pitch_shift[0].process_shared(e.work,e.shifted[0],n,current_pitch,
+        vocal_fx_pitch_track_state(),e.pitch_shift_marks,e.pitch_shift_mark_count);
+    VF_PROFILE_END(e.profiler, ProfileSection::HarmonyVoice0, 0);
+    // B4C.8B: record per-block data after the voice is processed.
     {
       const uint32_t blk_id = s_harmonizer_block_index.load(std::memory_order_relaxed);
-      // Determine voice activity class from harmony target validity.
-      const uint8_t v0_active = targets[0].valid ? 1 : 0;
-      const uint8_t v1_active = targets[1].valid ? 1 : 0;
-      const uint8_t voice_class = static_cast<uint8_t>(
-          (v0_active ? 1 : 0) | (v1_active ? 2 : 0));
+      const uint8_t voice_class = target.valid ? 1 : 0;
       const float pitch_f0 = current_pitch.frequency_hz;
-      for (size_t v = 0; v < 2; ++v) {
-        e.pitch_shift[v].b4c8b_record_block(blk_id, static_cast<uint8_t>(v),
-                                              voice_class, pitch_f0);
-      }
+      e.pitch_shift[0].b4c8b_record_block(blk_id, 0, voice_class, pitch_f0);
     }
     const uint32_t c_harm_block_end = Profiler::now_cycles();
     VF_PROFILE_END(e.profiler, ProfileSection::Harmony, 0);
@@ -575,59 +568,35 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     trace_rec.block_runtime_us = static_cast<float>(c_harm_block_end - c_harm_block_start) * cycles_to_us;
     trace_rec.pipeline_base_us = static_cast<float>(c_harm_block_start > c_pipe_start ? (c_harm_block_start - c_pipe_start) : 0) * cycles_to_us;
     trace_rec.voice0_runtime_us = static_cast<float>(e.pitch_shift[0].last_block_cycles()) * cycles_to_us;
-    trace_rec.voice1_runtime_us = static_cast<float>(e.pitch_shift[1].last_block_cycles()) * cycles_to_us;
     trace_rec.new_grains_scheduled_v0 = e.pitch_shift[0].last_grains_scheduled();
-    trace_rec.new_grains_scheduled_v1 = e.pitch_shift[1].last_grains_scheduled();
     trace_rec.active_grains_rendered_v0 = e.pitch_shift[0].last_grains_rendered();
-    trace_rec.active_grains_rendered_v1 = e.pitch_shift[1].last_grains_rendered();
     trace_rec.source_grains_built_v0 = e.pitch_shift[0].last_source_grains_built();
-    trace_rec.source_grains_built_v1 = e.pitch_shift[1].last_source_grains_built();
-    trace_rec.grain_samples_processed = e.pitch_shift[0].last_grain_samples_processed() +
-                                        e.pitch_shift[1].last_grain_samples_processed();
-    trace_rec.unique_grain_samples = e.pitch_shift[0].last_unique_grain_samples() +
-                                     e.pitch_shift[1].last_unique_grain_samples();
-    trace_rec.unique_source_grain_keys = e.pitch_shift[0].last_unique_source_grains() +
-                                         e.pitch_shift[1].last_unique_source_grains();
-    trace_rec.duplicate_source_grain_keys = e.pitch_shift[0].last_duplicate_source_grains() +
-                                           e.pitch_shift[1].last_duplicate_source_grains();
-    trace_rec.model_warp_lookups = e.pitch_shift[0].last_model_warp_lookups() +
-                                   e.pitch_shift[1].last_model_warp_lookups();
-    trace_rec.model_warp_expensive_calls = e.pitch_shift[0].last_model_warp_expensive_calls() +
-                                           e.pitch_shift[1].last_model_warp_expensive_calls();
-    trace_rec.model_warp_us = static_cast<float>(e.pitch_shift[0].last_model_warp_cycles() +
-                                                 e.pitch_shift[1].last_model_warp_cycles()) * cycles_to_us;
+    trace_rec.grain_samples_processed = e.pitch_shift[0].last_grain_samples_processed();
+    trace_rec.unique_grain_samples = e.pitch_shift[0].last_unique_grain_samples();
+    trace_rec.unique_source_grain_keys = e.pitch_shift[0].last_unique_source_grains();
+    trace_rec.duplicate_source_grain_keys = e.pitch_shift[0].last_duplicate_source_grains();
+    trace_rec.model_warp_lookups = e.pitch_shift[0].last_model_warp_lookups();
+    trace_rec.model_warp_expensive_calls = e.pitch_shift[0].last_model_warp_expensive_calls();
+    trace_rec.model_warp_us = static_cast<float>(e.pitch_shift[0].last_model_warp_cycles()) * cycles_to_us;
     trace_rec.lpc_model_timestamp = e.pitch_shift[0].last_model_timestamp();
-    trace_rec.formant_model_changed = e.pitch_shift[0].last_model_changed() |
-                                      e.pitch_shift[1].last_model_changed();
+    trace_rec.formant_model_changed = e.pitch_shift[0].last_model_changed();
     trace_rec.pitch_changed = current_pitch.pitch_changed ? 1 : 0;
     trace_rec.track_state = static_cast<uint8_t>(vocal_fx_pitch_track_state());
-    trace_rec.fallback_active = (e.pitch_shift[0].fallback_active() || e.pitch_shift[1].fallback_active()) ? 1 : 0;
-    trace_rec.articulation_active = (e.pitch_shift[0].articulation_active() || e.pitch_shift[1].articulation_active()) ? 1 : 0;
-    trace_rec.plosive_active = (e.pitch_shift[0].plosive_bridge_active() || e.pitch_shift[1].plosive_bridge_active()) ? 1 : 0;
-    trace_rec.recovery_active = (e.pitch_shift[0].debug().recovery_class != PsolaRecoveryClass::None ||
-                                 e.pitch_shift[1].debug().recovery_class != PsolaRecoveryClass::None) ? 1 : 0;
-    trace_rec.render_slack_blocks_min = std::min(e.pitch_shift[0].last_render_slack_blocks_min(),
-                                                 e.pitch_shift[1].last_render_slack_blocks_min());
+    trace_rec.fallback_active = e.pitch_shift[0].fallback_active() ? 1 : 0;
+    trace_rec.articulation_active = e.pitch_shift[0].articulation_active() ? 1 : 0;
+    trace_rec.plosive_active = e.pitch_shift[0].plosive_bridge_active() ? 1 : 0;
+    trace_rec.recovery_active = (e.pitch_shift[0].debug().recovery_class != PsolaRecoveryClass::None) ? 1 : 0;
+    trace_rec.render_slack_blocks_min = e.pitch_shift[0].last_render_slack_blocks_min();
     trace_rec.residual_cache_hits_v0 = e.pitch_shift[0].last_residual_cache_hits();
-    trace_rec.residual_cache_hits_v1 = e.pitch_shift[1].last_residual_cache_hits();
     trace_rec.residual_cache_misses_v0 = e.pitch_shift[0].last_residual_cache_misses();
-    trace_rec.residual_cache_misses_v1 = e.pitch_shift[1].last_residual_cache_misses();
-    trace_rec.fir_samples_computed = e.pitch_shift[0].last_fir_samples_computed() +
-                                     e.pitch_shift[1].last_fir_samples_computed();
-    trace_rec.fir_samples_reused = e.pitch_shift[0].last_fir_samples_reused() +
-                                   e.pitch_shift[1].last_fir_samples_reused();
+    trace_rec.fir_samples_computed = e.pitch_shift[0].last_fir_samples_computed();
+    trace_rec.fir_samples_reused = e.pitch_shift[0].last_fir_samples_reused();
     trace_rec.active_overlapping_grains_v0 = e.pitch_shift[0].last_active_overlapping_grains();
-    trace_rec.active_overlapping_grains_v1 = e.pitch_shift[1].last_active_overlapping_grains();
-    trace_rec.precompute_queue_depth = e.pitch_shift[0].last_precompute_queue_depth() +
-                                       e.pitch_shift[1].last_precompute_queue_depth();
-    trace_rec.precompute_expired_count = e.pitch_shift[0].last_precompute_expired_count() +
-                                         e.pitch_shift[1].last_precompute_expired_count();
+    trace_rec.precompute_queue_depth = e.pitch_shift[0].last_precompute_queue_depth();
+    trace_rec.precompute_expired_count = e.pitch_shift[0].last_precompute_expired_count();
     trace_rec.deferred_active_grains_v0 = e.pitch_shift[0].last_deferred_active_grains();
-    trace_rec.deferred_active_grains_v1 = e.pitch_shift[1].last_deferred_active_grains();
     trace_rec.deferred_slices_rendered_v0 = e.pitch_shift[0].last_deferred_slices_rendered();
-    trace_rec.deferred_slices_rendered_v1 = e.pitch_shift[1].last_deferred_slices_rendered();
     trace_rec.deferred_fir_samples_v0 = e.pitch_shift[0].last_deferred_fir_samples();
-    trace_rec.deferred_fir_samples_v1 = e.pitch_shift[1].last_deferred_fir_samples();
     record_harmonizer_trace(trace_rec);
 
     const float attack_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_attack_ms * 0.001f);
@@ -646,37 +615,28 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::HarmonySlewPan);
     // B4C.7 exact sqrt hoist: pan, release/usable flags and wanted mix are
-    // block-constant (set before this loop; only harmony_mix[] ramps below),
-    // and IEEE sqrt is deterministic, so hoisting preserves bit-identity
-    // while removing 252 sqrt evaluations per block.
-    float pan_l[2], pan_r[2], wanted_v[2];
-    for (size_t v = 0; v < 2; ++v) {
-      const auto &cv = e.harmony.voice(v);
-      const float p = std::clamp(cv.pan, -1.0f, 1.0f);
-      pan_l[v] = std::sqrt(0.5f * (1.0f - p));
-      pan_r[v] = std::sqrt(0.5f * (1.0f + p));
-      wanted_v[v] = (targets[v].valid || e.pitch_shift[v].is_releasing()) &&
-                    e.pitch_shift[v].has_usable_output()
-                        ? 1.0f
-                        : 0.0f;
-    }
+    // block-constant (set before this loop; only harmony_mix ramps below),
+    // and IEEE sqrt is deterministic, so hoisting preserves bit-identity.
+    // B4D.6: single voice, so these are scalars (no per-voice arrays/loop).
+    const auto &harmony_voice = e.harmony.voice();
+    const float p = std::clamp(harmony_voice.pan, -1.0f, 1.0f);
+    const float pan_l = std::sqrt(0.5f * (1.0f - p));
+    const float pan_r = std::sqrt(0.5f * (1.0f + p));
+    const float wanted = (target.valid || e.pitch_shift[0].is_releasing()) &&
+                         e.pitch_shift[0].has_usable_output()
+                             ? 1.0f
+                             : 0.0f;
     for(size_t i=0;i<n;++i){
-      float hl = 0.0f;
-      float hr = 0.0f;
-      for(size_t v=0;v<2;++v){
-        const auto &c = e.harmony.voice(v);
-        const float wanted = wanted_v[v];
-        e.last_wanted_mix[v] = wanted;
-        const float diff = wanted - e.harmony_mix[v];
-        if (diff > 0.0f) {
-          e.harmony_mix[v] += std::min(diff, attack_step);
-        } else {
-          e.harmony_mix[v] += std::max(diff, -release_step);
-        }
-        const float voice_sig = e.shifted[v][i] * c.gain * e.harmony_mix[v];
-        hl += voice_sig * pan_l[v];
-        hr += voice_sig * pan_r[v];
+      e.last_wanted_mix[0] = wanted;
+      const float diff = wanted - e.harmony_mix[0];
+      if (diff > 0.0f) {
+        e.harmony_mix[0] += std::min(diff, attack_step);
+      } else {
+        e.harmony_mix[0] += std::max(diff, -release_step);
       }
+      const float voice_sig = e.shifted[0][i] * harmony_voice.gain * e.harmony_mix[0];
+      const float hl = voice_sig * pan_l;
+      const float hr = voice_sig * pan_r;
       harm_bus_l[i] = hl;
       harm_bus_r[i] = hr;
       const float hl_abs = std::fabs(hl);
@@ -724,7 +684,7 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
           e.left[i] = harm_bus_l[i];
           e.right[i] = harm_bus_r[i];
         } else {
-          const size_t iso_v_out = e.cfg.isolated_pitch_shift_voice < 2 ? e.cfg.isolated_pitch_shift_voice : 0;
+          const size_t iso_v_out = 0;
           e.left[i] = e.right[i] = e.shifted[iso_v_out][i];
         }
       } else {
@@ -967,13 +927,13 @@ void apply_parameter(VocalFxParameter p, float v) {
   case VocalFxParameter::FormantVoice1Mode:
   case VocalFxParameter::FormantVoice2Mode: {
     const size_t voice=static_cast<size_t>(p)-static_cast<size_t>(VocalFxParameter::FormantVoice1Mode);
-    e.pitch_shift[voice].set_formants(v>=.5f?FormantMode::Lpc:FormantMode::Off,e.pitch_shift[voice].formant_amount());
+    vf_voice(voice).set_formants(v>=.5f?FormantMode::Lpc:FormantMode::Off,vf_voice(voice).formant_amount());
     break;
   }
   case VocalFxParameter::FormantVoice1Amount:
   case VocalFxParameter::FormantVoice2Amount: {
     const size_t voice=static_cast<size_t>(p)-static_cast<size_t>(VocalFxParameter::FormantVoice1Amount);
-    e.pitch_shift[voice].set_formants(e.pitch_shift[voice].formant_mode(),v);
+    vf_voice(voice).set_formants(vf_voice(voice).formant_mode(),v);
     break;
   }
   case VocalFxParameter::DryAlignmentEnabled:
@@ -1013,7 +973,7 @@ void apply_parameter(VocalFxParameter p, float v) {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
       if(field==0)c.enabled=v>=.5f;else if(field==1)c.interval=v;else if(field==2)c.degree=static_cast<int>(v);else if(field==3)c.gain=std::clamp(v,0.0f,1.0f);else if(field==4)c.pan=std::clamp(v,-1.0f,1.0f);else if(field==5)c.smoothing_ms=std::clamp(v,1.0f,500.0f);
-      e.harmony.set_voice(voice,c);e.pitch_shift[voice].set_smoothing(c.smoothing_ms);}
+      e.harmony.set_voice(voice,c);vf_voice(voice).set_smoothing(c.smoothing_ms);}
     break; }
   }
 }
@@ -1022,6 +982,9 @@ void vocal_fx_set_parameter(VocalFxParameter p, float v) {
   // Deliberately non-blocking. If the SPSC queue is saturated, retaining the
   // last complete audio-thread state is safer than a partial cross-core update.
   (void)parameter_queue.push({p, v});
+}
+bool vocal_fx_try_set_parameter(VocalFxParameter p, float v) {
+  return parameter_queue.push({p, v});
 }
 void vocal_fx_set_pitch_shift_enabled(bool enabled) {
   vocal_fx_set_parameter(VocalFxParameter::PitchShiftEnabled,
@@ -1037,14 +1000,14 @@ void vocal_fx_set_harmony_mode(HarmonyMode m){vocal_fx_set_parameter(VocalFxPara
 void vocal_fx_set_key(uint8_t r){vocal_fx_set_parameter(VocalFxParameter::HarmonyKey,static_cast<float>(r%12));}
 void vocal_fx_set_scale(ScaleType s){vocal_fx_set_parameter(VocalFxParameter::HarmonyScale,static_cast<float>(s));}
 namespace { VocalFxParameter voice_param(size_t v,VocalFxParameter first){return static_cast<VocalFxParameter>(static_cast<int>(first)+static_cast<int>(v));} }
-void vocal_fx_set_harmony_enabled(size_t v,bool x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Enabled),x?1:0);}
-void vocal_fx_set_harmony_interval(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Interval),x);}
-void vocal_fx_set_harmony_degree(size_t v,int x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Degree),static_cast<float>(x));}
-void vocal_fx_set_harmony_gain(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Gain),x);}
-void vocal_fx_set_harmony_pan(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Pan),x);}
-void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
-void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Mode),mode==FormantMode::Lpc?1.0f:0.0f);}
-void vocal_fx_set_formant_amount(size_t v,float amount){if(v<2)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Amount),amount);}
+void vocal_fx_set_harmony_enabled(size_t v,bool x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Enabled),x?1:0);}
+void vocal_fx_set_harmony_interval(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Interval),x);}
+void vocal_fx_set_harmony_degree(size_t v,int x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Degree),static_cast<float>(x));}
+void vocal_fx_set_harmony_gain(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Gain),x);}
+void vocal_fx_set_harmony_pan(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Pan),x);}
+void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
+void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Mode),mode==FormantMode::Lpc?1.0f:0.0f);}
+void vocal_fx_set_formant_amount(size_t v,float amount){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Amount),amount);}
 void vocal_fx_set_dry_alignment(bool enabled, float delay_ms) {
   vocal_fx_set_parameter(VocalFxParameter::DryAlignmentEnabled, enabled ? 1.0f : 0.0f);
   vocal_fx_set_parameter(VocalFxParameter::DryAlignmentMs, delay_ms);
@@ -1078,7 +1041,7 @@ void vocal_fx_set_mute_dry(bool mute) {
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
 void vocal_fx_midi_all_notes_off(){e.midi.all_notes_off();}
-PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t v){return v<2?e.pitch_shift[v].telemetry():PitchShiftTelemetry{};}
+PitchShiftTelemetry vocal_fx_harmony_telemetry(size_t v){return v<MAX_HARMONY_VOICES?e.pitch_shift[v].telemetry():PitchShiftTelemetry{};}
 uint32_t vocal_fx_pitch_shift_latency_samples() {
   return e.pitch_shift[0].latency_samples();
 }
@@ -1090,7 +1053,7 @@ VocalFxProfileStats
 vocal_fx_harmony_voice_profile_stats(size_t voice, PitchShiftProfileSection s) {
   if (voice >= 2)
     return {};
-  const auto stats = e.pitch_shift[voice].profile(s);
+  const auto stats = vf_voice(voice).profile(s);
   return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses,
           stats.total_cycles, stats.max_cycles};
 }
@@ -1230,7 +1193,7 @@ vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section) {
 size_t vocal_fx_dsp_memory_bytes() {
   return e.delay.memory_bytes() + e.reverb.memory_bytes() +
          e.pitch_resources.memory_bytes() +
-         e.pitch_shift[0].memory_bytes() + e.pitch_shift[1].memory_bytes() +
+         e.pitch_shift[0].memory_bytes() +
          e.lpc_analysis.memory_bytes() +
          (e.cfg.enable_pitch_analysis ? e.pitch_analysis.memory_bytes() : 0);
 }
@@ -1240,14 +1203,14 @@ size_t vocal_fx_delay_memory_bytes() {
 size_t vocal_fx_reverb_memory_bytes() {
   return e.reverb.memory_bytes();
 }
-LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].telemetry().formant_frames;x.voice2_formant_frames=e.pitch_shift[1].telemetry().formant_frames;return x;}
+LpcTelemetry vocal_fx_lpc_telemetry(){auto x=e.lpc_analysis.telemetry();x.voice1_formant_frames=e.pitch_shift[0].telemetry().formant_frames;x.voice2_formant_frames=0;return x;}
 VocalFxProfileStats vocal_fx_lpc_profile_stats(LpcProfileSection s){const auto x=e.lpc_analysis.profile(s);return{x.calls,x.total_us,x.max_us,x.deadline_misses,x.total_cycles,x.max_cycles};}
 LpcFrameCostSummary vocal_fx_lpc_frame_cost_summary() {
   return e.lpc_analysis.frame_cost_summary();
 }
 
 GrainRejectionTelemetry vocal_fx_grain_rejection_telemetry(size_t voice) {
-  return voice < 2 ? e.pitch_shift[voice].grain_rejection_telemetry()
+  return voice < MAX_HARMONY_VOICES ? vf_voice(voice).grain_rejection_telemetry()
                    : GrainRejectionTelemetry{};
 }
 
@@ -1291,7 +1254,6 @@ VocalFxProfileStats vocal_fx_profile_stats(VocalFxProfileSection section) {
 
 void vocal_fx_reset_voice_profilers() {
   e.pitch_shift[0].reset_profiler();
-  e.pitch_shift[1].reset_profiler();
 }
 
 // B4C.7 observability additions (no DSP behavior change).
@@ -1313,7 +1275,7 @@ VocalFxProfileStats vocal_fx_voice_profile_stats(
       static_cast<size_t>(section) >=
           static_cast<size_t>(PitchShiftProfileSection::Count))
     return {};
-  const auto stats = e.pitch_shift[voice].profile(section);
+  const auto stats = vf_voice(voice).profile(section);
   return {stats.calls, stats.total_us, stats.max_us, stats.deadline_misses,
           stats.total_cycles, stats.max_cycles};
 }
@@ -1324,17 +1286,17 @@ uint16_t vocal_fx_lpc_config_order() {
 
 uint16_t vocal_fx_synthesis_order(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].synthesis_order();
+  return vf_voice(voice).synthesis_order();
 }
 
 uint64_t vocal_fx_voice_b4c7_cycles(size_t voice, size_t idx) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c7_section_cycles(idx);
+  return vf_voice(voice).b4c7_section_cycles(idx);
 }
 
 uint64_t vocal_fx_voice_other_cycles(size_t voice, size_t cat_index) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_other_cycles(cat_index);
+  return vf_voice(voice).b4c8_other_cycles(cat_index);
 }
 
 void vocal_fx_init_b4c8_recorders(bool slow_blocks, bool stalls) {
@@ -1351,12 +1313,12 @@ void vocal_fx_free_b4c8_recorders() {
 
 size_t vocal_fx_slow_block_count(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].slow_block_count_;
+  return vf_voice(voice).slow_block_count_;
 }
 
 bool vocal_fx_get_slow_block(size_t voice, size_t index, B4c8SlowBlockRecord *out) {
   if (voice >= 2 || !out) return false;
-  return e.pitch_shift[voice].b4c8_get_slow_block(index, out);
+  return vf_voice(voice).b4c8_get_slow_block(index, out);
 }
 
 size_t vocal_fx_stall_event_count() {
@@ -1371,55 +1333,55 @@ bool vocal_fx_get_stall_event(size_t index, B4c8StallEvent *out) {
 
 uint64_t vocal_fx_deferred_zero_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_deferred_zero_cycles_;
+  return vf_voice(voice).b4c8_deferred_zero_cycles_;
 }
 uint64_t vocal_fx_deferred_zero_calls(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_deferred_zero_calls_;
+  return vf_voice(voice).b4c8_deferred_zero_calls_;
 }
 uint64_t vocal_fx_deferred_active_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_deferred_active_cycles_;
+  return vf_voice(voice).b4c8_deferred_active_cycles_;
 }
 uint64_t vocal_fx_deferred_active_calls(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_deferred_active_calls_;
+  return vf_voice(voice).b4c8_deferred_active_calls_;
 }
 uint64_t vocal_fx_loop_history_fetch_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_loop_history_fetch_cycles_;
+  return vf_voice(voice).b4c8_loop_history_fetch_cycles_;
 }
 uint64_t vocal_fx_loop_ola_norm_reset_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_loop_ola_norm_reset_cycles_;
+  return vf_voice(voice).b4c8_loop_ola_norm_reset_cycles_;
 }
 uint64_t vocal_fx_loop_indexing_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_loop_indexing_cycles_;
+  return vf_voice(voice).b4c8_loop_indexing_cycles_;
 }
 uint64_t vocal_fx_model_change_blocks(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_model_change_blocks_;
+  return vf_voice(voice).b4c8_model_change_blocks_;
 }
 uint64_t vocal_fx_model_change_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_model_change_cycles_;
+  return vf_voice(voice).b4c8_model_change_cycles_;
 }
 uint64_t vocal_fx_no_model_change_blocks(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_no_model_change_blocks_;
+  return vf_voice(voice).b4c8_no_model_change_blocks_;
 }
 uint64_t vocal_fx_no_model_change_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_no_model_change_cycles_;
+  return vf_voice(voice).b4c8_no_model_change_cycles_;
 }
 uint64_t vocal_fx_model_change_max_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_model_change_max_cycles_;
+  return vf_voice(voice).b4c8_model_change_max_cycles_;
 }
 uint64_t vocal_fx_no_model_change_max_cycles(size_t voice) {
   if (voice >= 2) return 0;
-  return e.pitch_shift[voice].b4c8_no_model_change_max_cycles_;
+  return vf_voice(voice).b4c8_no_model_change_max_cycles_;
 }
 
 void vocal_fx_set_slice_audit_enabled(bool enabled) {
@@ -1451,7 +1413,6 @@ void vocal_fx_reset_profiler() {
 void vocal_fx_reset_profiling_epoch() {
   e.profiler.reset();
   e.pitch_shift[0].reset_forensic_stats();
-  e.pitch_shift[1].reset_forensic_stats();
   e.pitch_resources.reset_audit_forensics();
   vocal_fx_reset_harmonizer_trace();
   vocal_fx_reset_limiter_diagnostics();
@@ -1522,22 +1483,16 @@ size_t vocal_fx_audit_buffers(VocalFxBufferAudit *out, size_t max_count) {
   if (e.pitch_shift[0].residual_cache_pool_ptr()) {
     record("ResidualCacheV0", e.pitch_shift[0].residual_cache_pool_ptr(), e.pitch_shift[0].residual_cache_bytes());
   }
-  if (e.pitch_shift[1].residual_cache_pool_ptr()) {
-    record("ResidualCacheV1", e.pitch_shift[1].residual_cache_pool_ptr(), e.pitch_shift[1].residual_cache_bytes());
-  }
   if (e.pitch_shift[0].deferred_grains_ptr()) {
     record("DeferredGrainsV0", e.pitch_shift[0].deferred_grains_ptr(), e.pitch_shift[0].deferred_grains_bytes());
-  }
-  if (e.pitch_shift[1].deferred_grains_ptr()) {
-    record("DeferredGrainsV1", e.pitch_shift[1].deferred_grains_ptr(), e.pitch_shift[1].deferred_grains_bytes());
   }
 
   return count;
 }
 
 PitchShiftDebug vocal_fx_harmony_debug(size_t voice) {
-  if (voice < 2)
-    return e.pitch_shift[voice].debug();
+  if (voice < MAX_HARMONY_VOICES)
+    return vf_voice(voice).debug();
   return {};
 }
 
@@ -1547,6 +1502,10 @@ PitchAnalysisDebug vocal_fx_pitch_analysis_debug() {
 
 PitchAnalysisAuditTelemetry vocal_fx_pitch_analysis_audit_telemetry() {
   return e.pitch_analysis.audit_telemetry();
+}
+
+float vocal_fx_pitch_backlog_ms() {
+  return e.pitch_analysis.current_backlog_ms();
 }
 
 YinForensicTelemetry vocal_fx_yin_forensic_telemetry() {
@@ -1642,7 +1601,7 @@ float vocal_fx_latest_pitch_age_ms() {
 }
 
 float vocal_fx_effective_harmony_mix(size_t voice) {
-  if (voice < 2) return e.harmony_mix[voice];
+  if (voice < MAX_HARMONY_VOICES) return e.harmony_mix[voice];
   return 0.0f;
 }
 
@@ -1681,29 +1640,25 @@ void vocal_fx_reset_harmonizer_trace() {
 }
 
 void vocal_fx_set_psola_warp_cache(bool enable_local, bool enable_shared, bool enable_neutral_fast_path) {
-  for (size_t v = 0; v < 2; ++v) {
-    e.pitch_shift[v].set_warp_cache_enabled(enable_local);
-    e.pitch_shift[v].set_shared_warp_cache_enabled(enable_shared);
-    e.pitch_shift[v].set_neutral_warp_fast_path_enabled(enable_neutral_fast_path);
-  }
+  e.pitch_shift[0].set_warp_cache_enabled(enable_local);
+  e.pitch_shift[0].set_shared_warp_cache_enabled(enable_shared);
+  e.pitch_shift[0].set_neutral_warp_fast_path_enabled(enable_neutral_fast_path);
 }
 
 PsolaWarpCacheStats vocal_fx_get_psola_warp_cache_stats(size_t voice) {
-  if (voice < 2) {
-    return e.pitch_shift[voice].warp_cache_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    return vf_voice(voice).warp_cache_stats();
   }
   return PsolaWarpCacheStats{};
 }
 
 void vocal_fx_reset_psola_warp_cache_stats() {
-  for (size_t v = 0; v < 2; ++v) {
-    e.pitch_shift[v].reset_warp_cache_stats();
-  }
+  e.pitch_shift[0].reset_warp_cache_stats();
 }
 
 PsolaModelWarpAudit vocal_fx_get_psola_model_warp_audit(size_t voice) {
-  if (voice < 2) {
-    return e.pitch_shift[voice].model_warp_audit();
+  if (voice < MAX_HARMONY_VOICES) {
+    return vf_voice(voice).model_warp_audit();
   }
   return PsolaModelWarpAudit{};
 }
@@ -1717,77 +1672,77 @@ PsolaSchedulingSlackAudit vocal_fx_get_psola_scheduling_slack_audit() {
 }
 
 void vocal_fx_configure_psola_residual_cache(size_t voice, size_t entries, bool enable_residual, bool enable_windowed, bool force_psram) {
-  if (voice < 2) {
-    e.pitch_shift[voice].configure_source_residual_cache(entries, enable_residual, enable_windowed, force_psram);
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).configure_source_residual_cache(entries, enable_residual, enable_windowed, force_psram);
   }
 }
 
 void vocal_fx_set_psola_residual_cache_enabled(size_t voice, bool enabled) {
-  if (voice < 2) {
-    e.pitch_shift[voice].set_residual_cache_enabled(enabled);
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_residual_cache_enabled(enabled);
   }
 }
 
 void vocal_fx_set_psola_windowed_cache_enabled(size_t voice, bool enabled) {
-  if (voice < 2) {
-    e.pitch_shift[voice].set_windowed_cache_enabled(enabled);
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_windowed_cache_enabled(enabled);
   }
 }
 
 PsolaSourceResidualCacheStats vocal_fx_get_psola_residual_cache_stats(size_t voice) {
-  if (voice < 2) {
-    return e.pitch_shift[voice].residual_cache_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    return vf_voice(voice).residual_cache_stats();
   }
   return PsolaSourceResidualCacheStats{};
 }
 
 void vocal_fx_reset_psola_residual_cache_stats(size_t voice) {
-  if (voice < 2) {
-    e.pitch_shift[voice].reset_residual_cache_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).reset_residual_cache_stats();
   }
 }
 
 void vocal_fx_set_psola_precompute_enabled(size_t voice, bool enabled, float horizon) {
-  if (voice < 2) {
-    e.pitch_shift[voice].set_precompute_enabled(enabled, horizon);
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_precompute_enabled(enabled, horizon);
   }
 }
 
 PsolaPrecomputeStats vocal_fx_get_psola_precompute_stats(size_t voice) {
-  if (voice < 2) {
-    return e.pitch_shift[voice].precompute_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    return vf_voice(voice).precompute_stats();
   }
   return PsolaPrecomputeStats{};
 }
 
 void vocal_fx_reset_psola_precompute_stats(size_t voice) {
-  if (voice < 2) {
-    e.pitch_shift[voice].reset_precompute_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).reset_precompute_stats();
   }
 }
 
 void vocal_fx_set_psola_grain_render_mode(size_t voice, PsolaGrainRenderMode mode) {
-  if (voice < 2) {
-    e.pitch_shift[voice].set_grain_render_mode(mode);
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_grain_render_mode(mode);
   }
 }
 
 void vocal_fx_set_psola_fir_kernel(size_t voice, PsolaFirKernel kernel) {
-  if (voice < 2) {
-    e.pitch_shift[voice].set_fir_kernel(kernel);
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_fir_kernel(kernel);
   }
 }
 
 PsolaDeferredStats vocal_fx_get_psola_deferred_stats(size_t voice) {
-  if (voice < 2) {
-    return e.pitch_shift[voice].deferred_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    return vf_voice(voice).deferred_stats();
   }
   return PsolaDeferredStats{};
 }
 
 void vocal_fx_reset_psola_deferred_stats(size_t voice) {
-  if (voice < 2) {
-    e.pitch_shift[voice].reset_deferred_stats();
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).reset_deferred_stats();
   }
 }
 
@@ -1800,23 +1755,19 @@ SingleGrainBenchmarkResult vocal_fx_benchmark_single_grain(
 // ── B4C.8B: per-block recording and MC delta breakdown ──────────────────
 
 void vocal_fx_init_b4c8b_recorder() {
-  for (size_t v = 0; v < 2; ++v)
-    e.pitch_shift[v].b4c8b_init_recorder();
+  e.pitch_shift[0].b4c8b_init_recorder();
 }
 
 void vocal_fx_free_b4c8b_recorder() {
-  for (size_t v = 0; v < 2; ++v)
-    e.pitch_shift[v].b4c8b_free_recorder();
+  e.pitch_shift[0].b4c8b_free_recorder();
 }
 
 void vocal_fx_print_b4c8b_block_records() {
-  for (size_t v = 0; v < 2; ++v)
-    e.pitch_shift[v].b4c8b_print_block_records();
+  e.pitch_shift[0].b4c8b_print_block_records();
 }
 
 void vocal_fx_print_b4c8b_mc_delta_breakdown() {
-  for (size_t v = 0; v < 2; ++v)
-    e.pitch_shift[v].b4c8b_print_mc_delta_breakdown();
+  e.pitch_shift[0].b4c8b_print_mc_delta_breakdown();
 }
 
 uint32_t vocal_fx_b4c8b_block_count() {
@@ -1826,12 +1777,11 @@ uint32_t vocal_fx_b4c8b_block_count() {
 bool vocal_fx_get_b4c8b_block_record(size_t voice, size_t index,
                                      B4c8bBlockRecord *out) {
   if (voice >= 2 || !out) return false;
-  return e.pitch_shift[voice].b4c8b_get_block_record(index, out);
+  return vf_voice(voice).b4c8b_get_block_record(index, out);
 }
 
 uint8_t vocal_fx_last_block_model_changed() {
-  return static_cast<uint8_t>(e.pitch_shift[0].last_model_changed() ||
-                              e.pitch_shift[1].last_model_changed());
+  return static_cast<uint8_t>(e.pitch_shift[0].last_model_changed());
 }
 
 VocalFxLastBlockStats vocal_fx_last_block_stats() {
@@ -1842,6 +1792,37 @@ VocalFxLastBlockStats vocal_fx_last_block_stats() {
   s.slices = e.pitch_shift[0].last_deferred_slices_rendered();
   s.f0 = e.pitch_shift[0].debug().source_f0;
   s.source_grains = e.pitch_shift[0].last_source_grains_built();
+  s.schedule_attempts = e.pitch_shift[0].last_schedule_attempts();
+  s.sched_cycles = e.pitch_shift[0].last_sched_cycles();
+  s.addgrain_cycles = e.pitch_shift[0].last_addgrain_cycles();
+  s.deferred_cycles = e.pitch_shift[0].last_deferred_cycles();
+  s.model_new_count = e.pitch_shift[0].last_model_new_count();
+  s.warp_hit_count = e.pitch_shift[0].last_warp_hit_count();
+  s.warp_miss_count = e.pitch_shift[0].last_warp_miss_count();
+  s.mark_cycles = e.pitch_shift[0].last_mark_cycles();
+  s.warp_phase_cycles = e.pitch_shift[0].last_model_warp_cycles();
+  s.desc_cycles = e.pitch_shift[0].last_desc_cycles();
+  s.near_cycles = e.pitch_shift[0].last_near_cycles();
+  s.poly_cycles = e.pitch_shift[0].last_poly_cycles();
+  s.gn_cycles = e.pitch_shift[0].last_gn_cycles();
+  s.cl_cycles = e.pitch_shift[0].last_cl_cycles();
+  s.ch_cycles = e.pitch_shift[0].last_ch_cycles();
+  for (size_t i = 0; i < 3; ++i) {
+    s.ord_mark[i] = e.pitch_shift[0].ord_mark(i);
+    s.ord_warp[i] = e.pitch_shift[0].ord_warp(i);
+    s.ord_desc[i] = e.pitch_shift[0].ord_desc(i);
+    s.ord_near[i] = e.pitch_shift[0].ord_near(i);
+    s.ord_sel[i] = e.pitch_shift[0].ord_sel(i);
+    s.ord_align[i] = e.pitch_shift[0].ord_align(i);
+  }
+  s.mark_count = e.pitch_shift[0].last_mark_count();
+  s.prewarm_cycles = e.pitch_shift[0].last_prewarm_cycles();
+  s.debt_samples = e.pitch_shift[0].last_debt_samples();
+  s.output_period_q8 = e.pitch_shift[0].last_output_period_q8();
+  for (size_t i = 0; i < 4; ++i) {
+    s.g_dest[i] = e.pitch_shift[0].grain_dest(i);
+    s.g_half[i] = e.pitch_shift[0].grain_half(i);
+  }
   return s;
 }
 
@@ -1936,6 +1917,14 @@ uint64_t vocal_fx_b4d5_global_class_blocks(size_t bucket) {
 }
 const char *vocal_fx_b4d5_global_class_name(size_t group) {
   return group < kB4D5GlobalGroups ? kB4D5GlobalNames[group] : "?";
+}
+
+// B4D.9 diagnostic prewarm variant.
+void vocal_fx_b4d9_set_prewarm_variant(int v) {
+  td_psola_b4d9_set_prewarm_variant(v);
+}
+void vocal_fx_b4d10_set_sched_variant(int v) {
+  td_psola_b4d10_set_sched_variant(v);
 }
 
 

@@ -15,6 +15,29 @@ extern void vocal_fx_funnel_inc_grain_schedule_attempts(uint64_t count);
 extern void vocal_fx_funnel_inc_grains_scheduled(uint64_t count);
 extern void vocal_fx_funnel_inc_grains_rendered(uint64_t count);
 
+// B4D.7: the B4C.7 source-grain duplicate audit is FORENSIC only (§23).  It is
+// compiled out of the production device build (host keeps it so the reuse
+// audit tests still run).  It never affected scheduling, rendering or
+// synthesis decisions.
+#ifndef VOCAL_FX_ENABLE_SOURCE_GRAIN_AUDIT
+#if defined(ESP_PLATFORM)
+#define VOCAL_FX_ENABLE_SOURCE_GRAIN_AUDIT 0
+#else
+#define VOCAL_FX_ENABLE_SOURCE_GRAIN_AUDIT 1
+#endif
+#endif
+// B4D.8: grain-alignment / rejection histograms are FORENSIC telemetry (§23).
+// record_grain_alignment runs a soft-float double division on every selected
+// grain and, being first in the burst, pays a cold flash fetch on the P4.
+// Compiled out of the production device build; host keeps it for the audits.
+#ifndef VOCAL_FX_ENABLE_GRAIN_ALIGNMENT_AUDIT
+#if defined(ESP_PLATFORM)
+#define VOCAL_FX_ENABLE_GRAIN_ALIGNMENT_AUDIT 0
+#else
+#define VOCAL_FX_ENABLE_GRAIN_ALIGNMENT_AUDIT 1
+#endif
+#endif
+
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
 
@@ -31,6 +54,14 @@ uint64_t s_b4d5_mark_calls = 0;
 uint64_t s_b4d5_mark_candidates = 0;
 uint64_t s_b4d5_mark_scan_cycles = 0;
 uint64_t s_b4d5_mark_total_cycles = 0;
+// B4D.9 diagnostic prewarm variant. Bit0 = marks, bit1 = model ring,
+// bit2 = GainNorm basis tables. Runtime-settable so one firmware sweeps
+// P0..P5. Read-only touches only; no state mutation.
+int s_b4d9_prewarm_variant = 0;
+static volatile uint64_t s_b4d9_prewarm_sink = 0;
+// B4D.10 scheduler geometry variant: 0 = S0 (bound block_end + source_period),
+// 1 = S1 (bound block_end + output_period). Diagnostic only.
+int s_b4d10_sched_variant = 0;
 
 // B4D.4 per-grain-count section attribution (voice 0, diagnostic only).
 // buckets: 0 new grains, 1, 2, 3+; layout [bucket][PitchShiftProfileSection].
@@ -449,6 +480,7 @@ void TdPsola::reset() {
   last_model_timestamp_ = 0;
   model_changed_this_block_ = 0;
   grains_scheduled_this_block_ = 0;
+  schedule_attempts_this_block_ = 0;
   grains_rendered_this_block_ = 0;
   grain_samples_processed_this_block_ = 0;
   output_position_ = 0;
@@ -2289,6 +2321,7 @@ void TdPsola::add_grain_ola_from_cached_windowed(
 
 bool TdPsola::add_grain(double destination, double source,
                         const PitchMark *marks, size_t count) {
+  b4d8_mark_count_this_block_ = static_cast<uint16_t>(count);
   const uint32_t c_ms_start = Profiler::now_cycles();
   size_t index;
   float period;
@@ -2300,12 +2333,19 @@ bool TdPsola::add_grain(double destination, double source,
   if (s_b4d5_mark_audit_enabled)
     s_b4d5_mark_total_cycles += b4d5_select_cycles;
   if (marks && count) {
+#if VOCAL_FX_ENABLE_GRAIN_ALIGNMENT_AUDIT
     const uint64_t nearest = marks[index].sample_position;
     record_grain_alignment(
         source, nearest, period,
         !selected && reason == GrainFailureReason::SelectMarkDistanceTooLarge);
+#else
+    (void)index;
+#endif
   }
   const uint32_t c_ms = Profiler::now_cycles() - c_ms_start;
+  b4d7_mark_cycles_this_block_ += c_ms;
+  b4d8_last_sel_cycles_ = b4d5_select_cycles;
+  b4d8_last_align_cycles_ = c_ms - b4d5_select_cycles;
   profiler_.record_cycles(section(PitchShiftProfileSection::MarkSelection), c_ms, 1);
   accounted_cycles_this_block_ += c_ms;
 
@@ -2320,6 +2360,8 @@ bool TdPsola::add_grain(double destination, double source,
 
   const uint32_t c_hl_start = Profiler::now_cycles();
   const int half = std::clamp(static_cast<int>(std::lround(period)), 24, 800);
+  b4d11_last_half_ = static_cast<uint16_t>(half);
+  b4d11_last_dest_ = static_cast<int32_t>(std::llround(destination));
   const uint64_t center = marks[index].sample_position;
   debug_.selected_source_mark = center;
   debug_.source_grain_timestamp = static_cast<uint64_t>(std::max(0.0, source));
@@ -2381,6 +2423,7 @@ bool TdPsola::add_grain(double destination, double source,
     if (last_model_timestamp_ != model.timestamp) {
       model_changed_this_block_ = 1;
       last_model_timestamp_ = model.timestamp;
+      ++b4d7_model_new_this_block_;
     }
 
     const uint32_t c_lam_start = Profiler::now_cycles();
@@ -2419,6 +2462,7 @@ bool TdPsola::add_grain(double destination, double source,
       warp_audit_.coeff_copy_cycles += c_hit;
       warp_audit_.local_hits++;
       ++warp_stats_.local_hits;
+      ++b4d7_warp_hit_this_block_;
       handled = true;
     } else if (shared_hit) {
       const uint32_t c_hit_start = Profiler::now_cycles();
@@ -2436,6 +2480,7 @@ bool TdPsola::add_grain(double destination, double source,
       warp_audit_.coeff_copy_cycles += c_hit;
       warp_audit_.shared_hits++;
       ++warp_stats_.shared_hits;
+      ++b4d7_warp_hit_this_block_;
       handled = true;
     } else if (neutral_hit) {
       const uint32_t c_hit_start = Profiler::now_cycles();
@@ -2457,12 +2502,14 @@ bool TdPsola::add_grain(double destination, double source,
       warp_audit_.cache_hit_cycles += c_hit;
       warp_audit_.neutral_hits++;
       ++warp_stats_.neutral_hits;
+      ++b4d7_warp_hit_this_block_;
       handled = true;
     }
 
     if (!handled) {
       warp_audit_.cache_miss_calls++;
       ++warp_stats_.misses;
+      ++b4d7_warp_miss_this_block_;
       ++model_warp_expensive_this_block_;
       warp_audit_.expensive_computations++;
 
@@ -2571,6 +2618,7 @@ bool TdPsola::add_grain(double destination, double source,
     g.use_lpc = use_lpc;
     g.mark_predicted = mark_predicted;
     g.active = true;
+#if VOCAL_FX_ENABLE_SOURCE_GRAIN_AUDIT
     // B4C.7: register the descriptor's exact source identity so the shared
     // audit covers the production deferred path (audit-only memory writes;
     // scheduling, rendering and synthesis decisions are untouched).
@@ -2596,11 +2644,13 @@ bool TdPsola::add_grain(double destination, double source,
         sg.unique_source_grains++;
       }
     }
+#endif
     deferred_stats_.descriptors_allocated++;
     ++grains_rendered_this_block_;
     active_overlapping_grains_this_block_ = grains_rendered_this_block_;
     grain_samples_processed_this_block_ += static_cast<uint16_t>(2 * half + 1);
     const uint32_t c_desc = Profiler::now_cycles() - c_desc_start;
+    b4d7_desc_cycles_this_block_ += c_desc;
     b4c7_section_cycles_[0] += c_desc;
     accounted_cycles_this_block_ += c_desc;
     return true;
@@ -2876,6 +2926,22 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
   model_warp_cycles_this_block_ = 0;
   model_changed_this_block_ = 0;
   grains_scheduled_this_block_ = 0;
+  schedule_attempts_this_block_ = 0;
+  b4d7_sched_cycles_this_block_ = 0;
+  b4d7_addgrain_cycles_this_block_ = 0;
+  b4d7_deferred_cycles_this_block_ = 0;
+  b4d7_model_new_this_block_ = 0;
+  b4d7_warp_hit_this_block_ = 0;
+  b4d7_warp_miss_this_block_ = 0;
+  b4d7_mark_cycles_this_block_ = 0;
+  b4d7_desc_cycles_this_block_ = 0;
+  for (size_t i = 0; i < 4; ++i) {
+    b4d8_ord_mark[i] = 0;
+    b4d8_ord_warp[i] = 0;
+    b4d8_ord_desc[i] = 0;
+    b4d8_ord_near[i] = 0;
+  }
+  b4d11_g_count_ = 0;
   grains_rendered_this_block_ = 0;
   grain_samples_processed_this_block_ = 0;
   residual_cache_hits_this_block_ = 0;
@@ -3291,8 +3357,38 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
     accounted_cycles_this_block_ += usability_cycles;
 
     size_t grains = 0;
-    while (next_synthesis_mark_ <
-               static_cast<double>(block_end + pitch.period_samples) &&
+    // B4D.9 diagnostic prewarm: read-only touches of the grain-path working set
+    // before the first grain. No state mutation, no timing/semantic change.
+    if (s_b4d9_prewarm_variant) {
+      const uint32_t c_pw = Profiler::now_cycles();
+      uint64_t acc = 0;
+      if (s_b4d9_prewarm_variant & 1) {
+        for (size_t i = 0; i < mark_count; ++i) {
+          acc ^= marks[i].sample_position;
+          acc += static_cast<uint64_t>(marks[i].confidence * 1000.0f);
+        }
+      }
+      if ((s_b4d9_prewarm_variant & 2) && lpc_) lpc_->warm_model_ring();
+      if (s_b4d9_prewarm_variant & 4) SharedLpcAnalysis::warm_gainnorm_basis();
+      s_b4d9_prewarm_sink = acc;
+      b4d9_prewarm_cycles_this_block_ = Profiler::now_cycles() - c_pw;
+    }
+    const uint32_t c_b4d7_loop_start = Profiler::now_cycles();
+    // B4D.10: S0 bound = block_end + source_period (reference).
+    // S1 bound = block_end + output_period (synthesis cadence geometry).
+    const double b4d10_output_period =
+        static_cast<double>(pitch.period_samples) /
+        std::max(std::exp2(current_semitones_ / 12.0f), .5f);
+    const double b4d10_bound =
+        static_cast<double>(block_end) +
+        (s_b4d10_sched_variant == 1
+             ? b4d10_output_period
+             : static_cast<double>(pitch.period_samples));
+    b4d11_debt_samples_ = static_cast<int32_t>(
+        std::llround(b4d10_bound - next_synthesis_mark_));
+    b4d11_output_period_q8_ = static_cast<uint32_t>(
+        std::llround(b4d10_output_period * 256.0));
+    while (next_synthesis_mark_ < b4d10_bound &&
            grains < kMaxGrainsPerBlock) {
       uint32_t c_sched_start = Profiler::now_cycles();
       const float pitch_alpha =
@@ -3314,6 +3410,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
           current_synthesis_period_ / std::max(ratio, .5f);
       const double source = next_synthesis_mark_ - history_offset_;
       vocal_fx_funnel_inc_grain_schedule_attempts(1);
+      ++schedule_attempts_this_block_;
       const uint32_t c_sched_mid = Profiler::now_cycles();
       const uint32_t c_sched1 = c_sched_mid - c_sched_start;
       profiler_.record_cycles(section(PitchShiftProfileSection::GrainScheduling),
@@ -3323,10 +3420,36 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
       if (source < 0) {
         record_grain_failure(GrainFailureReason::AttemptSourceNegative,
                              next_synthesis_mark_, source);
-      } else if (add_grain(next_synthesis_mark_, source, marks, mark_count)) {
-        ++grains;
-        ++grains_scheduled_this_block_;
-        vocal_fx_funnel_inc_grains_scheduled(1);
+      } else {
+        const uint32_t c_b4d7_ag = Profiler::now_cycles();
+        const uint32_t b4d8_mk0 = b4d7_mark_cycles_this_block_;
+        const uint32_t b4d8_wp0 = model_warp_cycles_this_block_;
+        const uint32_t b4d8_dc0 = b4d7_desc_cycles_this_block_;
+        const uint64_t b4d8_nr0 = warp_audit_.model_near_cycles;
+        const bool b4d7_ok =
+            add_grain(next_synthesis_mark_, source, marks, mark_count);
+        b4d7_addgrain_cycles_this_block_ += Profiler::now_cycles() - c_b4d7_ag;
+        if (b4d7_ok) {
+          if (grains < 4) {
+            b4d8_ord_mark[grains] =
+                b4d7_mark_cycles_this_block_ - b4d8_mk0;
+            b4d8_ord_warp[grains] =
+                model_warp_cycles_this_block_ - b4d8_wp0;
+            b4d8_ord_desc[grains] =
+                b4d7_desc_cycles_this_block_ - b4d8_dc0;
+            b4d8_ord_near[grains] = static_cast<uint32_t>(
+                warp_audit_.model_near_cycles - b4d8_nr0);
+            b4d8_ord_sel[grains] = b4d8_last_sel_cycles_;
+            b4d8_ord_align[grains] = b4d8_last_align_cycles_;
+          }
+          ++grains;
+          ++grains_scheduled_this_block_;
+          if (grains <= 4) {
+            b4d11_g_dest_[grains - 1] = b4d11_last_dest_;
+            b4d11_g_half_[grains - 1] = b4d11_last_half_;
+          }
+          vocal_fx_funnel_inc_grains_scheduled(1);
+        }
       }
 
       const uint32_t c_sched2_start = Profiler::now_cycles();
@@ -3337,6 +3460,9 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
                               c_sched2, 1);
       accounted_cycles_this_block_ += c_sched2;
     }
+    b4d7_sched_cycles_this_block_ +=
+        Profiler::now_cycles() - c_b4d7_loop_start;
+    b4d11_g_count_ = static_cast<uint8_t>(grains < 4 ? grains : 4);
     vocal_fx_funnel_inc_grains_rendered(grains);
     telemetry_.grains += grains;
     telemetry_.max_grains_per_block =
@@ -3388,6 +3514,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
 
   const uint32_t c_deferred_end = Profiler::now_cycles();
   const uint32_t deferred_overhead = c_deferred_end - c_deferred_start;
+  b4d7_deferred_cycles_this_block_ += deferred_overhead;
   b4c8_other_cycles_[static_cast<size_t>(B4c8OtherCategory::DeferredDescriptorTraversal)] += deferred_overhead;
   accounted_cycles_this_block_ += deferred_overhead;
 
@@ -3925,10 +4052,25 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
 
   const uint32_t c_block_total_end = Profiler::now_cycles();
   last_block_cycles_ = c_block_total_end - c_block_total_start;
-  if (s_b4d4_class_enabled && voice_index_ == 0 && s_b4d4_class_cycles) {
-    const size_t bucket =
-        grains_scheduled_this_block_ >= 3 ? 3 : grains_scheduled_this_block_;
-    s_b4d4_class_cycles[4 * kB4D4Sections + bucket]++;
+  // B4D.7 tail probe: per-block deltas of the warp sub-phases.
+  b4d7_near_cycles_this_block_ = static_cast<uint32_t>(
+      warp_audit_.model_near_cycles - b4d7_warp_prev_.model_near_cycles);
+  b4d7_poly_cycles_this_block_ = static_cast<uint32_t>(
+      warp_audit_.warp_poly_cycles - b4d7_warp_prev_.warp_poly_cycles);
+  b4d7_gn_cycles_this_block_ = static_cast<uint32_t>(
+      warp_audit_.gain_norm_cycles - b4d7_warp_prev_.gain_norm_cycles);
+  b4d7_cl_cycles_this_block_ = static_cast<uint32_t>(
+      warp_audit_.cache_lookup_cycles - b4d7_warp_prev_.cache_lookup_cycles);
+  b4d7_ch_cycles_this_block_ = static_cast<uint32_t>(
+      warp_audit_.cache_hit_cycles - b4d7_warp_prev_.cache_hit_cycles);
+  b4d7_warp_prev_ = warp_audit_;  if (s_b4d4_class_enabled && voice_index_ == 0 && s_b4d4_class_cycles) {
+    // B4D.7: split the grain bucket by model-change so MC+2/MC+3 tails are
+    // isolated from NMC blocks.  bucket = mc*4 + min(grains,3), 8 buckets.
+    const size_t grains = grains_scheduled_this_block_ >= 3
+                              ? 3
+                              : grains_scheduled_this_block_;
+    const size_t bucket = (model_changed_this_block_ ? 4 : 0) + grains;
+    s_b4d4_class_cycles[8 * kB4D4Sections + bucket]++;
     for (size_t i = 0; i < kB4D4Sections; ++i) {
       const uint64_t now =
           profiler_.raw_total_cycles(
@@ -4460,15 +4602,15 @@ bool td_psola_b4d4_class_init() {
   if (!s_b4d4_class_cycles) {
 #ifdef ESP_PLATFORM
     s_b4d4_class_cycles = static_cast<uint64_t *>(heap_caps_calloc(
-        (4 * kB4D4Sections + 4), sizeof(uint64_t),
+        (8 * kB4D4Sections + 8), sizeof(uint64_t),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #else
     s_b4d4_class_cycles = static_cast<uint64_t *>(
-        std::calloc(4 * kB4D4Sections + 4, sizeof(uint64_t)));
+        std::calloc(8 * kB4D4Sections + 8, sizeof(uint64_t)));
 #endif
   }
   if (!s_b4d4_class_cycles) return false;
-  std::memset(s_b4d4_class_cycles, 0, (4 * kB4D4Sections + 4) * sizeof(uint64_t));
+  std::memset(s_b4d4_class_cycles, 0, (8 * kB4D4Sections + 8) * sizeof(uint64_t));
   s_b4d4_class_enabled = true;
   return true;
 }
@@ -4484,13 +4626,18 @@ void td_psola_b4d4_class_free() {
   s_b4d4_class_enabled = false;
 }
 uint64_t td_psola_b4d4_class_cycles(size_t bucket, size_t sec) {
-  if (!s_b4d4_class_cycles || bucket >= 4 || sec >= kB4D4Sections) return 0;
+  if (!s_b4d4_class_cycles || bucket >= 8 || sec >= kB4D4Sections) return 0;
   return s_b4d4_class_cycles[bucket * kB4D4Sections + sec];
 }
 uint64_t td_psola_b4d4_class_blocks(size_t bucket) {
-  if (!s_b4d4_class_cycles || bucket >= 4) return 0;
-  return s_b4d4_class_cycles[4 * kB4D4Sections + bucket];
+  if (!s_b4d4_class_cycles || bucket >= 8) return 0;
+  return s_b4d4_class_cycles[8 * kB4D4Sections + bucket];
 }
+
+// B4D.9 prewarm variant accessor.
+void td_psola_b4d9_set_prewarm_variant(int v) { s_b4d9_prewarm_variant = v; }
+// B4D.10 scheduler geometry variant accessor.
+void td_psola_b4d10_set_sched_variant(int v) { s_b4d10_sched_variant = v; }
 
 // B4D.5 mark-selection decomposition accessors.
 void td_psola_b4d5_mark_audit_reset() {
@@ -4516,3 +4663,4 @@ size_t td_psola_nearest_mark_index(double source, const PitchMark *marks,
                                    size_t count) {
   return nearest_mark_index(source, marks, count);
 }
+

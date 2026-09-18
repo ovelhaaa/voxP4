@@ -14,7 +14,11 @@ and environment activation warning; neither originated in `vocal_fx`.
 | Configuration | Image size | DIRAM used | DIRAM free | DRAM/BSS | IRAM | libvocal_fx RAM |
 |---|---:|---:|---:|---:|---:|---:|
 | Supplied baseline | ~261,824 B | ~199,659 B | ~376,805 B | not supplied | not supplied | ~128,804 B |
-| Dual harmony | 272,800 B `.bin` (272,451 B ELF image) | 348,683 B | 227,781 B | 283,692 B BSS | 57,802 B text | 277,748 B |
+> **Historical validation.** This report predates B4D.6, which removed the
+> second harmony voice. The dual/voice-2 figures below no longer describe the
+> product; the single-voice build is the current baseline.
+
+| Dual harmony (historical) | 272,800 B `.bin` (272,451 B ELF image) | 348,683 B | 227,781 B | 283,692 B BSS | 57,802 B text | 277,748 B |
 | Delta | +10,976 B `.bin` | +149,024 B | -149,024 B | n/a | n/a | +148,944 B |
 
 The memory gate passes: 227,781 bytes (222.4 KiB) of DIRAM remain, above the

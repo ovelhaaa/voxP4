@@ -1,10 +1,19 @@
 # Milestone 3: monophonic TD-PSOLA pitch shifting
 
+> **HISTORICAL MILESTONE DOCUMENT**
+>
+> This file documents the state of the project at the time of this milestone.
+> **DO NOT use it to infer current product features.**
+> For the current product architecture see `docs/product_architecture.md`.
+
+> **Production baseline note.** The qualified product runs at **44100 Hz** with
+> 64-frame blocks; the 48 kHz figure below is the host tooling default.
+
 ## Signal path and real-time contract
 
 The audio task writes post-input-strip mono samples into a 16,384-sample
-(341.3 ms at 48 kHz) power-of-two history, renders one TD-PSOLA voice, mixes its
-wet/dry output, and then enters delay/reverb. Analysis remains on Core 1. The
+(371.5 ms at 44100 Hz) power-of-two history, renders one TD-PSOLA voice, mixes
+its wet/dry output, and then enters delay/reverb. Analysis remains on Core 1. The
 synthesizer consumes only the latest atomic `PitchResult`, tracker state, and a
 bounded snapshot of at most 64 real pitch marks; it never runs YIN, waits, takes
 a mutex, or allocates. `MAX_GRAINS_PER_BLOCK` is eight and backlog recovery

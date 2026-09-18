@@ -1,8 +1,13 @@
 # Milestone 2: real-time pitch analysis
 
+> **Production baseline note.** Numbers below are stated at 48 kHz, the host
+> tooling default. The qualified production target runs at **44100 Hz** with
+> 64-frame blocks; the analysis ratio is preserved by an exact 4:1 decimation
+> (11.025 kHz at 44.1 kHz). See `docs/product_architecture.md`.
+
 ## Architecture and real-time contract
 
-The 48 kHz audio callback writes the unmodified input into a bounded history
+The audio callback writes the unmodified input into a bounded history
 ring and a 31-tap FIR decimator. Decimated samples enter a fixed-size SPSC FIFO;
 if the analysis core falls behind, the producer drops the newest analysis sample
 rather than waiting. There are no allocations, locks, logging, or detector work

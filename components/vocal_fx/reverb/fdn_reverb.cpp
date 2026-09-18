@@ -13,6 +13,11 @@
 // on enable) and the pointer lives at file scope, so the engine .bss does not
 // grow. This is a single-instance diagnostic; production never allocates it.
 static FdnReverb::ReverbProfile *s_reverb_profile = nullptr;
+// B4D.11: the profile buffer is allocated once and never freed while the audio
+// task may run.  A separate enabled flag gates the diagnostic path, removing a
+// cross-task use-after-free where set_profile_enabled(false) freed the buffer
+// mid process_block().
+static bool s_reverb_profile_enabled = false;
 
 void FdnReverb::hadamard8(float *x) {
   for (int step = 1; step < 8; step *= 2)
@@ -130,7 +135,7 @@ void FdnReverb::process_block(const float *in, float *l, float *r, size_t n) {
     fb[i] = lines_[i].feedback_gain;
   }
 
-  if (!s_reverb_profile) {
+  if (!s_reverb_profile_enabled) {
     constexpr float hn = .3535533905932738f;
     for (size_t s = 0; s < n; ++s) {
       // Scalar registers for the eight line taps: identical arithmetic to
@@ -248,14 +253,9 @@ void FdnReverb::process_block(const float *in, float *l, float *r, size_t n) {
 
 void FdnReverb::set_profile_enabled(bool enabled) {
   if (!enabled) {
-    if (s_reverb_profile) {
-#ifdef ESP_PLATFORM
-      heap_caps_free(s_reverb_profile);
-#else
-      std::free(s_reverb_profile);
-#endif
-      s_reverb_profile = nullptr;
-    }
+    // B4D.11: do not free; just stop the diagnostic path.  The buffer is
+    // reused by the next enable, avoiding a cross-task use-after-free.
+    s_reverb_profile_enabled = false;
     return;
   }
   if (!s_reverb_profile) {
@@ -268,13 +268,14 @@ void FdnReverb::set_profile_enabled(bool enabled) {
 #endif
   }
   if (s_reverb_profile) *s_reverb_profile = ReverbProfile{};
+  s_reverb_profile_enabled = s_reverb_profile != nullptr;
 }
 
 void FdnReverb::reset_profile() {
   if (s_reverb_profile) *s_reverb_profile = ReverbProfile{};
 }
 
-bool FdnReverb::profile_enabled() const { return s_reverb_profile != nullptr; }
+bool FdnReverb::profile_enabled() const { return s_reverb_profile_enabled; }
 
 FdnReverb::ReverbProfile FdnReverb::profile() const {
   return s_reverb_profile ? *s_reverb_profile : ReverbProfile{};

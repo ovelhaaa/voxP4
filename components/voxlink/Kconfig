@@ -1,0 +1,35 @@
+menu "VoxLink control plane"
+config VOXLINK_ENABLE_SERVER
+    bool "Enable the VoxLink UART control server"
+    default n
+    help
+        Starts the VoxLink v1 UART control task on the ESP32-P4. Disabled by
+        default so the qualified realtime audio path is unchanged unless the
+        control plane is explicitly requested. Enabling this does not alter the
+        DSP topology, sample rate, block size or scheduler.
+config VOXLINK_UART_PORT
+    int "UART port number"
+    range 0 2
+    default 1
+    depends on VOXLINK_ENABLE_SERVER
+config VOXLINK_UART_BAUD
+    int "VoxLink UART baud rate"
+    default 921600
+    depends on VOXLINK_ENABLE_SERVER
+config VOXLINK_UART_TX_GPIO
+    int "VoxLink UART TX GPIO (-1 = unassigned)"
+    default -1
+    depends on VOXLINK_ENABLE_SERVER
+    help
+        P4 TX -> CYD RX. Must be a free 3.3 V GPIO that does not collide with
+        the I2S audio pins (GPIO19-23), the console/JTAG pins (GPIO37/38) or
+        strapping pins. No final pin is assigned until verified against the
+        WT9932P4-TINY schematic; -1 keeps the server disabled at runtime.
+config VOXLINK_UART_RX_GPIO
+    int "VoxLink UART RX GPIO (-1 = unassigned)"
+    default -1
+    depends on VOXLINK_ENABLE_SERVER
+    help
+        P4 RX <- CYD TX. Same constraints as the TX pin. -1 keeps the server
+        disabled at runtime and prevents accidental binding of audio pins.
+endmenu

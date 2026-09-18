@@ -5,7 +5,8 @@ list(APPEND SRCS pitch/decimator.cpp pitch/yin_detector.cpp pitch/pitch_mark_ncc
 list(APPEND SRCS shift/td_psola.cpp)
 list(APPEND SRCS formant/lpc.cpp)
 list(APPEND SRCS harmony/scale.cpp harmony/midi_harmony.cpp harmony/harmony_engine.cpp harmony/harmony_articulation_envelope.cpp harmony/harmony_unvoiced_articulation.cpp harmony/harmony_plosive_bridge.cpp)
-idf_component_register(SRCS ${SRCS} INCLUDE_DIRS include dsp dynamics delay reverb platform pitch shift harmony formant REQUIRES esp_driver_i2s esp_timer esp_system)
+list(APPEND SRCS control/vocal_fx_param_binding.cpp)
+idf_component_register(SRCS ${SRCS} INCLUDE_DIRS include dsp dynamics delay reverb platform pitch shift harmony formant control REQUIRES esp_driver_i2s esp_timer esp_system voxlink)
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror
     -Wno-missing-field-initializers)

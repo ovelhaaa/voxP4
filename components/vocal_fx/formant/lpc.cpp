@@ -895,6 +895,31 @@ LpcTelemetry SharedLpcAnalysis::telemetry() const {
   } while(before!=after || (after&1U)); return result;
 }
 
+// B4D.9 diagnostic prewarm helpers (read-only, no state change).
+static volatile uint64_t s_b4d9_warm_sink_u64 = 0;
+static volatile float s_b4d9_warm_sink_f32 = 0.0f;
+void SharedLpcAnalysis::warm_model_ring() const {
+  uint64_t acc = 0;
+  const uint32_t newest = published_.load(std::memory_order_acquire);
+  const uint32_t count = std::min<uint32_t>(newest, kModelCount);
+  for (uint32_t k = 0; k < count; ++k) {
+    const auto &p = models_[(newest - k) % kModelCount];
+    acc ^= p.timestamp_low.load(std::memory_order_relaxed);
+    acc ^= p.timestamp_high.load(std::memory_order_relaxed);
+    acc += p.sequence.load(std::memory_order_relaxed);
+    acc += p.valid.load(std::memory_order_relaxed);
+  }
+  s_b4d9_warm_sink_u64 = acc;
+}
+void SharedLpcAnalysis::warm_gainnorm_basis() {
+  float acc = 0.0f;
+  for (const auto &row : gainnorm_cos_basis_)
+    for (float f : row) acc += f;
+  for (const auto &row : gainnorm_sin_basis_)
+    for (float f : row) acc += f;
+  s_b4d9_warm_sink_f32 = acc;
+}
+
 // B4D.5 model-lookup decomposition accessors.
 void shared_lpc_b4d5_model_audit_reset() {
   s_b4d5_model_calls = 0;

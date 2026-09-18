@@ -107,6 +107,10 @@ public:
   ProfileStats profile(LpcProfileSection section) const;
   bool latest_model(SharedLpcModel *model) const;
   LpcFrameCostSummary frame_cost_summary();
+  // B4D.9 diagnostic prewarm: read-only touches of the model ring and the
+  // GainNorm basis tables. No state mutation, no DSP effect.
+  void warm_model_ring() const;
+  static void warm_gainnorm_basis();
   // B4D.5 test-only: snapshot the currently published valid models (newest
   // first) so the exact model_near selection can be checked against a
   // reference implementation.

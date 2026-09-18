@@ -21,12 +21,28 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # Profiling and Operation Mode
-CONFIG_VOCAL_FX_ENABLE_PROFILING=y
-CONFIG_VOXP4_MODE_I2S_B4D_1_QUALIFICATION=y
+# B4D.6 production-equivalent default: detailed audio-path profiling is OFF
+# (measured cost ~84 us/block at 44.1 kHz).  Qualification/audit builds set
+# CONFIG_VOCAL_FX_ENABLE_PROFILING=y to collect per-section statistics.
+# CONFIG_VOCAL_FX_ENABLE_PROFILING is not set
+# B4D.12 production robustness burn-in mode (frozen 44.1 kHz S0 architecture).
+CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN=y
+CONFIG_VOXP4_B4D12_REFERENCE_MINUTES=30
+CONFIG_VOXP4_B4D12_STRESS_SECONDS=20
+CONFIG_VOXP4_B4D12_CONTROL_MINUTES=10
+CONFIG_VOXP4_B4D12_SOAK_MINUTES=240
+# CONFIG_VOXP4_B4D12_SOAK_ONLY is not set
 CONFIG_VOXP4_B4B6_MEASURE_SECONDS=10
 CONFIG_VOXP4_B4B6_STABILITY_SECONDS=60
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# B4D.6 compiler optimization gate.  The B4D.5 firmware was built with
+# CONFIG_COMPILER_OPTIMIZATION_DEBUG (-Og), which is the debug default.  The
+# production-equivalent build uses standard -O2 (no fast-math, no FP
+# contraction change relative to the previous -Og build).
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# CONFIG_COMPILER_OPTIMIZATION_DEBUG is not set
 
 # Normal Task Watchdog configuration (retained)
 CONFIG_ESP_TASK_WDT_INIT=y

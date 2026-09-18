@@ -437,6 +437,11 @@ void AudioI2s::deinit() {
     b4d1_record_capacity_ = 0;
     b4d1_record_count_ = 0;
   }
+  if (b4d12_tee_) {
+    b4c6a_free(b4d12_tee_);
+    b4d12_tee_ = nullptr;
+    b4d12_enabled_.store(false, std::memory_order_release);
+  }
   {
     uint32_t **slots[] = {&b4c6a_loop_hist_, &b4c6a_period_hist_,
                           &b4c6a_dsp_hist_, &b4c6a_rx_hist_,
@@ -552,8 +557,45 @@ void AudioI2s::record_timing(uint64_t dsp_us, uint64_t cycle_us,
       rec.slices = vls.slices;
       rec.f0 = vls.f0;
       rec.source_grains = vls.source_grains;
+      rec.schedule_attempts = vls.schedule_attempts;
+      rec.sched_cycles = vls.sched_cycles;
+      rec.addgrain_cycles = vls.addgrain_cycles;
+      rec.deferred_cycles = vls.deferred_cycles;
+      rec.model_new_count = vls.model_new_count;
+      rec.warp_hit_count = vls.warp_hit_count;
+      rec.warp_miss_count = vls.warp_miss_count;
+      rec.mark_cycles = vls.mark_cycles;
+      rec.warp_phase_cycles = vls.warp_phase_cycles;
+      rec.desc_cycles = vls.desc_cycles;
+      rec.near_cycles = vls.near_cycles;
+      rec.poly_cycles = vls.poly_cycles;
+      rec.gn_cycles = vls.gn_cycles;
+      rec.cl_cycles = vls.cl_cycles;
+      rec.ch_cycles = vls.ch_cycles;
+      for (size_t i = 0; i < 3; ++i) {
+        rec.ord_mark[i] = vls.ord_mark[i];
+        rec.ord_warp[i] = vls.ord_warp[i];
+        rec.ord_desc[i] = vls.ord_desc[i];
+        rec.ord_near[i] = vls.ord_near[i];
+        rec.ord_sel[i] = vls.ord_sel[i];
+        rec.ord_align[i] = vls.ord_align[i];
+      }
+      rec.mark_count = vls.mark_count;
+      rec.prewarm_cycles = vls.prewarm_cycles;
+      rec.debt_samples = vls.debt_samples;
+      rec.output_period_q8 = vls.output_period_q8;
+      for (size_t i = 0; i < 4; ++i) {
+        rec.g_dest[i] = vls.g_dest[i];
+        rec.g_half[i] = vls.g_half[i];
+      }
       rec.reserved = 0;
     }
+  }
+
+  // B4D.12 burn-in streaming telemetry (bounded aggregates, no logging). The
+  // disabled case is a single acquire load plus null check.
+  if (b4d12_enabled_.load(std::memory_order_acquire) && b4d12_tee_) {
+    b4d12_note_block(dsp_us, cycle_us, block_idx);
   }
 }
 
@@ -921,6 +963,212 @@ bool AudioI2s::b4d1_recorder_get(size_t index, B4D1BlockRecord *out) const {
     return false;
   *out = b4d1_records_[index];
   return true;
+}
+
+// ── B4D.12 burn-in streaming telemetry ──────────────────────────────────
+bool AudioI2s::b4d12_telemetry_init(uint32_t sample_rate,
+                                    uint32_t window_seconds) {
+  if (!b4d12_tee_) {
+    b4d12_tee_ = static_cast<B4D12Telemetry *>(
+        b4c6a_calloc(1, sizeof(B4D12Telemetry)));
+  }
+  if (!b4d12_tee_) return false;
+  b4d12_telemetry_reset();
+  const uint32_t fs = sample_rate ? sample_rate : config_.sample_rate;
+  const uint64_t bs = block_size_ ? block_size_ : 64;
+  b4d12_tee_->blocks_per_window =
+      (static_cast<uint64_t>(window_seconds) * fs) / bs;
+  if (b4d12_tee_->blocks_per_window == 0) b4d12_tee_->blocks_per_window = 1;
+  return true;
+}
+
+void AudioI2s::b4d12_telemetry_free() {
+  if (b4d12_tee_) {
+    b4c6a_free(b4d12_tee_);
+    b4d12_tee_ = nullptr;
+  }
+  b4d12_enabled_.store(false, std::memory_order_release);
+}
+
+void AudioI2s::b4d12_telemetry_reset() {
+  if (!b4d12_tee_) return;
+  B4D12Telemetry *t = b4d12_tee_;
+  const uint64_t bpw = t->blocks_per_window ? t->blocks_per_window : 1;
+  std::memset(t, 0, sizeof(*t));
+  t->blocks_per_window = bpw;
+}
+
+void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
+                                uint64_t block_idx) {
+  B4D12Telemetry *t = b4d12_tee_;
+  if (!t) return;
+  (void)cycle_us;
+
+  const double deadline = block_deadline_us();
+  const uint64_t deadline_u = static_cast<uint64_t>(deadline);
+
+  // Classify from the same block the DSP time was measured in.
+  const bool mc = vocal_fx_last_block_model_changed() != 0;
+  const VocalFxLastBlockStats vls = vocal_fx_last_block_stats();
+  const uint8_t ng = vls.new_grains;
+  const uint8_t klass = mc ? (ng >= 3 ? 3 : (ng == 0 ? 4 : ng))
+                           : 0; // 0=NMC,1=MC+1,2=MC+2,3=MC+3+,4=MC+0
+  const uint16_t dsp16 = dsp_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(dsp_us);
+
+  // Exact DSP histogram.
+  const uint32_t hb = dsp_us >= B4D12Telemetry::kDspHistBins
+                          ? static_cast<uint32_t>(B4D12Telemetry::kDspHistBins - 1)
+                          : static_cast<uint32_t>(dsp_us);
+  t->dsp_hist[hb]++;
+
+  // All-block class population.
+  switch (klass) {
+    case 0: t->blocks_nmc++; break;
+    case 1: t->blocks_mc1++; break;
+    case 2: t->blocks_mc2++; break;
+    case 3: t->blocks_mc3++; break;
+    default: t->blocks_mc0++; break;
+  }
+
+  const float backlog_ms = vocal_fx_pitch_backlog_ms();
+  const uint32_t backlog_ds =
+      backlog_ms > 0.0f ? static_cast<uint32_t>(backlog_ms * 10.0f) : 0u;
+
+  // Feed any open recovery event with this block's context.
+  if (t->open_event) {
+    B4D12LateEvent &ev = t->late[(t->late_write + kB4D12LateEventCapacity - 1) %
+                                 kB4D12LateEventCapacity];
+    if (t->open_next == 1) ev.next1_dsp_us = dsp16;
+    else if (t->open_next == 2) ev.next2_dsp_us = dsp16;
+    else if (t->open_next == 3) ev.next3_dsp_us = dsp16;
+    if (ev.recovery_blocks == 0xFF && dsp_us <= deadline_u) {
+      ev.recovery_blocks = t->open_next;
+      ev.backlog_after_ds = backlog_ds > 0xFFFFu ? 0xFFFFu
+                                                 : static_cast<uint16_t>(backlog_ds);
+      const uint8_t rb = t->open_next < B4D12Telemetry::kRecoveryBins
+                             ? t->open_next
+                             : static_cast<uint8_t>(B4D12Telemetry::kRecoveryBins - 1);
+      t->recovery_hist[rb]++;
+    }
+    t->open_next++;
+    if (t->open_next > 3) {
+      if (ev.recovery_blocks == 0xFF) {
+        ev.recovery_blocks = 0;
+        t->recovery_hist[0]++;
+      }
+      t->open_event = 0;
+    }
+  }
+
+  // Window accumulator (10-minute bins by observed block index).
+  const uint64_t win = block_idx / t->blocks_per_window;
+  if (win != t->window_index) {
+    // finalize the closing window
+    if (t->window_count < kB4D12WindowCapacity) {
+      const uint64_t total_tr = counters_.rx_overruns.load(std::memory_order_relaxed) +
+          counters_.tx_underruns.load(std::memory_order_relaxed) +
+          counters_.actual_rx_dma_errors.load(std::memory_order_relaxed) +
+          counters_.actual_tx_dma_errors.load(std::memory_order_relaxed) +
+          counters_.i2s_read_failures.load(std::memory_order_relaxed) +
+          counters_.i2s_write_failures.load(std::memory_order_relaxed) +
+          counters_.rx_dropped_frames.load(std::memory_order_relaxed) +
+          counters_.tx_dropped_frames.load(std::memory_order_relaxed) +
+          counters_.rx_sequence_gaps.load(std::memory_order_relaxed) +
+          counters_.tx_sequence_gaps.load(std::memory_order_relaxed) +
+          counters_.dma_errors.load(std::memory_order_relaxed) +
+          counters_.nan_inf_count.load(std::memory_order_relaxed);
+      t->window.transport_errors =
+          total_tr >= t->window_transport_base ? total_tr - t->window_transport_base : 0;
+      const uint64_t cum_late = counters_.cumulative_lateness_us.load(std::memory_order_relaxed);
+      t->window.cumulative_lateness_us =
+          cum_late >= t->window_lateness_base ? cum_late - t->window_lateness_base : 0;
+      t->windows[t->window_count] = t->window;
+      t->window_count++;
+      t->window_transport_base = total_tr;
+      t->window_lateness_base = cum_late;
+      t->window = B4D12WindowStats{};
+    }
+    t->window_index = win;
+  }
+
+  t->blocks++;
+  t->dsp_sum_us += dsp_us;
+  if (dsp_us > t->dsp_max_us) t->dsp_max_us = static_cast<uint32_t>(dsp_us);
+  t->window.blocks++;
+  t->window.dsp_sum_us += dsp_us;
+  if (dsp_us > t->window.dsp_max_us)
+    t->window.dsp_max_us = static_cast<uint32_t>(dsp_us);
+  {
+    size_t wb = static_cast<size_t>(dsp_us / 100u);
+    if (wb >= kB4D12WindowHistBins) wb = kB4D12WindowHistBins - 1;
+    t->window.hist[wb]++;
+  }
+  if (backlog_ds > t->window.backlog_max_ds)
+    t->window.backlog_max_ds = backlog_ds;
+  if (dsp_us > kB4D12Late1200Us) t->late_1200_blocks++;
+
+  if (dsp_us > deadline_u) {
+    const uint64_t lateness = dsp_us - deadline_u;
+    t->misses++;
+    t->cumulative_lateness_us += lateness;
+    t->current_consecutive_late++;
+    if (t->current_consecutive_late > t->max_consecutive_late)
+      t->max_consecutive_late = t->current_consecutive_late;
+    t->window.misses++;
+    if (t->current_consecutive_late > t->window.max_consecutive_late)
+      t->window.max_consecutive_late = static_cast<uint32_t>(t->current_consecutive_late);
+    // lateness histogram
+    size_t lb;
+    if (lateness <= 100) lb = 0;
+    else if (lateness <= 250) lb = 1;
+    else if (lateness <= 500) lb = 2;
+    else if (lateness <= 1000) lb = 3;
+    else if (lateness <= 1500) lb = 4;
+    else lb = 5;
+    t->lateness_hist[lb]++;
+    switch (klass) {
+      case 0: t->miss_nmc++; break;
+      case 1: t->miss_mc1++; break;
+      case 2: t->miss_mc2++; t->window.mc2++; break;
+      case 3: t->miss_mc3++; t->window.mc3++; break;
+      default: t->miss_mc0++; break;
+    }
+    // A pending previous event that is immediately followed by another late
+    // block never recovered within its three-block window: close it as 0.
+    if (t->open_event && t->late_write > 0) {
+      B4D12LateEvent &prior =
+          t->late[(t->late_write + kB4D12LateEventCapacity - 1) %
+                  kB4D12LateEventCapacity];
+      if (prior.recovery_blocks == 0xFF) {
+        prior.recovery_blocks = 0;
+        t->recovery_hist[0]++;
+      }
+    }
+    // New late event (bounded ring, overwrite oldest).
+    B4D12LateEvent &ev = t->late[t->late_write % kB4D12LateEventCapacity];
+    ev = B4D12LateEvent{};
+    ev.block_id = static_cast<uint32_t>(block_idx);
+    ev.dsp_us = dsp16;
+    ev.lateness_us = lateness > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(lateness);
+    ev.klass = klass;
+    ev.model_changed = mc ? 1 : 0;
+    ev.new_grains = ng;
+    ev.active_desc = vls.active_desc;
+    ev.slices = vls.slices;
+    ev.prev_miss = t->prev_late;
+    ev.recovery_blocks = 0xFF;
+    ev.backlog_before_ds = backlog_ds > 0xFFFFu ? 0xFFFFu
+                                                : static_cast<uint16_t>(backlog_ds);
+    t->late_write++;
+    t->late_events++;
+    if (t->late_write > kB4D12LateEventCapacity) t->late_events_dropped++;
+    t->open_event = 1;
+    t->open_next = 1;
+    t->prev_late = 1;
+  } else {
+    t->current_consecutive_late = 0;
+    t->prev_late = 0;
+  }
 }
 
 #ifdef ESP_PLATFORM
@@ -1865,6 +2113,13 @@ void AudioI2s::run() {
         counters_.tx_bytes_written.fetch_add(sent, std::memory_order_relaxed);
         counters_.tx_frames_written.fetch_add(sent / (2 * sizeof(int32_t)), std::memory_order_relaxed);
         counters_.tx_blocks_written.fetch_add(1, std::memory_order_relaxed);
+        // B4D.11: deterministic TX PCM hash (FNV-1a over the written samples).
+        uint32_t fnv = counters_.tx_pcm_fnv.load(std::memory_order_relaxed);
+        const size_t n32 = sent / sizeof(int32_t);
+        for (size_t i = 0; i < n32; ++i) {
+          fnv = (fnv ^ static_cast<uint32_t>(out32[i])) * 16777619u;
+        }
+        counters_.tx_pcm_fnv.store(fnv, std::memory_order_relaxed);
       }
       increment_depth(counters_.tx_event_queue_depth,
                       counters_.tx_event_queue_max_depth);

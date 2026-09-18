@@ -5,6 +5,23 @@ Harmonizer • Pitch Correction • Doubler • Delay • FDN Reverb • Vocoder
 **Plataforma alvo:** ESP32-P4 @ 400 MHz • 48 kHz • I2S/DMA • ESP-IDF  
 **Revisão 1.0 — Setembro de 2026**
 
+> **AVISO — ESPECIFICAÇÃO ALVO / PLANEJADA, NÃO A PRODUÇÃO ATUAL.**
+> Este documento descreve a arquitetura *originalmente planejada* do produto
+> (48 kHz, 400 MHz, 1–2 vozes de harmonia, módulos WSOLA/phase vocoder/vocoder
+> ainda não implementados). Ele **não** descreve o firmware qualificado atual.
+>
+> A configuração de produção vigente é:
+> ESP32-P4 @ 360 MHz, **44100 Hz**, bloco de 64 frames, **uma** voz de harmonia
+> TD-PSOLA, preservação de formantes LPC16 + GainNorm, cadeia FX qualificada
+> B4D e scheduler S0. Consulte
+> [`docs/product_architecture.md`](docs/product_architecture.md) para a
+> arquitetura implementada e
+> [`docs/parameter_registry.md`](docs/parameter_registry.md) para a ABI de
+> parâmetros.
+>
+> Todo item deste documento sem implementação correspondente deve ser tratado
+> como **planejado / experimental**, não como funcionalidade atual.
+
 ## 1. Visão geral
 
 Este documento especifica um engine de processamento vocal em tempo real para ESP32-P4, orientado a uso musical ao vivo. O objetivo é combinar uma cadeia vocal convencional com harmonização de 1–2 vozes, correção de afinação, doubler, delay estéreo, reverb FDN de alta qualidade e integração MIDI, preservando baixa latência e margem de CPU para expansão.

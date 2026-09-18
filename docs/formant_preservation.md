@@ -1,11 +1,15 @@
 # Milestone 5: LPC formant preservation
 
+> **Production baseline note.** B4D.6 reduced the product to a **single** harmony
+> voice. The historical two-voice A/B description below is retained for context;
+> the sole production voice selects `Off` or `Lpc` and an amount from 0 to 1.
+
 ## Motivation and A/B path
 
-TD-PSOLA remains the default and is not replaced. Each of the two harmony
-voices independently selects `Off` or `Lpc` and an amount from 0 to 1. The host
-tool accepts `--formants off|lpc`, `--formant-amount`, and `--lpc-order`, so the
-same input can be rendered both ways.
+TD-PSOLA remains the default and is not replaced. The harmony voice selects
+`Off` or `Lpc` and an amount from 0 to 1. The host tool accepts
+`--formants off|lpc`, `--formant-amount`, and `--lpc-order`, so the same input
+can be rendered both ways.
 
 ## Model and real-time architecture
 

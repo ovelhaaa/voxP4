@@ -1,0 +1,89 @@
+Test project C:/progs/VoxP4/voxP4/build-host-voxlink
+      Start  1: dsp_tests
+ 1/42 Test  #1: dsp_tests ............................   Passed    0.55 sec
+      Start  2: pitch_tests
+ 2/42 Test  #2: pitch_tests ..........................   Passed    1.21 sec
+      Start  3: yin_kernel_audit
+ 3/42 Test  #3: yin_kernel_audit .....................   Passed    3.34 sec
+      Start  4: yin_cmnd_audit
+ 4/42 Test  #4: yin_cmnd_audit .......................   Passed    9.19 sec
+      Start  5: yin_energy_audit
+ 5/42 Test  #5: yin_energy_audit .....................   Passed    4.53 sec
+      Start  6: p4_production_defaults
+ 6/42 Test  #6: p4_production_defaults ...............   Passed    0.08 sec
+      Start  7: yin_incremental_tests
+ 7/42 Test  #7: yin_incremental_tests ................   Passed    0.09 sec
+      Start  8: pitch_mark_ncc_audit
+ 8/42 Test  #8: pitch_mark_ncc_audit .................   Passed  124.09 sec
+      Start  9: psola_tests
+ 9/42 Test  #9: psola_tests ..........................   Passed    9.19 sec
+      Start 10: psola_kernel_tests
+10/42 Test #10: psola_kernel_tests ...................   Passed   30.67 sec
+      Start 11: render_wav_compare
+11/42 Test #11: render_wav_compare ...................   Passed    5.26 sec
+      Start 12: unvoiced_articulation_tests
+12/42 Test #12: unvoiced_articulation_tests ..........   Passed    0.04 sec
+      Start 13: plosive_bridge_tests
+13/42 Test #13: plosive_bridge_tests .................   Passed    0.04 sec
+      Start 14: lpc_tests
+14/42 Test #14: lpc_tests ............................   Passed    0.04 sec
+      Start 15: lpc_ring_tests
+15/42 Test #15: lpc_ring_tests .......................   Passed    0.25 sec
+      Start 16: lpc_autocorr_audit
+16/42 Test #16: lpc_autocorr_audit ...................   Passed    1.65 sec
+      Start 17: lpc_compensated_autocorr_audit
+17/42 Test #17: lpc_compensated_autocorr_audit .......   Passed    6.58 sec
+      Start 18: lpc_windowing_audit
+18/42 Test #18: lpc_windowing_audit ..................   Passed    1.34 sec
+      Start 19: formant_stabilization_tests
+19/42 Test #19: formant_stabilization_tests ..........   Passed    0.05 sec
+      Start 20: gainnorm_render_equivalence_tests
+20/42 Test #20: gainnorm_render_equivalence_tests ....   Passed    0.59 sec
+      Start 21: harmony_tests
+21/42 Test #21: harmony_tests ........................   Passed    0.03 sec
+      Start 22: test_harmony_timing
+22/42 Test #22: test_harmony_timing ..................   Passed    0.64 sec
+      Start 23: psola_benchmark_rejects_text
+23/42 Test #23: psola_benchmark_rejects_text .........   Passed    0.06 sec
+      Start 24: psola_benchmark_rejects_zero
+24/42 Test #24: psola_benchmark_rejects_zero .........   Passed    0.01 sec
+      Start 25: psola_benchmark_rejects_overflow
+25/42 Test #25: psola_benchmark_rejects_overflow .....   Passed    0.01 sec
+      Start 26: test_audio_transport
+26/42 Test #26: test_audio_transport .................   Passed    4.18 sec
+      Start 27: b4c6a_loop_timing_tests
+27/42 Test #27: b4c6a_loop_timing_tests ..............   Passed    0.06 sec
+      Start 28: b4c7_reuse_tests
+28/42 Test #28: b4c7_reuse_tests .....................   Passed    0.06 sec
+      Start 29: b4c7_deferred_cache_tests
+29/42 Test #29: b4c7_deferred_cache_tests ............   Passed    1.33 sec
+      Start 30: reverb_equivalence_tests
+30/42 Test #30: reverb_equivalence_tests .............   Passed    0.24 sec
+      Start 31: b4d3_equivalence_tests
+31/42 Test #31: b4d3_equivalence_tests ...............   Passed    0.15 sec
+      Start 32: b4d5_mark_equivalence_tests
+32/42 Test #32: b4d5_mark_equivalence_tests ..........   Passed    0.59 sec
+      Start 33: b4d5_ola_ab
+33/42 Test #33: b4d5_ola_ab ..........................   Passed    0.77 sec
+      Start 34: b4d5_model_equivalence_tests
+34/42 Test #34: b4d5_model_equivalence_tests .........   Passed    0.14 sec
+      Start 35: voxlink_registry_tests
+35/42 Test #35: voxlink_registry_tests ...............   Passed    0.04 sec
+      Start 36: voxlink_framing_tests
+36/42 Test #36: voxlink_framing_tests ................   Passed    0.06 sec
+      Start 37: voxlink_fuzz_tests
+37/42 Test #37: voxlink_fuzz_tests ...................   Passed    0.07 sec
+      Start 38: voxlink_state_sync_tests
+38/42 Test #38: voxlink_state_sync_tests .............   Passed    0.06 sec
+      Start 39: voxlink_concurrency_tests
+39/42 Test #39: voxlink_concurrency_tests ............   Passed    0.10 sec
+      Start 40: voxlink_golden_tests
+40/42 Test #40: voxlink_golden_tests .................   Passed    0.05 sec
+      Start 41: voxlink_binding_tests
+41/42 Test #41: voxlink_binding_tests ................   Passed    0.09 sec
+      Start 42: voxlink_protocol_conformance_tests
+42/42 Test #42: voxlink_protocol_conformance_tests ...   Passed    0.05 sec
+
+100% tests passed, 0 tests failed out of 42
+
+Total Test time (real) = 209.60 sec
