@@ -342,6 +342,28 @@ Both frames echo the request sequence exactly. Asynchronous/internal changes use
 `FLAGS=NOTIFICATION` and a server-owned sequence, and must not be correlated
 with a client request.
 
+### 8.4 Sequence reuse and wrap
+
+`SEQ` is an 8-bit counter. The client increments it per request and wraps modulo
+256.
+
+* The client **MUST NOT reuse** a `SEQ` while a request carrying it is still
+  pending (no terminal response received yet).
+* The P4 tracks request `SEQ` values within a single received batch. If the same
+  `SEQ` is used twice in one batch, the second request is rejected with
+  `NACK(BUSY)` and the `duplicate_seq_rejected` counter is incremented.
+* The guard clears at the start of the next batch, because the transport drains
+  and transmits all responses between input reads. Reuse after the response has
+  been transmitted is therefore always allowed.
+* After a full 256-request wrap, reuse is safe as long as the earlier request
+  with that `SEQ` has already been answered.
+* Server notifications use an independent server-owned `SEQ` space and never
+  collide with client request correlation.
+
+At most one request per `SEQ` may be in flight. A client that pipelines many
+requests should keep no more than a handful outstanding and never re-send an
+unanswered `SEQ`.
+
 ## 9. Normalization policy
 
 * malformed frame / wrong length → protocol error, no state change;

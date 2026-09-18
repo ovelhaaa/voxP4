@@ -3,6 +3,7 @@
 #include "sdkconfig.h"
 
 #if defined(CONFIG_VOXLINK_ENABLE_SERVER) && CONFIG_VOXLINK_ENABLE_SERVER
+#include "vocal_fx.h"
 #include "vocal_fx_param_binding.h"
 #include "voxlink_registry.h"
 #include "voxlink_session.h"
@@ -11,6 +12,21 @@
 #include "esp_log.h"
 
 static const char *kVoxlinkTag = "voxlink";
+
+namespace {
+// Boot-state coherence: once the engine is initialized, push every registry
+// default through the bounded queue so registry, ProductState and effective
+// engine targets agree. Runs on the control task, never the audio task.
+void seed_defaults_when_ready(void *) {
+  static bool seeded = false;
+  if (seeded || !vocal_fx_is_ready())
+    return;
+  if (voxp4::voxlink_seed_defaults()) {
+    seeded = true;
+    ESP_LOGI(kVoxlinkTag, "registry defaults seeded");
+  }
+}
+} // namespace
 
 namespace {
 voxlink::ProductState g_state;
@@ -56,6 +72,8 @@ bool voxlink_service_start() {
   uart.rx_gpio = CONFIG_VOXLINK_UART_RX_GPIO;
   uart.task_core = 1;
   uart.task_priority = 5;
+  uart.tick_hook = &seed_defaults_when_ready;
+  uart.tick_user = nullptr;
 
   // Final pins are intentionally unassigned until verified against the board
   // schematic. Refuse to start rather than risk binding an audio/console pin.

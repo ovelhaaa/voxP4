@@ -1,42 +1,40 @@
 VoxP4 Control Plane v1.1 — memory comparison (VoxLink OFF vs ON)
-Generated: 2026-09-18
-Method: idf.py size / size-components on the real esp32p4 build (target output,
-not sizeof estimates). Same DSP configuration for both builds.
+Generated: 2026-09-18 (includes post-v1.1 coherence additions)
+Method: idf.py size on the real esp32p4 build (target output, not sizeof
+estimates). Same DSP configuration for both builds.
 
 === Static image comparison (bytes) ===
 metric                     OFF        ON        delta
 -------------------------  ---------  ---------  --------
-Flash (total)               551350     558162     +6812
-  .text                     295782     297658     +1876
-  .rodata                   255060     259996     +4936
-  .appdesc                     256        256        0
-  .init_array                  252        252        0
-DIRAM used                  503911     517687    +13776
-DIRAM remaining              72553      58777    -13776
+Flash (total)               551506     558386     +6880
+  .text                     295938     297826     +1888
+  .rodata                   255060     260052     +4992
+DIRAM used                  504559     518599    +14040
+DIRAM remaining              71905      57865    -14040
 DIRAM total                 576464     576464        0
   .bss (main region)        347440     347440        0
-  .bss (other region)        80464      80856      +392
+  .bss (other region)        81112      81504      +392
   .text (DIRAM)              66642      66866      +224
-  .data                       9365      22525    +13160
-HP core RAM (used)            4186       4186        0
-LP RAM (used)                   24         24        0
-Total image size            631291     651487    +20196
-vox_p4.bin                  631344     651856    +20512
-                           (0x9a370)  (0x9f250)
+  .data                       9365      22789    +13424
+Total image size            631447     651975    +20528
+vox_p4.bin                  631824     652352    +20528
+                           (0x9a410)  (0x9f440)
 
 === Interpretation ===
-The +13,776-byte DIRAM delta is the resident control core:
-  Session            13,216 B  (parser 4,784 + 8 KiB TX ring + counters)
+The +14,040-byte DIRAM delta is the resident control core:
+  Session            13,480 B  (parser + 8 KiB TX ring + 256 B SEQ guard +
+                                 counters)
   ProductState          400 B
   UART transport/task overhead
-matches sizeof(Session)+sizeof(ProductState) measured on host, confirming the
-static footprint is exactly the control objects and nothing else.
+The engine-side applied-target trace (s_last_applied[128] + validity = ~648 B)
+is present in BOTH builds, which is why the OFF baseline also grew slightly
+versus the original v1 report.
 
-The .data increase (+13,160) is the initialized static control objects; the
-remaining +392 .bss is ancillary. No DSP object size changed.
+The .data increase is the initialized static control objects. No DSP object
+size changed.
 
 === Runtime memory (PENDING HARDWARE) ===
-The following require a booted device and could not be measured here:
+Requires a booted device:
   internal free heap after boot (VoxLink OFF / ON)
   largest internal free block
   PSRAM free / largest PSRAM block
@@ -44,13 +42,11 @@ The following require a booted device and could not be measured here:
   audio task stack high-water mark
   pitch task stack high-water mark
 UART driver ring buffers (rx 4096 B, tx 8192 B) are allocated from the heap at
-server start and are therefore NOT included in the static delta above; they are
-conditional on the server actually starting (pins assigned).
+server start and are NOT included in the static delta above.
 
 === DIRAM pressure note ===
-Enabled DIRAM usage is 89.8% (58,777 B remaining). This is acceptable but has
-less headroom than the disabled build (87.41%). No memory was migrated to PSRAM
-because the static control buffers are small and the pressure source is the
-frozen DSP, not VoxLink. If runtime measurement shows allocation problems, the
-first candidates are the TX ring (8 KiB) and parser queue, per the v1.1 plan;
-audio/DMA/DSP memory must not be moved.
+Enabled DIRAM usage is 89.96% (57,865 B remaining). Acceptable but with limited
+headroom. No memory was migrated to PSRAM; the static control buffers are small
+and the pressure source is the frozen DSP. If runtime measurement shows problems,
+the TX ring (8 KiB) and parser queue are the first candidates; audio/DMA/DSP
+memory must not move.

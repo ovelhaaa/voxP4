@@ -78,6 +78,8 @@ void UartTransport::run() {
         break;
     }
     session_->tick(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+    if (config_.tick_hook != nullptr)
+      config_.tick_hook(config_.tick_user);
   }
   vTaskDelete(nullptr);
 }

@@ -284,6 +284,59 @@ int main() {
     check(busy.counters().control_queue_full == 1, "queue-full counter");
   }
 
+  // SEQ reuse while a response is still pending in the same input batch is
+  // rejected as BUSY, and the guard clears between batches.
+  {
+    Session s;
+    s.init(cfg);
+    ProductState st;
+    st.init();
+    s.set_product_state(&st);
+    Client c4;
+    c4.session = &s;
+    {
+      const uint8_t hello[3] = {kVersion, 0x01, 0x00};
+      c4.request(MsgType::Hello, 1, hello, sizeof(hello));
+    }
+
+    uint8_t payload[7];
+    put_u16(payload, 0x0401);
+    payload[2] = static_cast<uint8_t>(ValueTag::Float32);
+    put_f32(payload + 3, 0.1f);
+    uint8_t f1[kMaxFrame];
+    uint8_t f2[kMaxFrame];
+    const size_t n1 =
+        encode_frame(MsgType::SetParam, 0, 40, payload, sizeof(payload), f1, sizeof(f1));
+    const size_t n2 =
+        encode_frame(MsgType::SetParam, 0, 40, payload, sizeof(payload), f2, sizeof(f2));
+    uint8_t batch[2 * kMaxFrame];
+    std::memcpy(batch, f1, n1);
+    std::memcpy(batch + n1, f2, n2);
+
+    s.feed(batch, n1 + n2);
+    std::vector<Frame> frames;
+    uint8_t drain[kMaxFrame * 4];
+    size_t chunk = 0;
+    while ((chunk = s.take_tx(drain, sizeof(drain))) > 0)
+      c4.parser.feed(drain, chunk,
+                     [&frames](const Frame &f) { frames.push_back(f); });
+    const Frame *nack = find(frames, MsgType::Nack);
+    check(nack != nullptr && get_u16(nack->payload + 2) ==
+                                 static_cast<uint16_t>(Code::Busy),
+          "duplicate in-flight SEQ rejected as BUSY");
+    check(s.counters().duplicate_seq_rejected == 1,
+          "duplicate_seq_rejected counted");
+
+    // A later batch may reuse the same SEQ once the response was transmitted.
+    s.feed(f1, n1);
+    frames.clear();
+    while ((chunk = s.take_tx(drain, sizeof(drain))) > 0)
+      c4.parser.feed(drain, chunk,
+                     [&frames](const Frame &f) { frames.push_back(f); });
+    check(find(frames, MsgType::ParamChanged) != nullptr,
+          "SEQ reusable after the batch is drained");
+  }
+
   // Heartbeat timeout returns to DISCONNECTED without touching state.
   {
     uint32_t revision_before = state.revision();

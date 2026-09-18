@@ -152,6 +152,24 @@ the P4 returns `NACK(QUEUE_FULL)` rather than blocking. Client policy:
 * Notifications use a server-owned `SEQ` and `FLAGS=NOTIFICATION`.
 * `state_revision` is a 32-bit monotonic counter, incremented only on a genuine
   change. A newer revision `a` beats older `b` iff `(int32_t)(a - b) > 0`.
+* `SEQ` is 8-bit and wraps modulo 256. Do not reuse a `SEQ` while its request is
+  still pending. The P4 rejects a duplicate `SEQ` within one received batch with
+  `NACK(BUSY)`; reuse after the response is transmitted is allowed.
+
+### 8.1 Boot-state coherence
+
+At startup, and once the audio engine is ready, the P4 seeds every registry
+default into the engine through the same bounded queue. As a result, after the
+first audio blocks:
+
+```text
+registry default == ProductState value == effective engine target
+```
+
+for all 45 parameters. A `GET_STATE` received during that brief window still
+returns the registry defaults, which the engine converges to. This is verified
+by `voxlink_coherence_tests` on the host (registry -> ProductState -> engine
+target, including normalized/clamped values).
 
 ## 9. Rate recommendations
 

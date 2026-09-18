@@ -105,6 +105,14 @@ struct AtomicInputIdentity {
 
 VocalFxLimiterDiagnostics s_limiter_diag{};
 
+// Control-plane observability only: the exact float value handed to the engine
+// for each parameter at the last block-boundary drain. No DSP behavior change
+// and no effect on any audio computation.
+constexpr size_t kAppliedTraceSize = 128;
+float s_last_applied[kAppliedTraceSize] = {};
+bool s_applied_valid[kAppliedTraceSize] = {};
+uint64_t s_applied_count = 0;
+
 constexpr size_t kHarmonizerTraceCapacity = 512;
 static HarmonizerBlockTraceRecord *s_harmonizer_trace = nullptr;
 std::atomic<uint32_t> s_harmonizer_trace_head{0};
@@ -325,6 +333,9 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   e.pitch_shift_pitch = {};
   e.pitch_shift_mark_count = 0;
   parameter_queue.reset();
+  for (size_t i = 0; i < kAppliedTraceSize; ++i)
+    s_applied_valid[i] = false;
+  s_applied_count = 0;
   e.ready = true;
   return true;
 }
@@ -813,6 +824,12 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
 }
 namespace {
 void apply_parameter(VocalFxParameter p, float v) {
+  const size_t trace_index = static_cast<size_t>(p);
+  if (trace_index < kAppliedTraceSize) {
+    s_last_applied[trace_index] = v;
+    s_applied_valid[trace_index] = true;
+    ++s_applied_count;
+  }
   switch (p) {
   case VocalFxParameter::GateThresholdDb:
     e.gate_t = v;
@@ -986,6 +1003,15 @@ void vocal_fx_set_parameter(VocalFxParameter p, float v) {
 bool vocal_fx_try_set_parameter(VocalFxParameter p, float v) {
   return parameter_queue.push({p, v});
 }
+bool vocal_fx_is_ready() { return e.ready; }
+bool vocal_fx_last_applied_parameter(VocalFxParameter p, float *value) {
+  const size_t index = static_cast<size_t>(p);
+  if (value == nullptr || index >= kAppliedTraceSize || !s_applied_valid[index])
+    return false;
+  *value = s_last_applied[index];
+  return true;
+}
+uint64_t vocal_fx_applied_parameter_count() { return s_applied_count; }
 void vocal_fx_set_pitch_shift_enabled(bool enabled) {
   vocal_fx_set_parameter(VocalFxParameter::PitchShiftEnabled,
                          enabled ? 1.0f : 0.0f);

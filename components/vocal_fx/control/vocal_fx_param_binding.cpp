@@ -1,5 +1,6 @@
 #include "vocal_fx_param_binding.h"
 #include "vocal_fx.h"
+#include "voxlink_registry.h"
 
 namespace voxp4 {
 
@@ -71,6 +72,22 @@ bool voxlink_submit(uint16_t id, float value, void *user) {
   if (!voxlink_to_engine_param(id, &parameter))
     return false;
   return vocal_fx_try_set_parameter(parameter, value);
+}
+
+bool voxlink_seed_defaults() {
+  const voxlink::ParamDescriptor *params = voxlink::registry_params();
+  const size_t count = voxlink::registry_count();
+  bool all_accepted = true;
+  for (size_t i = 0; i < count; ++i) {
+    VocalFxParameter parameter;
+    if (!voxlink_to_engine_param(params[i].id, &parameter)) {
+      all_accepted = false;
+      continue;
+    }
+    if (!vocal_fx_try_set_parameter(parameter, params[i].default_value))
+      all_accepted = false;
+  }
+  return all_accepted;
 }
 
 } // namespace voxp4

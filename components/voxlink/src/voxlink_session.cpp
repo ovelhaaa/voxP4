@@ -19,6 +19,27 @@ size_t put_value(ValueTag tag, float value, uint8_t *out, size_t capacity) {
   return encode_value(tag, value, out, capacity);
 }
 
+bool is_request_type(MsgType type) {
+  switch (type) {
+  case MsgType::Hello:
+  case MsgType::CapsRequest:
+  case MsgType::GetState:
+  case MsgType::GetParam:
+  case MsgType::SetParam:
+  case MsgType::Heartbeat:
+  case MsgType::Action:
+  case MsgType::PresetList:
+  case MsgType::PresetLoad:
+  case MsgType::PresetSave:
+  case MsgType::PresetRename:
+  case MsgType::MidiEvent:
+  case MsgType::SceneOp:
+    return true;
+  default:
+    return false;
+  }
+}
+
 } // namespace
 
 void Session::init(const SessionConfig &cfg) {
@@ -82,6 +103,9 @@ bool Session::enqueue(MsgType type, uint8_t flags, uint8_t seq,
 }
 
 void Session::feed(const uint8_t *data, size_t len) {
+  // A new input batch: responses from the previous batch have been transmitted
+  // (the transport drains TX after each feed), so SEQ values may be reused.
+  std::memset(inflight_, 0, sizeof(inflight_));
   parser_.feed(data, len);
   Frame frame;
   while (parser_.pop(&frame)) {
@@ -352,6 +376,15 @@ void Session::handle_set_param(const Frame &frame) {
 }
 
 void Session::handle_frame(const Frame &frame) {
+  if (is_request_type(frame.type)) {
+    if (inflight_[frame.seq]) {
+      // The client reused a SEQ whose response is still pending in this batch.
+      ++counters_.duplicate_seq_rejected;
+      send_nack(frame, Code::Busy);
+      return;
+    }
+    inflight_[frame.seq] = true;
+  }
   switch (frame.type) {
   case MsgType::Hello:
     handle_hello(frame);

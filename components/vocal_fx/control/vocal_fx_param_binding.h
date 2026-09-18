@@ -15,4 +15,10 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out);
 // when the bounded SPSC runtime queue rejected the update.
 bool voxlink_submit(uint16_t id, float value, void *user);
 
+// Boot-state coherence: submit every registry default to the engine so that
+// registry defaults, ProductState and the effective engine targets agree after
+// the queue drains. Must be called after vocal_fx_init(). Returns true if every
+// default was accepted by the bounded queue.
+bool voxlink_seed_defaults();
+
 } // namespace voxp4

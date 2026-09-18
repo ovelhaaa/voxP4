@@ -203,6 +203,13 @@ target_include_directories(voxlink_binding_tests PRIVATE
  ${CMAKE_CURRENT_SOURCE_DIR} ${VF}/control)
 add_test(NAME voxlink_binding_tests COMMAND voxlink_binding_tests)
 
+add_executable(voxlink_coherence_tests
+ test_voxlink_coherence.cpp ${VF}/control/vocal_fx_param_binding.cpp)
+target_link_libraries(voxlink_coherence_tests PRIVATE vocal_fx_dsp voxlink_core)
+target_include_directories(voxlink_coherence_tests PRIVATE
+ ${CMAKE_CURRENT_SOURCE_DIR} ${VF}/control)
+add_test(NAME voxlink_coherence_tests COMMAND voxlink_coherence_tests)
+
 add_executable(voxlink_protocol_conformance_tests test_voxlink_conformance.cpp)
 target_link_libraries(voxlink_protocol_conformance_tests PRIVATE voxlink_core)
 target_include_directories(voxlink_protocol_conformance_tests PRIVATE

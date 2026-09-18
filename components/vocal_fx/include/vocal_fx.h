@@ -32,6 +32,15 @@ void vocal_fx_set_parameter(VocalFxParameter parameter, float value);
 // Control-plane variant: reports whether the bounded SPSC queue accepted the
 // update. Retained DSP behavior is identical to vocal_fx_set_parameter.
 bool vocal_fx_try_set_parameter(VocalFxParameter parameter, float value);
+// Control-plane observability: true once vocal_fx_init() succeeded and the
+// audio task may drain the parameter queue.
+bool vocal_fx_is_ready();
+// Returns the exact float last handed to the engine for `parameter` at a
+// block-boundary drain. Diagnostic only; no DSP effect. False if never applied
+// since the last init.
+bool vocal_fx_last_applied_parameter(VocalFxParameter parameter, float *value);
+// Number of parameter applications recorded since the last init.
+uint64_t vocal_fx_applied_parameter_count();
 void vocal_fx_set_pitch_shift_enabled(bool enabled);
 void vocal_fx_set_pitch_shift_semitones(float semitones);
 void vocal_fx_set_pitch_shift_mix(float wet);

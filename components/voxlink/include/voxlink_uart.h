@@ -22,6 +22,10 @@ struct UartConfig {
   size_t tx_buffer = 8192;
   int task_core = 1;
   int task_priority = 5;
+  // Called once per task loop after session tick. Used to establish boot-state
+  // coherence once the audio engine is ready. May be null.
+  void (*tick_hook)(void *user) = nullptr;
+  void *tick_user = nullptr;
 };
 
 class UartTransport {

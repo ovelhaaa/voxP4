@@ -4,6 +4,10 @@ Date: 2026-09-18
 Scope: normative-spec closure, target enablement build, memory measurement,
 integration-contract export. No DSP changes.
 
+Source baseline: commit `7677791` ("Production qualifying"), working tree dirty
+with the post-v1.1 coherence additions. Build identity and ELF SHA256 are in
+`control_plane_v11_device_reference.txt`.
+
 ## Result
 
 ```text
@@ -14,7 +18,7 @@ DOCUMENTATION / ENCODER / DECODER / GOLDEN: CONSISTENT
 TARGET BUILD (VoxLink OFF):               PASS
 TARGET BUILD (VoxLink ON):                PASS
 INTEGRATION CONTRACT:                     READY
-HOST TESTS:                               42/42 PASS
+HOST TESTS:                               43/43 PASS
 PHYSICAL UART / REALTIME QUALIFICATION:   PENDING HARDWARE
 
 NO PRODUCTION CLAIM MADE FOR UART YET.
@@ -243,8 +247,55 @@ Physical-run artifacts (`control_plane_v11_cli_session.txt`,
 `..._bypass_stress_raw.txt`, `..._soak_raw.txt`) are not produced; they require
 hardware.
 
-## 10. Decision
+## 10. Post-v1.1 closure (items 1–7)
+
+### 1. Boot-state coherence — DONE (host)
+`voxlink_coherence_tests` proves `registry default == ProductState initial`.
+The engine now exposes `vocal_fx_last_applied_parameter()` and
+`voxp4::voxlink_seed_defaults()`. After `vocal_fx_init`, the control task seeds
+every registry default through the bounded queue; after the first drain the
+engine target for all 45 parameters equals the registry default exactly.
+Referenced in `docs/voxlink_cyd_integration.md` §8.1.
+
+### 2. Applied-target coherence — DONE (host)
+The same test submits normalized values through `voxp4::voxlink_submit` (the
+exact VoxLink path), drains one audio block, and asserts the engine target equals
+the accepted normalized value, including the clamp path
+(`reverb.wet 2.0 -> 1.0`, `harmony.interval 99 -> 12`).
+
+### 3. SEQ semantics — DONE
+* `docs/voxlink_v1.md` §8.4 documents the 8-bit reuse/wrap rule.
+* The server now rejects a duplicate SEQ within one received batch with
+  `NACK(BUSY)` and increments `duplicate_seq_rejected`; the guard clears at the
+  start of the next batch, so reuse after the response is transmitted is allowed.
+* Tested in `voxlink_state_sync_tests` (duplicate rejected, then reusable).
+
+### 4. Final UART pins — BLOCKED
+No WT9932P4-TINY schematic or free-header mapping exists in this repository.
+Assigning pins would be invention. `CONFIG_VOXLINK_UART_TX_GPIO`/`_RX_GPIO`
+remain `-1`; the server refuses to start while unassigned. Needed from the
+hardware owner: the schematic's free 3.3 V header GPIOs (excluding GPIO19–23 and
+GPIO37/38 and strapping pins).
+
+### 5. Hardware UART qualification — PENDING HARDWARE
+Requires a board: 921600 baud, framing, CRC/resync, reconnection.
+
+### 6. Runtime memory — PENDING HARDWARE
+Requires a booted device: internal heap, largest block, PSRAM, task-stack HWMs.
+
+### 7. Realtime impact vs B4D.12 — PENDING HARDWARE
+Requires the burn-in harness with VoxLink active.
+
+### Updated measurements
+Enabled-build DIRAM delta is now **+14,040 B** (Session includes the 256-byte SEQ
+guard); see `control_plane_v11_memory_comparison.txt`. ELF SHAs updated in
+`control_plane_v11_device_reference.txt`.
+
+## 11. Decision
 
 ```text
-OUTCOME B — HOST / BUILD COMPLETE, HARDWARE PENDING
+OUTCOME B — HOST / BUILD COMPLETE, HARDWARE + SCHEMATIC PENDING
 ```
+
+Items 1–3 are closed and host-verified. Items 4–7 require hardware (and, for
+item 4, the board schematic).

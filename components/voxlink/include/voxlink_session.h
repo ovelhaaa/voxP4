@@ -56,6 +56,7 @@ struct SessionCounters {
   uint64_t reconnect_count = 0;
   uint64_t sets_received = 0;
   uint64_t gets_received = 0;
+  uint64_t duplicate_seq_rejected = 0;
 };
 
 class Session {
@@ -121,6 +122,9 @@ private:
   size_t tx_head_ = 0; // write
   size_t tx_tail_ = 0; // read
   uint8_t server_seq_ = 0;
+  // Requests handled in the current input batch. Cleared at the start of each
+  // feed(), so a SEQ may be reused once its response has been transmitted.
+  bool inflight_[256] = {false};
   uint32_t last_rx_ms_ = 0;
   uint32_t last_heartbeat_ms_ = 0;
   uint32_t now_ms_ = 0;
