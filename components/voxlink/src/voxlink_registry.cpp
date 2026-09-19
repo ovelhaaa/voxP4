@@ -41,7 +41,7 @@ const ParamDescriptor kParams[] = {
           "HarmonyMode"),
     PENUM(0x0104, "harmony.key", "Harmony Key", 0.0f, 11.0f, 0.0f, "harmony",
           "HarmonyKey"),
-    PENUM(0x0105, "harmony.scale", "Harmony Scale", 0.0f, 1.0f, 0.0f, "harmony",
+    PENUM(0x0105, "harmony.scale", "Harmony Scale", 0.0f, 11.0f, 0.0f, "harmony",
           "HarmonyScale"),
     PFLOAT(0x0107, "harmony.voice1.pan", "Harmony Voice Pan", "", -1.0f, 1.0f,
            0.0f, 0.01f, kPersistRtSmoothed, 30.0f, "harmony",
