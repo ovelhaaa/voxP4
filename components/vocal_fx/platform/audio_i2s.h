@@ -454,6 +454,7 @@ struct B4D12Telemetry {
   B4D12ForensicRecord top[kB4D12TopCapacity];
   B4D12ForensicRecord miss[kB4D12LateEventCapacity];
   uint32_t top_count;
+  uint32_t top_min_us;
   uint32_t miss_count;
   uint32_t miss_dropped;
   B4D12WindowStats windows[kB4D12WindowCapacity];

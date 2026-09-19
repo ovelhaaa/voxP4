@@ -1020,14 +1020,14 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
   // Retain complete evidence for every miss (up to the existing late-event
   // capacity) and the 100 slowest blocks. No allocation or output here.
   if (dsp_us >= 1000) {
+    const bool filling = t->top_count < kB4D12TopCapacity;
+    const bool keep_top = filling || dsp_us > t->top_min_us;
     size_t slot = t->top_count;
-    if (slot >= kB4D12TopCapacity) {
+    if (keep_top && !filling) {
       slot = 0;
       for (size_t i = 1; i < kB4D12TopCapacity; ++i)
         if (t->top[i].dsp_us < t->top[slot].dsp_us) slot = i;
     }
-    const bool keep_top = t->top_count < kB4D12TopCapacity ||
-                          dsp_us > t->top[slot].dsp_us;
     if (keep_top || dsp_us > deadline_u) {
       B4D12ForensicRecord rec{};
       rec.block_id = static_cast<uint32_t>(block_idx);
@@ -1036,7 +1036,13 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
       vocal_fx_latest_harmonizer_trace(&rec.harmony);
       if (keep_top) {
         t->top[slot] = rec;
-        if (t->top_count < kB4D12TopCapacity) ++t->top_count;
+        if (filling) ++t->top_count;
+        if (t->top_count == kB4D12TopCapacity) {
+          uint32_t minimum = t->top[0].dsp_us;
+          for (size_t i = 1; i < kB4D12TopCapacity; ++i)
+            if (t->top[i].dsp_us < minimum) minimum = t->top[i].dsp_us;
+          t->top_min_us = minimum;
+        }
       }
       if (dsp_us > deadline_u) {
         if (t->miss_count < kB4D12LateEventCapacity)
