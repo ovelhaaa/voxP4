@@ -96,6 +96,59 @@ int main() {
             NormalizeStatus::Ok && out == 2.0f,
         "enum in range accepted");
 
+  // 0x0112 non-scale policy must be a semantic ENUM (0..2), not a float.
+  p = find_param(0x0112);
+  check(p && p->type == ValueTag::Enum16 && p->min_value == 0.0f &&
+            p->max_value == 2.0f,
+        "non_scale_policy is ENUM 0..2");
+  check(normalize_param_value(0x0112, ValueTag::Enum16, 1.5, &out) ==
+            NormalizeStatus::EnumInvalid,
+        "non_scale_policy rejects fractional enum");
+  check(normalize_param_value(0x0112, ValueTag::Enum16, 3.0, &out) ==
+            NormalizeStatus::EnumInvalid,
+        "non_scale_policy rejects out-of-range enum");
+  check(normalize_param_value(0x0112, ValueTag::Enum16, 1.0, &out) ==
+            NormalizeStatus::Ok && out == 1.0f,
+        "non_scale_policy accepts PreserveChromatic");
+  check(normalize_param_value(0x0112, ValueTag::Float32, 1.0, &out) ==
+            NormalizeStatus::TypeMismatch,
+        "non_scale_policy rejects float tag");
+
+  // 0x0113 voice leading must be BOOL.
+  p = find_param(0x0113);
+  check(p && p->type == ValueTag::Bool, "voice_leading is BOOL");
+  check(normalize_param_value(0x0113, ValueTag::Bool, 0.0, &out) ==
+            NormalizeStatus::Ok && out == 0.0f,
+        "voice_leading false ok");
+  check(normalize_param_value(0x0113, ValueTag::Bool, 1.0, &out) ==
+            NormalizeStatus::Ok && out == 1.0f,
+        "voice_leading true ok");
+  check(normalize_param_value(0x0113, ValueTag::Float32, 1.0, &out) ==
+            NormalizeStatus::TypeMismatch,
+        "voice_leading rejects float tag");
+
+  // 0x0114 / 0x0115 min/max MIDI present as floats in [0,127].
+  p = find_param(0x0114);
+  check(p && p->type == ValueTag::Float32 && p->min_value == 0.0f &&
+            p->max_value == 127.0f,
+        "min_midi present [0,127]");
+  p = find_param(0x0115);
+  check(p && p->type == ValueTag::Float32 && p->min_value == 0.0f &&
+            p->max_value == 127.0f,
+        "max_midi present [0,127]");
+
+  // 0x0303 delay feedback uses the DSP's real signed range.
+  p = find_param(0x0303);
+  check(p && p->type == ValueTag::Float32 && p->min_value == -0.95f &&
+            p->max_value == 0.95f,
+        "delay.feedback range [-0.95,0.95]");
+  check(normalize_param_value(0x0303, ValueTag::Float32, -0.9, &out) ==
+            NormalizeStatus::Ok && out < 0.0f,
+        "delay.feedback accepts negative");
+  check(normalize_param_value(0x0303, ValueTag::Float32, -1.5, &out) ==
+            NormalizeStatus::Clamped && out == -0.95f,
+        "delay.feedback clamps to -0.95");
+
   if (g_failures == 0)
     std::puts("voxlink_registry_tests: PASS");
   return g_failures == 0 ? 0 : 1;

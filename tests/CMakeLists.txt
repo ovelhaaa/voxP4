@@ -172,6 +172,12 @@ target_link_libraries(voxlink_registry_tests PRIVATE voxlink_core)
 target_include_directories(voxlink_registry_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME voxlink_registry_tests COMMAND voxlink_registry_tests)
 
+add_executable(voxlink_schema_tests test_voxlink_schema.cpp)
+target_link_libraries(voxlink_schema_tests PRIVATE voxlink_core)
+target_compile_definitions(voxlink_schema_tests PRIVATE
+ VOXP4_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME voxlink_schema_tests COMMAND voxlink_schema_tests)
+
 add_executable(voxlink_framing_tests test_voxlink_framing.cpp)
 target_link_libraries(voxlink_framing_tests PRIVATE voxlink_core)
 add_test(NAME voxlink_framing_tests COMMAND voxlink_framing_tests)

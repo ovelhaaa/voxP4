@@ -42,3 +42,47 @@ jobs:
             build/project_description.json
           if-no-files-found: error
           retention-days: 14
+
+  voxlink-contract:
+    name: VoxLink contract / schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Regenerate VoxLink schema artifacts
+        run: python tools/export_voxlink_schema.py
+
+      - name: Fail if generated artifacts are stale
+        run: |
+          if ! git diff --exit-code -- integration/; then
+            echo "::error::VoxLink generated artifacts are stale. Run 'python tools/export_voxlink_schema.py' and commit the outputs in integration/."
+            exit 1
+          fi
+
+      - name: Configure host tests
+        run: cmake -S tests -B build-host
+
+      - name: Build VoxLink host tests
+        run: |
+          cmake --build build-host --target \
+            voxlink_registry_tests \
+            voxlink_schema_tests \
+            voxlink_framing_tests \
+            voxlink_fuzz_tests \
+            voxlink_state_sync_tests \
+            voxlink_concurrency_tests \
+            voxlink_golden_tests \
+            voxlink_protocol_conformance_tests \
+            voxlink_binding_tests \
+            voxlink_coherence_tests
+
+      - name: Run VoxLink host tests
+        run: ctest --test-dir build-host -R voxlink --output-on-failure
