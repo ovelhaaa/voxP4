@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 class Gate {
 public:
   void init(float sr);
@@ -6,6 +7,7 @@ public:
   void set(float threshold_db, float attack_ms, float hold_ms, float release_ms,
            float range_db);
   float process(float x);
+  void process_block(float *buffer, size_t n);
   static float db_to_linear(float d);
 
 private:

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 class Compressor {
 public:
   void init(float sr);
@@ -6,6 +7,7 @@ public:
   void set(float threshold_db, float ratio, float attack_ms, float release_ms,
            float makeup_db, float knee_db);
   float process(float x);
+  void process_block(float *buffer, size_t n);
   float gain_db_for(float input_db) const;
 
 private:

@@ -35,3 +35,31 @@ float Gate::process(float x) {
   gain_ = target + (gain_ - target) * c;
   return x * gain_;
 }
+void Gate::process_block(float *buffer, size_t n) {
+  float env = env_, gain = gain_;
+  unsigned hold = hold_;
+  const float attack = attack_, release = release_;
+  const float threshold = threshold_, min_gain = min_gain_;
+  const unsigned hold_samples = hold_samples_;
+  for (size_t i = 0; i < n; ++i) {
+    const float x = buffer[i];
+    const float p = std::fabs(x);
+    env = p > env ? p + (env - p) * attack : p + (env - p) * release;
+    float target;
+    if (env >= threshold) {
+      hold = hold_samples;
+      target = 1;
+    } else if (hold) {
+      --hold;
+      target = 1;
+    } else {
+      target = min_gain;
+    }
+    const float c = target > gain ? attack : release;
+    gain = target + (gain - target) * c;
+    buffer[i] = x * gain;
+  }
+  env_ = env;
+  gain_ = gain;
+  hold_ = hold;
+}

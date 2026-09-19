@@ -38,3 +38,21 @@ float Compressor::process(float x) {
   float db = 20 * std::log10(std::max(env_, 1e-12f));
   return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
 }
+void Compressor::process_block(float *buffer, size_t n) {
+  float env = env_;
+  const float attack = attack_, release = release_;
+  const float makeup = makeup_, linear_limit = threshold_lo_linear_;
+  for (size_t i = 0; i < n; ++i) {
+    const float x = buffer[i];
+    const float p = std::fabs(x);
+    const float c = p > env ? attack : release;
+    env = p + (env - p) * c;
+    if (env <= linear_limit) {
+      buffer[i] = x * makeup;
+    } else {
+      const float db = 20 * std::log10(std::max(env, 1e-12f));
+      buffer[i] = x * std::pow(10.0f, gain_db_for(db) / 20) * makeup;
+    }
+  }
+  env_ = env;
+}

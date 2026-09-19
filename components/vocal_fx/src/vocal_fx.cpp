@@ -495,17 +495,14 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     VF_PROFILE_END(e.profiler, ProfileSection::InputHpf, 0);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::InputGate);
     if (e.cfg.enable_gate) {
-      for (size_t i = 0; i < n; i++) {
-        e.work[i] = e.gate.process(e.work[i]);
-      }
+      e.gate.process_block(e.work, n);
     }
     VF_PROFILE_END(e.profiler, ProfileSection::InputGate, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Input, 0);
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Compressor);
     if (e.cfg.enable_compressor)
-      for (size_t i = 0; i < n; i++)
-        e.work[i] = e.compressor.process(e.work[i]);
+      e.compressor.process_block(e.work, n);
     VF_PROFILE_END(e.profiler, ProfileSection::Compressor, 0);
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::PitchMarkSync);
