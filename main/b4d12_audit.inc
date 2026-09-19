@@ -259,11 +259,13 @@ void b4d12_run_case(const B4D12CaseDef &def) {
 
   const auto &c = s_audio.counters();
   const B4D12Telemetry *t = s_audio.b4d12_telemetry();
-  const auto p = b4d12_pct(t);
-  const PitchAnalysisAuditTelemetry pa = vocal_fx_pitch_analysis_audit_telemetry();
 
   s_audio.b4d12_telemetry_enable(false);
   stop_pipeline_tasks(false);
+  // Snapshot after the audio task has stopped. Reading the histogram before
+  // disabling capture could mix an earlier maximum with later miss counters.
+  const auto p = b4d12_pct(t);
+  const PitchAnalysisAuditTelemetry pa = vocal_fx_pitch_analysis_audit_telemetry();
 
   if (t && std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
     printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices,psola_sched_cycles,psola_addgrain_cycles,psola_deferred_cycles,psola_mark_cycles,psola_desc_cycles,psola_near_cycles,psola_poly_cycles,psola_gn_cycles\n");
