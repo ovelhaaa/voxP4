@@ -201,7 +201,74 @@ in the measured windows; MC+1 percentages apply to the 698 sampled grains.
 The audit recorder is behind `CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER` and is
 disabled in the normal B4D.12 configuration.
 
-## Decision
+## Experiment B1 feasibility audit (before a prepared consumer)
+
+The [first-grain baseline CSV](psola_prediction_data/psola_b1_baseline.csv)
+reprocesses the original COM11 capture without changing Experiment A data or
+the DSP path. It covers three MC+2 and 57 MC+3+ first grains. The N-1 values
+are exact bit comparisons, including formant shift/amount, derived lambda,
+gamma, sample rate, mode and normalization strategy. Every component and the
+complete control key matched in **3/3 MC+2 and 57/57 MC+3+**. The eventual
+model was also published at N-1 in all 60 blocks.
+
+| N-1 recency policy | MC+2 model coverage | MC+3+ model coverage |
+| --- | ---: | ---: |
+| Newest 1 | 1/3 | 24/57 |
+| Newest 2 | 3/3 | 36/57 |
+| Newest 4 | 3/3 | 57/57 |
+| Newest 8 or 16 | 3/3 | 57/57 |
+
+The recency rank uses `N-1 newest serial - eventual serial + 1`; a complete
+coherent 16-slot snapshot was not printed. These are **policy coverage upper
+bounds**, not cache hit rates. N-2 already contained the eventual first-grain
+model in 3/3 MC+2 and 57/57 MC+3+ blocks; N-3 contained it in 2/3 and 49/57.
+Thus the model publication lead is at least two blocks for every MC+3+ first
+grain in this sample, but the exact publication block and full min/median/p95
+lead are not recoverable from the three snapshots. At 44.1 kHz, two 64-frame
+blocks are about 2.90 ms. The existing capture does not give valid-model count,
+age distribution, or proximity to marks for all ring entries.
+
+For the retained 3 MC+2 and 52 MC+3+ first-grain forensic rows, the measured
+mean model-only polynomial plus gain cost was 34,315 and 28,936 cycles,
+respectively (about 95 and 80 us at 360 MHz). The corresponding mean first
+`add_grain` costs were 276,840 and 265,717 cycles (769 and 738 us). Mean mark
+selection was 22,877 and 18,490 cycles; `model_near` was 29,684 and 28,927;
+cache lookup was 16,347 and 16,322. All 60 first grains took the cold path.
+The forensic recorder retained 52/57 MC+3+ breakdowns, so these means are
+descriptive, not full-population estimates. The small mathematical portion
+cannot by itself remove the roughly 0.8–1.0 ms required from a burst block.
+
+`warp_polynomial` and `compute_gain_normalization` are **MODEL-ONLY
+PREPARABLE** when the exact published model and control key are fixed.
+`select_mark` and `model_near(center)` are **MARK/SOURCE DEPENDENT**.
+History eligibility, destination bounds and deferred descriptor setup are
+**GRAIN/DESCRIPTOR DEPENDENT**. Cache updates, audit counters and grain-state
+changes are **COMMIT-ONLY**. OLA and deferred slices are **RENDER-ONLY**.
+The selected mark and destination do not enter the polynomial or gain
+functions. Existing local/shared warp-cache state is demand driven and must
+not be changed by an early computation.
+
+The data support trying a separate, exact-key prepared cache of at most the
+newest four models as a bounded experiment. At the observed mean math cost,
+four cold preparations would cost roughly 320–380 us and all 16 roughly
+1.3–1.5 ms before cache/snapshot overhead; the latter is already comparable
+to the whole block deadline. Those are extrapolations, not measured placement
+costs. Publication frequency, actual prewarm CPU overhead, prepared hit rate,
+stale-result behavior, audio equivalence and conditional after latencies have
+**not been measured**. The existing 32-bit serial is observational and must be
+upgraded to a concurrency-safe generation before any prepared result is
+consumed. No prepared path or production policy is introduced by this audit.
+
+### B1 audit decision
+
+Exact N-1 control stability and newest-four model coverage pass the
+*feasibility* checks. Model math is only about 80–95 us per cold first grain,
+so B1-A (model pre-warming alone sufficient) is not supported by the measured
+cost decomposition. Classification among B1-B/C/D requires an actual bounded
+prepared-cache experiment and paired COM11 runs; it is not inferred from
+candidate coverage. No burst improvement or deadline reduction is claimed.
+
+## Experiment A decision
 
 **C — information arrives too late for complete-grain prediction under the
 current scheduler.** In every measured MC+2/MC+3+ burst, the prior cursor was
