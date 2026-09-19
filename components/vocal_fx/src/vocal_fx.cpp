@@ -781,22 +781,14 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Master);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::MasterMix);
-    for (size_t i = 0; i < n; i++) {
-      e.left[i] += e.delay_wet_l[i] + e.rev_wet_l[i];
-      e.right[i] += e.delay_wet_r[i] + e.rev_wet_r[i];
-    }
+    // MasterMix now includes the limiter and output store. Compare this
+    // section against the former MasterMix + MasterLimiter total.
+    const float master_peak = e.limiter.process_master_block(
+        e.left, e.right, e.delay_wet_l, e.delay_wet_r, e.rev_wet_l,
+        e.rev_wet_r, ol, orr, n);
+    if (master_peak > s_limiter_diag.master_peak)
+      s_limiter_diag.master_peak = master_peak;
     VF_PROFILE_END(e.profiler, ProfileSection::MasterMix, 0);
-    VF_PROFILE_BEGIN(e.profiler, ProfileSection::MasterLimiter);
-    for (size_t i = 0; i < n; i++) {
-      e.limiter.process(e.left[i], e.right[i]);
-      ol[i] = e.left[i];
-      orr[i] = e.right[i];
-      const float ml_abs = std::fabs(ol[i]);
-      const float mr_abs = std::fabs(orr[i]);
-      if (ml_abs > s_limiter_diag.master_peak) s_limiter_diag.master_peak = ml_abs;
-      if (mr_abs > s_limiter_diag.master_peak) s_limiter_diag.master_peak = mr_abs;
-    }
-    VF_PROFILE_END(e.profiler, ProfileSection::MasterLimiter, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Master, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Pipeline, deadline);
     if (s_b4d5_global_enabled) {
