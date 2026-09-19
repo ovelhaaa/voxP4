@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #ifdef ESP_PLATFORM
 #include "driver/i2s_std.h"
@@ -969,8 +970,8 @@ bool AudioI2s::b4d1_recorder_get(size_t index, B4D1BlockRecord *out) const {
 bool AudioI2s::b4d12_telemetry_init(uint32_t sample_rate,
                                     uint32_t window_seconds) {
   if (!b4d12_tee_) {
-    b4d12_tee_ = static_cast<B4D12Telemetry *>(
-        b4c6a_calloc(1, sizeof(B4D12Telemetry)));
+    void *storage = b4c6a_calloc(1, sizeof(B4D12Telemetry));
+    if (storage) b4d12_tee_ = new (storage) B4D12Telemetry{};
   }
   if (!b4d12_tee_) return false;
   b4d12_telemetry_reset();
@@ -984,6 +985,7 @@ bool AudioI2s::b4d12_telemetry_init(uint32_t sample_rate,
 
 void AudioI2s::b4d12_telemetry_free() {
   if (b4d12_tee_) {
+    b4d12_tee_->~B4D12Telemetry();
     b4c6a_free(b4d12_tee_);
     b4d12_tee_ = nullptr;
   }
@@ -994,7 +996,8 @@ void AudioI2s::b4d12_telemetry_reset() {
   if (!b4d12_tee_) return;
   B4D12Telemetry *t = b4d12_tee_;
   const uint64_t bpw = t->blocks_per_window ? t->blocks_per_window : 1;
-  std::memset(t, 0, sizeof(*t));
+  t->~B4D12Telemetry();
+  new (t) B4D12Telemetry{};
   t->blocks_per_window = bpw;
 }
 
@@ -1014,12 +1017,46 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
   const uint8_t klass = mc ? (ng >= 3 ? 3 : (ng == 0 ? 4 : ng))
                            : 0; // 0=NMC,1=MC+1,2=MC+2,3=MC+3+,4=MC+0
   const uint16_t dsp16 = dsp_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(dsp_us);
+  // Retain complete evidence for every miss (up to the existing late-event
+  // capacity) and the 100 slowest blocks. No allocation or output here.
+  if (dsp_us >= 1000) {
+    size_t slot = t->top_count;
+    if (slot >= kB4D12TopCapacity) {
+      slot = 0;
+      for (size_t i = 1; i < kB4D12TopCapacity; ++i)
+        if (t->top[i].dsp_us < t->top[slot].dsp_us) slot = i;
+    }
+    const bool keep_top = t->top_count < kB4D12TopCapacity ||
+                          dsp_us > t->top[slot].dsp_us;
+    if (keep_top || dsp_us > deadline_u) {
+      B4D12ForensicRecord rec{};
+      rec.block_id = static_cast<uint32_t>(block_idx);
+      rec.dsp_us = static_cast<uint32_t>(dsp_us);
+      rec.cycle_us = static_cast<uint32_t>(cycle_us);
+      vocal_fx_latest_harmonizer_trace(&rec.harmony);
+      if (keep_top) {
+        t->top[slot] = rec;
+        if (t->top_count < kB4D12TopCapacity) ++t->top_count;
+      }
+      if (dsp_us > deadline_u) {
+        if (t->miss_count < kB4D12LateEventCapacity)
+          t->miss[t->miss_count++] = rec;
+        else
+          ++t->miss_dropped;
+      }
+    }
+  }
 
   // Exact DSP histogram.
   const uint32_t hb = dsp_us >= B4D12Telemetry::kDspHistBins
                           ? static_cast<uint32_t>(B4D12Telemetry::kDspHistBins - 1)
                           : static_cast<uint32_t>(dsp_us);
   t->dsp_hist[hb]++;
+  const uint32_t ch = dsp_us < 4096u ? static_cast<uint32_t>(dsp_us) : 4095u;
+  t->class_hist[klass][ch]++;
+  t->class_sum_us[klass] += dsp_us;
+  if (dsp_us > t->class_max_us[klass])
+    t->class_max_us[klass] = static_cast<uint32_t>(dsp_us);
 
   // All-block class population.
   switch (klass) {

@@ -208,6 +208,15 @@ config VOXP4_B4D12_REFERENCE_MINUTES
     help
         Duration of the Full-FX deterministic vocal-replay soak (Test A).
 
+config VOXP4_B4D12_SAMPLE_RATE
+    int "B4D.12 audio sample rate (44100 or 48000 Hz)"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    range 44100 48000
+    default 44100
+    help
+        Use 44100 for the reference forensic run or 48000 for the
+        deadline comparison. Other rates in the range are not audited.
+
 config VOXP4_B4D12_STRESS_SECONDS
     int "B4D.12 per-region stress window (seconds)"
     depends on VOXP4_MODE_I2S_B4D_12_BURN_IN

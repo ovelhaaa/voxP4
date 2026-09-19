@@ -28,6 +28,9 @@
 #ifndef CONFIG_VOXP4_B4D12_REFERENCE_MINUTES
 #define CONFIG_VOXP4_B4D12_REFERENCE_MINUTES 30
 #endif
+#ifndef CONFIG_VOXP4_B4D12_SAMPLE_RATE
+#define CONFIG_VOXP4_B4D12_SAMPLE_RATE 44100
+#endif
 #ifndef CONFIG_VOXP4_B4D12_STRESS_SECONDS
 #define CONFIG_VOXP4_B4D12_STRESS_SECONDS 20
 #endif
@@ -262,6 +265,44 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   s_audio.b4d12_telemetry_enable(false);
   stop_pipeline_tasks(false);
 
+  if (t && std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
+    printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices\n");
+    auto emit = [](const char *set, const vocal_fx_platform::B4D12ForensicRecord &r) {
+      const auto &h = r.harmony;
+      printf("B4D12_FORENSIC,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u\n",
+             set, static_cast<unsigned long>(r.block_id),
+             static_cast<unsigned long>(r.dsp_us),
+             static_cast<unsigned long>(r.cycle_us),
+             static_cast<unsigned long>(h.input_cycles),
+             static_cast<unsigned long>(h.compressor_cycles),
+             static_cast<unsigned long>(h.harmony_cycles),
+             static_cast<unsigned long>(h.delay_cycles),
+             static_cast<unsigned long>(h.reverb_cycles),
+             static_cast<unsigned long>(h.master_cycles),
+             static_cast<unsigned>(h.new_grains_scheduled_v0),
+             static_cast<unsigned>(h.active_grains_rendered_v0),
+             static_cast<unsigned>(h.source_grains_built_v0),
+             static_cast<unsigned>(h.grain_samples_processed),
+             static_cast<unsigned>(h.model_warp_lookups),
+             static_cast<unsigned>(h.model_warp_expensive_calls),
+             static_cast<double>(h.model_warp_us),
+             static_cast<unsigned>(h.formant_model_changed),
+             static_cast<unsigned>(h.pitch_changed),
+             static_cast<unsigned>(h.track_state),
+             static_cast<unsigned>(h.fallback_active),
+             static_cast<unsigned>(h.recovery_active),
+             static_cast<unsigned>(h.fir_samples_computed),
+             static_cast<unsigned>(h.fir_samples_reused),
+             static_cast<unsigned>(h.deferred_slices_rendered_v0));
+    };
+    printf("B4D12_FORENSIC_COUNT top=%lu misses=%lu miss_dropped=%lu\n",
+           static_cast<unsigned long>(t->top_count),
+           static_cast<unsigned long>(t->miss_count),
+           static_cast<unsigned long>(t->miss_dropped));
+    for (uint32_t i = 0; i < t->top_count; ++i) emit("top", t->top[i]);
+    for (uint32_t i = 0; i < t->miss_count; ++i) emit("miss", t->miss[i]);
+  }
+
   const double rx_frames = static_cast<double>(c.rx_frames_read.load());
   const double eff_fs = wall_s > 0.0 ? rx_frames / wall_s : 0.0;
   const double misses = t ? static_cast<double>(t->misses) : 0.0;
@@ -380,6 +421,29 @@ void b4d12_run_case(const B4D12CaseDef &def) {
            static_cast<unsigned long long>(t->blocks_mc1),
            static_cast<unsigned long long>(t->blocks_mc2),
            static_cast<unsigned long long>(t->blocks_mc3));
+    static const char *kClassNames[] = {"nmc", "mc1", "mc2", "mc3", "mc0"};
+    for (size_t cl = 0; cl < 5; ++cl) {
+      uint64_t n = 0;
+      for (uint32_t us = 0; us < 4096; ++us) n += t->class_hist[cl][us];
+      auto percentile = [&](double frac) -> uint32_t {
+        if (!n) return 0;
+        const uint64_t target = static_cast<uint64_t>(std::ceil(frac * n));
+        uint64_t cumulative = 0;
+        for (uint32_t us = 0; us < 4096; ++us) {
+          cumulative += t->class_hist[cl][us];
+          if (cumulative >= target) return us;
+        }
+        return 4095;
+      };
+      printf("B4D12_CLASS_DIST name=%s class=%s blocks=%llu mean_us=%.2f "
+             "p50=%lu p99=%lu p999=%lu max=%lu\n",
+             def.name, kClassNames[cl], static_cast<unsigned long long>(n),
+             n ? static_cast<double>(t->class_sum_us[cl]) / n : 0.0,
+             static_cast<unsigned long>(percentile(0.5)),
+             static_cast<unsigned long>(percentile(0.99)),
+             static_cast<unsigned long>(percentile(0.999)),
+             static_cast<unsigned long>(t->class_max_us[cl]));
+    }
     printf("B4D12_RECOVERY name=%s pending=%llu r0=%llu r1=%llu r2=%llu r3=%llu "
            "r4=%llu r5=%llu r6=%llu r7=%llu\n",
            def.name, static_cast<unsigned long long>(t->recovery_pending),
@@ -679,7 +743,7 @@ void b4d12_coordinator_task(void *) {
   (void)esp_task_wdt_reconfigure(&wdt);
 
   s_b4d1_stage = static_cast<float *>(heap_caps_calloc(
-      kB4D1StageSeconds * 44100, sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      kB4D1StageSeconds * CONFIG_VOXP4_B4D12_SAMPLE_RATE, sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!s_b4d1_stage) {
     printf("B4D12_CASE name=prestage status=ALLOC_FAILED\nB4D12_END\n");
     vTaskDelete(nullptr);
@@ -687,15 +751,15 @@ void b4d12_coordinator_task(void *) {
   }
   s_audio.set_output_rms_enabled(false);
 
-  s_b4d1_rate = 44100;
-  s_b4d1_deadline_us = 1000000.0 * 64.0 / 44100.0;
-  s_b4d1_stage_frames = kB4D1StageSeconds * 44100;
-  g_pipeline_sample_rate = 44100;
-  // Ensure stimulus generation before the first init() uses 44.1 kHz.
-  s_audio.set_prestage_sample_rate(44100);
+  s_b4d1_rate = CONFIG_VOXP4_B4D12_SAMPLE_RATE;
+  s_b4d1_deadline_us = 1000000.0 * 64.0 / s_b4d1_rate;
+  s_b4d1_stage_frames = kB4D1StageSeconds * s_b4d1_rate;
+  g_pipeline_sample_rate = s_b4d1_rate;
+  // Ensure stimulus generation before the first init() uses the selected rate.
+  s_audio.set_prestage_sample_rate(s_b4d1_rate);
 
   VocalFxConfig cfg{};
-  cfg.sample_rate = 44100.0f;
+  cfg.sample_rate = static_cast<float>(s_b4d1_rate);
   cfg.enable_gate = true;
   cfg.enable_compressor = false;
   cfg.enable_delay = false;
@@ -713,17 +777,17 @@ void b4d12_coordinator_task(void *) {
     return;
   }
 
-  printf("\nB4D12_START frozen_dsp=yes block_frames=64 nominal_fs=44100 "
+  printf("\nB4D12_START frozen_dsp=yes block_frames=64 nominal_fs=%u "
          "deadline_us=%.3f warmup_ms=%u ref_min=%d stress_s=%d ctrl_min=%d "
          "soak_min=%d\n",
-         s_b4d1_deadline_us, static_cast<unsigned>(kB4D12WarmupMs),
+         static_cast<unsigned>(s_b4d1_rate), s_b4d1_deadline_us, static_cast<unsigned>(kB4D12WarmupMs),
          (int)CONFIG_VOXP4_B4D12_REFERENCE_MINUTES,
          (int)CONFIG_VOXP4_B4D12_STRESS_SECONDS,
          (int)CONFIG_VOXP4_B4D12_CONTROL_MINUTES,
          (int)CONFIG_VOXP4_B4D12_SOAK_MINUTES);
-  printf("B4D12_RATECFG rate=44100 deadline_us=%.3f stage_frames=%u "
+  printf("B4D12_RATECFG rate=%u deadline_us=%.3f stage_frames=%u "
          "fifo_capacity=2049 lpc_order=%u pitch_window=512 pitch_hop=60\n",
-         s_b4d1_deadline_us, static_cast<unsigned>(s_b4d1_stage_frames),
+         static_cast<unsigned>(s_b4d1_rate), s_b4d1_deadline_us, static_cast<unsigned>(s_b4d1_stage_frames),
          static_cast<unsigned>(LpcConfig{}.order));
   b4d1_print_memory("init");
 

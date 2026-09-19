@@ -516,6 +516,13 @@ struct PsolaDeferredStats {
 
 struct HarmonizerBlockTraceRecord {
   uint32_t block_index = 0;
+  // Final per-block stage deltas, populated when the pipeline completes.
+  uint32_t input_cycles = 0;
+  uint32_t compressor_cycles = 0;
+  uint32_t harmony_cycles = 0;
+  uint32_t delay_cycles = 0;
+  uint32_t reverb_cycles = 0;
+  uint32_t master_cycles = 0;
   float block_runtime_us = 0.0f;
   float pipeline_base_us = 0.0f;
   float voice0_runtime_us = 0.0f;

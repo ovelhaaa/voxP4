@@ -414,6 +414,13 @@ struct B4D12LateEvent {
   uint16_t backlog_after_ds;   // analysis backlog at recovery
 };
 constexpr size_t kB4D12LateEventCapacity = 2048;
+constexpr size_t kB4D12TopCapacity = 100;
+struct B4D12ForensicRecord {
+  uint32_t block_id;
+  uint32_t dsp_us;
+  uint32_t cycle_us;
+  HarmonizerBlockTraceRecord harmony;
+};
 constexpr uint32_t kB4D12Late1200Us = 1200;
 
 // One 10-minute window aggregate (capacity covers >150 h at 10-min windows).
@@ -439,7 +446,16 @@ struct B4D12Telemetry {
   static constexpr size_t kRecoveryBins = 8;
   // Exact whole-DSP histogram (1 us bins) over every observed block.
   uint32_t dsp_hist[kDspHistBins];
+  // Exact class distributions for conditional latency, saturated at 4095 us.
+  uint32_t class_hist[5][4096];
+  uint64_t class_sum_us[5];
+  uint32_t class_max_us[5];
   B4D12LateEvent late[kB4D12LateEventCapacity];
+  B4D12ForensicRecord top[kB4D12TopCapacity];
+  B4D12ForensicRecord miss[kB4D12LateEventCapacity];
+  uint32_t top_count;
+  uint32_t miss_count;
+  uint32_t miss_dropped;
   B4D12WindowStats windows[kB4D12WindowCapacity];
   uint64_t blocks;
   uint64_t dsp_sum_us;

@@ -439,6 +439,16 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
         (uint64_t)(1000000.0 * n / e.cfg.sample_rate);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Pipeline);
     const uint32_t c_pipe_start = Profiler::now_cycles();
+    HarmonizerBlockTraceRecord trace_rec{};
+#if VOCAL_FX_ENABLE_PROFILING
+    const uint64_t stage_before[] = {
+        e.profiler.raw_total_cycles(ProfileSection::Input),
+        e.profiler.raw_total_cycles(ProfileSection::Compressor),
+        e.profiler.raw_total_cycles(ProfileSection::Harmony),
+        e.profiler.raw_total_cycles(ProfileSection::Delay),
+        e.profiler.raw_total_cycles(ProfileSection::Reverb),
+        e.profiler.raw_total_cycles(ProfileSection::Master)};
+#endif
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::PitchLpcTap);
     if (e.cfg.enable_pitch_analysis && enter_pitch_path()) {
@@ -571,7 +581,6 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     VF_PROFILE_END(e.profiler, ProfileSection::Harmony, 0);
 
     const float cycles_to_us = 1.0f / static_cast<float>(Profiler::cycles_per_us());
-    HarmonizerBlockTraceRecord trace_rec{};
     trace_rec.block_index = s_harmonizer_block_index.fetch_add(1, std::memory_order_relaxed);
     trace_rec.block_runtime_us = static_cast<float>(c_harm_block_end - c_harm_block_start) * cycles_to_us;
     trace_rec.pipeline_base_us = static_cast<float>(c_harm_block_start > c_pipe_start ? (c_harm_block_start - c_pipe_start) : 0) * cycles_to_us;
@@ -605,7 +614,6 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     trace_rec.deferred_active_grains_v0 = e.pitch_shift[0].last_deferred_active_grains();
     trace_rec.deferred_slices_rendered_v0 = e.pitch_shift[0].last_deferred_slices_rendered();
     trace_rec.deferred_fir_samples_v0 = e.pitch_shift[0].last_deferred_fir_samples();
-    record_harmonizer_trace(trace_rec);
 
     const float attack_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_attack_ms * 0.001f);
     const float release_samples = std::max(1.0f, e.cfg.sample_rate * e.cfg.harmony_release_ms * 0.001f);
@@ -791,6 +799,21 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     VF_PROFILE_END(e.profiler, ProfileSection::MasterMix, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Master, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Pipeline, deadline);
+#if VOCAL_FX_ENABLE_PROFILING
+    trace_rec.input_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Input) - stage_before[0]);
+    trace_rec.compressor_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Compressor) - stage_before[1]);
+    trace_rec.harmony_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Harmony) - stage_before[2]);
+    trace_rec.delay_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Delay) - stage_before[3]);
+    trace_rec.reverb_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Reverb) - stage_before[4]);
+    trace_rec.master_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Master) - stage_before[5]);
+#endif
+    record_harmonizer_trace(trace_rec);
     if (s_b4d5_global_enabled) {
       const uint8_t ng = e.pitch_shift[0].last_grains_scheduled();
       const uint8_t mc = e.pitch_shift[0].last_model_changed();
