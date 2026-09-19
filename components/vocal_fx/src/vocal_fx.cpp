@@ -789,15 +789,17 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
     VF_PROFILE_END(e.profiler, ProfileSection::MasterMix, 0);
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::MasterLimiter);
+    e.limiter.process_block(e.left, e.right, n);
+    float local_peak = s_limiter_diag.master_peak;
     for (size_t i = 0; i < n; i++) {
-      e.limiter.process(e.left[i], e.right[i]);
       ol[i] = e.left[i];
       orr[i] = e.right[i];
       const float ml_abs = std::fabs(ol[i]);
       const float mr_abs = std::fabs(orr[i]);
-      if (ml_abs > s_limiter_diag.master_peak) s_limiter_diag.master_peak = ml_abs;
-      if (mr_abs > s_limiter_diag.master_peak) s_limiter_diag.master_peak = mr_abs;
+      if (ml_abs > local_peak) local_peak = ml_abs;
+      if (mr_abs > local_peak) local_peak = mr_abs;
     }
+    s_limiter_diag.master_peak = local_peak;
     VF_PROFILE_END(e.profiler, ProfileSection::MasterLimiter, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Master, 0);
     VF_PROFILE_END(e.profiler, ProfileSection::Pipeline, deadline);
