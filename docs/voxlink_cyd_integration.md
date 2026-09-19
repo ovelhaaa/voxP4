@@ -62,7 +62,7 @@ CYD                                 P4
  |--------- HELLO ----------------->|
  |<-------- HELLO_ACK --------------|
  |------ CAPS_REQUEST ------------->|
- |<----- CAPS_BEGIN/PARAM×45/END ---|
+ |<----- CAPS_BEGIN/PARAM x N/END ---|
  |--------- GET_STATE ------------->|
  |<------- STATE_BEGIN/PARAM/END ---|
  |                                  | ACTIVE
@@ -80,7 +80,7 @@ CYD                                 P4
 
 ## 5. Parameter model
 
-* 45 public parameters. IDs are stable ABI, namespaced by subsystem:
+* 49 public parameters. IDs are stable ABI, namespaced by subsystem:
   `0x01xx` harmony, `0x02xx` dynamics, `0x03xx` delay, `0x04xx` reverb,
   `0x05xx` output. `0x0F00` global bypass is **not implemented**.
 * Types: `BOOL(1)`, `INT32(2)`, `FLOAT32(3)`, `ENUM16(4)`.
@@ -166,7 +166,7 @@ first audio blocks:
 registry default == ProductState value == effective engine target
 ```
 
-for all 45 parameters. A `GET_STATE` received during that brief window still
+for all 49 parameters. A `GET_STATE` received during that brief window still
 returns the registry defaults, which the engine converges to. This is verified
 by `voxlink_coherence_tests` on the host (registry -> ProductState -> engine
 target, including normalized/clamped values).

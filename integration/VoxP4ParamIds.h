@@ -3,7 +3,7 @@
 // components/voxlink/src/voxlink_registry.cpp. Do not edit by hand.
 
 #define VOXP4_VOXLINK_VERSION 0x10u
-#define VOXP4_PARAM_COUNT 45u
+#define VOXP4_PARAM_COUNT 49u
 
 #define VOXP4_PARAM_HARMONY_ENABLE               0x0100u  /* bool */
 #define VOXP4_PARAM_HARMONY_INTERVAL             0x0101u  /* int */
@@ -22,6 +22,10 @@
 #define VOXP4_PARAM_HARMONY_LIMITER_THRESHOLD_DB 0x010Fu  /* float */
 #define VOXP4_PARAM_HARMONY_DRY_ALIGNMENT_ENABLE 0x0110u  /* bool */
 #define VOXP4_PARAM_HARMONY_DRY_ALIGNMENT_MS     0x0111u  /* float */
+#define VOXP4_PARAM_HARMONY_VOICE1_NON_SCALE_POLICY 0x0112u  /* enum */
+#define VOXP4_PARAM_HARMONY_VOICE1_VOICE_LEADING 0x0113u  /* bool */
+#define VOXP4_PARAM_HARMONY_VOICE1_MIN_MIDI      0x0114u  /* float */
+#define VOXP4_PARAM_HARMONY_VOICE1_MAX_MIDI      0x0115u  /* float */
 #define VOXP4_PARAM_COMPRESSOR_ENABLE            0x0200u  /* bool */
 #define VOXP4_PARAM_COMPRESSOR_THRESHOLD_DB      0x0201u  /* float */
 #define VOXP4_PARAM_COMPRESSOR_RATIO             0x0202u  /* float */

@@ -5,7 +5,7 @@ These are exported from the VoxP4 source of truth and must not be edited by hand
 
 | File | Description |
 |---|---|
-| `VoxP4ParamIds.h` | `#define` IDs and `VOXP4_PARAM_COUNT` (45) |
+| `VoxP4ParamIds.h` | `#define` IDs and `VOXP4_PARAM_COUNT` (49) |
 | `voxlink_params.json` | full schema: id, key, type, min, max, default, step, unit, group, flags, smoothing, dsp_binding |
 | `voxlink_v1_vectors.h` | golden frame bytes for CRC/framing regression tests |
 

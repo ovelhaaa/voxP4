@@ -41,7 +41,7 @@ Flags: `P` persistent, `RT` realtime-safe, `S` smoothed, `D` discrete.
 | 0x0102 | harmony.level | Harmony Level | float | 0 | 1 | 1 | 0.001 | | P RT S | 30 | `PitchShiftWet` |
 | 0x0103 | harmony.mode | Harmony Mode | enum | 0 | 2 | 0 | 1 | | P RT D | 0 | `HarmonyMode` |
 | 0x0104 | harmony.key | Harmony Key | enum | 0 | 11 | 0 | 1 | | P RT D | 0 | `HarmonyKey` |
-| 0x0105 | harmony.scale | Harmony Scale | enum | 0 | 1 | 0 | 1 | | P RT D | 0 | `HarmonyScale` |
+| 0x0105 | harmony.scale | Harmony Scale | enum | 0 | 11 | 0 | 1 | | P RT D | 0 | `HarmonyScale` |
 | 0x0107 | harmony.voice1.pan | Harmony Voice Pan | float | -1 | 1 | 0 | 0.01 | | P RT S | 30 | `HarmonyVoice1Pan` |
 | 0x0108 | harmony.voice1.degree | Harmony Voice Degree | int | -7 | 7 | 0 | 1 | degrees | P RT D | 0 | `HarmonyVoice1Degree` |
 | 0x0109 | harmony.voice1.smoothing_ms | Harmony Smoothing | float | 1 | 500 | 30 | 1 | ms | P RT S | 0 | `HarmonyVoice1Smoothing` |
@@ -53,6 +53,10 @@ Flags: `P` persistent, `RT` realtime-safe, `S` smoothed, `D` discrete.
 | 0x010F | harmony.limiter.threshold_db | Harmony Limiter Threshold | float | -24 | 0 | -3 | 0.5 | dB | P RT S | 0 | `HarmonyLimiterThresholdDb` |
 | 0x0110 | harmony.dry_alignment.enable | Dry Alignment | bool | 0 | 1 | 0 | 1 | | P RT | 0 | `DryAlignmentEnabled` |
 | 0x0111 | harmony.dry_alignment.ms | Dry Alignment Delay | float | 0 | 120 | 32 | 1 | ms | P RT S | 0 | `DryAlignmentMs` |
+| 0x0112 | harmony.voice1.non_scale_policy | Harmony Non-Scale Policy | enum | 0 | 2 | 0 | 1 | | P RT D | 0 | `HarmonyVoice1NonScalePolicy` |
+| 0x0113 | harmony.voice1.voice_leading | Harmony Voice Leading | bool | 0 | 1 | 0 | 1 | | P RT | 0 | `HarmonyVoice1VoiceLeadingEnabled` |
+| 0x0114 | harmony.voice1.min_midi | Harmony Min MIDI Note | float | 0 | 127 | 0 | 1 | | P RT | 0 | `HarmonyVoice1MinMidi` |
+| 0x0115 | harmony.voice1.max_midi | Harmony Max MIDI Note | float | 0 | 127 | 127 | 1 | | P RT | 0 | `HarmonyVoice1MaxMidi` |
 | 0x0200 | compressor.enable | Compressor Enable | bool | 0 | 1 | 1 | 1 | | P RT | 0 | `EnableCompressor` |
 | 0x0201 | compressor.threshold_db | Compressor Threshold | float | -60 | 0 | -18 | 0.5 | dB | P RT S | 0 | `CompressorThresholdDb` |
 | 0x0202 | compressor.ratio | Compressor Ratio | float | 1 | 20 | 3 | 0.1 | :1 | P RT S | 0 | `CompressorRatio` |
@@ -69,7 +73,7 @@ Flags: `P` persistent, `RT` realtime-safe, `S` smoothed, `D` discrete.
 | 0x0300 | delay.enable | Delay Enable | bool | 0 | 1 | 1 | 1 | | P RT | 0 | `EnableDelay` |
 | 0x0301 | delay.left_ms | Delay Left | float | 0 | 2000 | 250 | 1 | ms | P RT S | 0 | `DelayLeftMs` |
 | 0x0302 | delay.right_ms | Delay Right | float | 0 | 2000 | 375 | 1 | ms | P RT S | 0 | `DelayRightMs` |
-| 0x0303 | delay.feedback | Delay Feedback | float | 0 | 0.95 | 0.25 | 0.01 | | P RT S | 0 | `DelayFeedback` |
+| 0x0303 | delay.feedback | Delay Feedback | float | -0.95 | 0.95 | 0.25 | 0.01 | | P RT S | 0 | `DelayFeedback` |
 | 0x0304 | delay.wet | Delay Wet | float | 0 | 1 | 0.2 | 0.001 | | P RT S | 20 | `DelayWet` |
 | 0x0305 | delay.dry | Delay Dry | float | 0 | 1 | 1 | 0.001 | | P RT S | 20 | `DelayDry` |
 | 0x0306 | delay.feedback_lowpass_hz | Delay Feedback Lowpass | float | 200 | 20000 | 6000 | 1 | Hz | P RT S | 0 | `DelayFeedbackLowpassHz` |
@@ -82,7 +86,8 @@ Flags: `P` persistent, `RT` realtime-safe, `S` smoothed, `D` discrete.
 | 0x0502 | output.spatial_routing | Spatial Routing | enum | 0 | 1 | 1 | 1 | | P RT D | 0 | `SpatialRouting` |
 | 0x0503 | output.spatial_source | Spatial Source | enum | 0 | 2 | 0 | 1 | | P RT D | 0 | `SpatialSource` |
 
-Parameter count: **45**.
+Parameter count: **49**, generated from `components/voxlink/src/voxlink_registry.cpp`
+by `tools/export_voxlink_schema.py` (also emitted to `integration/`).
 
 ## Smoothing policy
 
