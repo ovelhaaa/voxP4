@@ -105,7 +105,11 @@ improvement. No host timing is used for a P4 performance claim.
 `make test` passed 43/43 host tests. New scalar/block tests require exact float
 equality for gate, compressor, fused master output, and delay; their observed
 maximum numerical difference was zero. Parameter changes and consecutive
-blocks are covered. ESP-IDF v5.3 built the firmware for `esp32p4` both with
+blocks are covered. A separate host build of baseline commit `6387476`
+produced identical output CRCs to the final build for all seven deterministic
+`host_headless_compare` modules, including FullChain (`0xA1D62ACE`), and its
+3,750-block test J (`0xB5B0F372`). This is an end-to-end bit-exact check for
+those inputs. ESP-IDF v5.3 built the firmware for `esp32p4` both with
 profiling enabled for measurement and with the production setting restored.
 The DSP algorithms, sample rate, block size, filter orders, precision, reverb
 topology, and pitch-shift implementation were not changed.
