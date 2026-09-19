@@ -311,6 +311,76 @@ void b4d12_run_case(const B4D12CaseDef &def) {
            static_cast<unsigned long>(t->miss_dropped));
     for (uint32_t i = 0; i < t->top_count; ++i) emit("top", t->top[i]);
     for (uint32_t i = 0; i < t->miss_count; ++i) emit("miss", t->miss[i]);
+    printf("B4D12_GRAIN_HEADER set,block,ordinal,source_center,destination_center,half,model_timestamp,model_order,lambda_bits,gamma_bits,sample_rate_bits,norm_strategy,cache_path,local_difference,shared_difference,addgrain_cycles,select_cycles,model_near_cycles,cache_lookup_cycles,polynomial_cycles,gain_cycles\n");
+    auto emit_grains = [](const char *set, const vocal_fx_platform::B4D12ForensicRecord &r) {
+      const unsigned count = std::min<unsigned>(r.harmony.new_grains_scheduled_v0, 4);
+      if (count < 2 || !r.harmony.formant_model_changed) return;
+      for (unsigned i = 0; i < count; ++i) {
+        const auto &g = r.grain[i];
+        printf("B4D12_GRAIN,%s,%lu,%u,%llu,%lld,%u,%llu,%u,%lu,%lu,%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu\n",
+               set, static_cast<unsigned long>(r.block_id), i,
+               static_cast<unsigned long long>(g.source_center),
+               static_cast<long long>(g.destination_center),
+               static_cast<unsigned>(g.source_period),
+               static_cast<unsigned long long>(g.model_timestamp),
+               static_cast<unsigned>(g.model_order),
+               static_cast<unsigned long>(g.lambda_bits),
+               static_cast<unsigned long>(g.gamma_bits),
+               static_cast<unsigned long>(g.sample_rate_bits),
+               static_cast<unsigned>(g.normalization_strategy),
+               static_cast<unsigned>(g.cache_path),
+               static_cast<unsigned>(g.local_difference),
+               static_cast<unsigned>(g.shared_difference),
+               static_cast<unsigned long>(g.addgrain_cycles),
+               static_cast<unsigned long>(g.select_cycles),
+               static_cast<unsigned long>(g.model_near_cycles),
+               static_cast<unsigned long>(g.cache_lookup_cycles),
+               static_cast<unsigned long>(g.polynomial_cycles),
+               static_cast<unsigned long>(g.gain_cycles));
+      }
+    };
+    for (uint32_t i = 0; i < t->top_count; ++i) emit_grains("top", t->top[i]);
+    for (uint32_t i = 0; i < t->miss_count; ++i) emit_grains("miss", t->miss[i]);
+    for (unsigned klass = 1; klass <= 3; ++klass)
+      for (unsigned ord = 0; ord < 4; ++ord) {
+        const uint32_t count = t->grain_count[klass][ord];
+        if (count) {
+          auto grain_pct = [&](unsigned percent) -> unsigned {
+            const uint64_t rank = (static_cast<uint64_t>(count) * percent + 99) / 100;
+            uint64_t cumulative = 0;
+            for (unsigned bin = 0; bin < B4D12Telemetry::kGrainHistBins; ++bin) {
+              cumulative += t->grain_add_hist[klass][ord][bin];
+              if (cumulative >= rank) return (bin + 1) * 1024;
+            }
+            return B4D12Telemetry::kGrainHistBins * 1024;
+          };
+          printf("B4D12_GRAIN_CLASS class=%u ordinal=%u count=%lu add_mean_cycles=%.1f add_p50_bound=%u add_p95_bound=%u add_p99_bound=%u add_max_cycles=%lu select_mean_cycles=%.1f near_mean_cycles=%.1f lookup_mean_cycles=%.1f poly_mean_cycles=%.1f gain_mean_cycles=%.1f\n",
+                 klass, ord, static_cast<unsigned long>(count),
+                 static_cast<double>(t->grain_add_sum[klass][ord]) / count,
+                 grain_pct(50), grain_pct(95), grain_pct(99),
+                 static_cast<unsigned long>(t->grain_add_max[klass][ord]),
+                 static_cast<double>(t->grain_select_sum[klass][ord]) / count,
+                 static_cast<double>(t->grain_near_sum[klass][ord]) / count,
+                 static_cast<double>(t->grain_lookup_sum[klass][ord]) / count,
+                 static_cast<double>(t->grain_poly_sum[klass][ord]) / count,
+                 static_cast<double>(t->grain_gain_sum[klass][ord]) / count);
+        }
+        printf("B4D12_GRAIN_CACHE class=%u ordinal=%u no_lpc=%lu local=%lu shared=%lu neutral=%lu miss=%lu empty=%lu timestamp=%lu order=%lu coefficients=%lu lambda=%lu gamma=%lu rate=%lu strategy=%lu\n",
+               klass, ord,
+               static_cast<unsigned long>(t->grain_cache_path[klass][ord][0]),
+               static_cast<unsigned long>(t->grain_cache_path[klass][ord][1]),
+               static_cast<unsigned long>(t->grain_cache_path[klass][ord][2]),
+               static_cast<unsigned long>(t->grain_cache_path[klass][ord][3]),
+               static_cast<unsigned long>(t->grain_cache_path[klass][ord][4]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][0]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][1]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][2]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][3]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][4]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][5]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][6]),
+               static_cast<unsigned long>(t->grain_cache_difference[klass][ord][7]));
+      }
   }
 
   const double rx_frames = static_cast<double>(c.rx_frames_read.load());
@@ -446,10 +516,11 @@ void b4d12_run_case(const B4D12CaseDef &def) {
         return 4095;
       };
       printf("B4D12_CLASS_DIST name=%s class=%s blocks=%llu mean_us=%.2f "
-             "p50=%lu p99=%lu p999=%lu max=%lu\n",
+             "p50=%lu p95=%lu p99=%lu p999=%lu max=%lu\n",
              def.name, kClassNames[cl], static_cast<unsigned long long>(n),
              n ? static_cast<double>(t->class_sum_us[cl]) / n : 0.0,
              static_cast<unsigned long>(percentile(0.5)),
+             static_cast<unsigned long>(percentile(0.95)),
              static_cast<unsigned long>(percentile(0.99)),
              static_cast<unsigned long>(percentile(0.999)),
              static_cast<unsigned long>(t->class_max_us[cl]));

@@ -258,6 +258,7 @@ struct VocalFxLastBlockStats {
   uint32_t output_period_q8 = 0;
   int32_t g_dest[4]{};
   uint16_t g_half[4]{};
+  PsolaGrainAuditRecord grain_audit[4]{};
 };
 VocalFxLastBlockStats vocal_fx_last_block_stats();
 

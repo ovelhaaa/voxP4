@@ -1881,6 +1881,7 @@ VocalFxLastBlockStats vocal_fx_last_block_stats() {
   for (size_t i = 0; i < 4; ++i) {
     s.g_dest[i] = e.pitch_shift[0].grain_dest(i);
     s.g_half[i] = e.pitch_shift[0].grain_half(i);
+    s.grain_audit[i] = e.pitch_shift[0].grain_audit(i);
   }
   return s;
 }

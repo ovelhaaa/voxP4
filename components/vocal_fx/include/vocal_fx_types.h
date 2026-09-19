@@ -827,6 +827,32 @@ struct PitchResult {
   uint64_t timestamp_samples = 0;
 };
 
+// One successful scheduling call. Cache path: 0=no LPC, 1=local,
+// 2=shared, 3=neutral, 4=polynomial and gain normalization executed.
+// Cache difference bits: 1=empty, 2=model timestamp, 4=order,
+// 8=source coefficients, 16=lambda, 32=gamma, 64=sample rate,
+// 128=normalization strategy. A full cache hit has no difference bits.
+struct PsolaGrainAuditRecord {
+  uint64_t source_center = 0;
+  uint64_t model_timestamp = 0;
+  int64_t destination_center = 0;
+  uint32_t addgrain_cycles = 0;
+  uint32_t select_cycles = 0;
+  uint32_t model_near_cycles = 0;
+  uint32_t cache_lookup_cycles = 0;
+  uint32_t polynomial_cycles = 0;
+  uint32_t gain_cycles = 0;
+  uint32_t lambda_bits = 0;
+  uint32_t gamma_bits = 0;
+  uint32_t sample_rate_bits = 0;
+  uint16_t source_period = 0;
+  uint16_t model_order = 0;
+  uint8_t cache_path = 0;
+  uint8_t local_difference = 0;
+  uint8_t shared_difference = 0;
+  uint8_t normalization_strategy = 0;
+};
+
 struct PitchMark {
   uint64_t sample_position = 0;
   float confidence = 0.0f;

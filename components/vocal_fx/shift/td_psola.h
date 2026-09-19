@@ -42,6 +42,24 @@ struct FormantWarpCache {
     return true;
   }
 
+  uint8_t difference(uint64_t ts, uint16_t ord, const float *source,
+                     float lambda, float gamma,
+                     FormantNormalizationStrategy strat,
+                     float sample_rate) const {
+    if (!valid) return 1;
+    uint8_t bits = 0;
+    if (model_timestamp != ts) bits |= 2;
+    if (order != ord) bits |= 4;
+    if (lambda_bits != f2b(lambda)) bits |= 16;
+    if (gamma_bits != f2b(gamma)) bits |= 32;
+    if (sample_rate_bits != f2b(sample_rate)) bits |= 64;
+    if (norm_strategy != static_cast<uint8_t>(strat)) bits |= 128;
+    if (!source || ord > VOCAL_FX_LPC_MAX_ORDER) return bits | 8;
+    for (size_t i = 0; i <= ord; ++i)
+      if (f2b(source_coefficients[i]) != f2b(source[i])) { bits |= 8; break; }
+    return bits;
+  }
+
   void update(uint64_t ts, uint16_t ord, const float *source, float lambda, float gamma,
               FormantNormalizationStrategy strat,
               const std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> &coeffs,
@@ -361,6 +379,9 @@ public:
   uint32_t ord_near(size_t i) const { return i < 4 ? b4d8_ord_near[i] : 0; }
   uint32_t ord_sel(size_t i) const { return i < 4 ? b4d8_ord_sel[i] : 0; }
   uint32_t ord_align(size_t i) const { return i < 4 ? b4d8_ord_align[i] : 0; }
+  const PsolaGrainAuditRecord &grain_audit(size_t i) const {
+    return grain_audit_[i < 4 ? i : 0];
+  }
   uint16_t last_mark_count() const { return b4d8_mark_count_this_block_; }
   uint32_t last_prewarm_cycles() const { return b4d9_prewarm_cycles_this_block_; }
   int32_t last_debt_samples() const { return b4d11_debt_samples_; }
@@ -795,6 +816,8 @@ private:
   uint32_t b4d8_ord_near[4]{};
   uint32_t b4d8_ord_sel[4]{};
   uint32_t b4d8_ord_align[4]{};
+  PsolaGrainAuditRecord grain_audit_[4]{};
+  PsolaGrainAuditRecord last_grain_audit_{};
   uint32_t b4d8_last_sel_cycles_ = 0;
   uint32_t b4d8_last_align_cycles_ = 0;
   // B4D.9 diagnostic prewarm cost (read-only touches, no state change).

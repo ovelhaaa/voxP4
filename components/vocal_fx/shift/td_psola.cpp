@@ -2321,6 +2321,7 @@ void TdPsola::add_grain_ola_from_cached_windowed(
 
 bool TdPsola::add_grain(double destination, double source,
                         const PitchMark *marks, size_t count) {
+  last_grain_audit_ = {};
   b4d8_mark_count_this_block_ = static_cast<uint16_t>(count);
   const uint32_t c_ms_start = Profiler::now_cycles();
   size_t index;
@@ -2363,6 +2364,10 @@ bool TdPsola::add_grain(double destination, double source,
   b4d11_last_half_ = static_cast<uint16_t>(half);
   b4d11_last_dest_ = static_cast<int32_t>(std::llround(destination));
   const uint64_t center = marks[index].sample_position;
+  last_grain_audit_.source_center = center;
+  last_grain_audit_.destination_center = static_cast<int64_t>(std::llround(destination));
+  last_grain_audit_.source_period = static_cast<uint16_t>(half);
+  last_grain_audit_.select_cycles = b4d5_select_cycles;
   debug_.selected_source_mark = center;
   debug_.source_grain_timestamp = static_cast<uint64_t>(std::max(0.0, source));
   debug_.output_synthesis_timestamp =
@@ -2407,6 +2412,11 @@ bool TdPsola::add_grain(double destination, double source,
   const uint32_t c_near_start = Profiler::now_cycles();
   const bool has_near = (lpc_ && lpc_->model_near(center, &model));
   const uint32_t c_near = Profiler::now_cycles() - c_near_start;
+  last_grain_audit_.model_near_cycles = c_near;
+  if (has_near) {
+    last_grain_audit_.model_timestamp = model.timestamp;
+    last_grain_audit_.model_order = model.order;
+  }
   warp_audit_.model_near_calls++;
   warp_audit_.model_near_cycles += c_near;
 
@@ -2430,6 +2440,10 @@ bool TdPsola::add_grain(double destination, double source,
     const float lambda = SharedLpcAnalysis::lambda_from_semitones(formant_shift_semitones_);
     const float gamma = formant_bandwidth_expansion_;
     const auto strat = formant_normalization_strategy_;
+    last_grain_audit_.lambda_bits = FormantWarpCache::f2b(lambda);
+    last_grain_audit_.gamma_bits = FormantWarpCache::f2b(gamma);
+    last_grain_audit_.sample_rate_bits = FormantWarpCache::f2b(sample_rate_);
+    last_grain_audit_.normalization_strategy = static_cast<uint8_t>(strat);
     const uint32_t c_lam = Profiler::now_cycles() - c_lam_start;
     warp_audit_.lambda_calc_calls++;
     warp_audit_.lambda_calc_cycles += c_lam;
@@ -2448,10 +2462,20 @@ bool TdPsola::add_grain(double destination, double source,
     const bool neutral_hit = !local_hit && !shared_hit && neutral_warp_fast_path_enabled_ &&
                              std::fabs(lambda) < 1e-5f && (gamma >= 0.9999f || gamma <= 0.0f);
     const uint32_t c_cache_lookup = Profiler::now_cycles() - c_cache_start;
+    last_grain_audit_.cache_lookup_cycles = c_cache_lookup;
+    if (!local_hit)
+      last_grain_audit_.local_difference = warp_cache_.difference(
+          model.timestamp, model.order, model.coefficients.data(), lambda,
+          gamma, strat, sample_rate_);
+    if (!local_hit && !shared_hit && resources_)
+      last_grain_audit_.shared_difference = resources_->shared_warp_cache.difference(
+          model.timestamp, model.order, model.coefficients.data(), lambda,
+          gamma, strat, sample_rate_);
     warp_audit_.cache_lookup_calls++;
     warp_audit_.cache_lookup_cycles += c_cache_lookup;
 
     if (local_hit) {
+      last_grain_audit_.cache_path = 1;
       const uint32_t c_hit_start = Profiler::now_cycles();
       grain_model_.coefficients = warp_cache_.warped_coefficients;
       formant_filter_gain_ = warp_cache_.formant_filter_gain;
@@ -2465,6 +2489,7 @@ bool TdPsola::add_grain(double destination, double source,
       ++b4d7_warp_hit_this_block_;
       handled = true;
     } else if (shared_hit) {
+      last_grain_audit_.cache_path = 2;
       const uint32_t c_hit_start = Profiler::now_cycles();
       grain_model_.coefficients = resources_->shared_warp_cache.warped_coefficients;
       formant_filter_gain_ = resources_->shared_warp_cache.formant_filter_gain;
@@ -2483,6 +2508,7 @@ bool TdPsola::add_grain(double destination, double source,
       ++b4d7_warp_hit_this_block_;
       handled = true;
     } else if (neutral_hit) {
+      last_grain_audit_.cache_path = 3;
       const uint32_t c_hit_start = Profiler::now_cycles();
       grain_model_.coefficients = model.coefficients;
       formant_filter_gain_ = 1.0f;
@@ -2507,6 +2533,7 @@ bool TdPsola::add_grain(double destination, double source,
     }
 
     if (!handled) {
+      last_grain_audit_.cache_path = 4;
       warp_audit_.cache_miss_calls++;
       ++warp_stats_.misses;
       ++b4d7_warp_miss_this_block_;
@@ -2529,6 +2556,7 @@ bool TdPsola::add_grain(double destination, double source,
                                          lambda, gamma,
                                          grain_model_.coefficients.data());
       c_poly = Profiler::now_cycles() - c_poly_start;
+      last_grain_audit_.polynomial_cycles = c_poly;
       warp_audit_.warp_poly_calls++;
       warp_audit_.warp_poly_cycles += c_poly;
 
@@ -2537,6 +2565,7 @@ bool TdPsola::add_grain(double destination, double source,
           model.coefficients.data(), grain_model_.coefficients.data(),
           model.order, strat, sample_rate_);
       c_gn = Profiler::now_cycles() - c_gn_start;
+      last_grain_audit_.gain_cycles = c_gn;
       warp_audit_.gain_norm_calls++;
       warp_audit_.gain_norm_cycles += c_gn;
 
@@ -2940,6 +2969,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
     b4d8_ord_warp[i] = 0;
     b4d8_ord_desc[i] = 0;
     b4d8_ord_near[i] = 0;
+    grain_audit_[i] = {};
   }
   b4d11_g_count_ = 0;
   grains_rendered_this_block_ = 0;
@@ -3428,9 +3458,12 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
         const uint64_t b4d8_nr0 = warp_audit_.model_near_cycles;
         const bool b4d7_ok =
             add_grain(next_synthesis_mark_, source, marks, mark_count);
-        b4d7_addgrain_cycles_this_block_ += Profiler::now_cycles() - c_b4d7_ag;
+        const uint32_t addgrain_cycles = Profiler::now_cycles() - c_b4d7_ag;
+        b4d7_addgrain_cycles_this_block_ += addgrain_cycles;
         if (b4d7_ok) {
           if (grains < 4) {
+            grain_audit_[grains] = last_grain_audit_;
+            grain_audit_[grains].addgrain_cycles = addgrain_cycles;
             b4d8_ord_mark[grains] =
                 b4d7_mark_cycles_this_block_ - b4d8_mk0;
             b4d8_ord_warp[grains] =

@@ -1016,6 +1016,27 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
   const uint8_t ng = vls.new_grains;
   const uint8_t klass = mc ? (ng >= 3 ? 3 : (ng == 0 ? 4 : ng))
                            : 0; // 0=NMC,1=MC+1,2=MC+2,3=MC+3+,4=MC+0
+  for (size_t i = 0; i < ng && i < 4; ++i) {
+    const auto &g = vls.grain_audit[i];
+    ++t->grain_count[klass][i];
+    t->grain_add_sum[klass][i] += g.addgrain_cycles;
+    t->grain_select_sum[klass][i] += g.select_cycles;
+    t->grain_near_sum[klass][i] += g.model_near_cycles;
+    t->grain_lookup_sum[klass][i] += g.cache_lookup_cycles;
+    t->grain_poly_sum[klass][i] += g.polynomial_cycles;
+    t->grain_gain_sum[klass][i] += g.gain_cycles;
+    if (g.addgrain_cycles > t->grain_add_max[klass][i])
+      t->grain_add_max[klass][i] = g.addgrain_cycles;
+    const size_t bin = std::min<size_t>(g.addgrain_cycles / 1024,
+                                        B4D12Telemetry::kGrainHistBins - 1);
+    ++t->grain_add_hist[klass][i][bin];
+    if (g.cache_path < 5) ++t->grain_cache_path[klass][i][g.cache_path];
+    if (g.cache_path == 4) {
+      const uint8_t bits = g.local_difference;
+      for (size_t bit = 0; bit < 8; ++bit)
+        if (bits & (1u << bit)) ++t->grain_cache_difference[klass][i][bit];
+    }
+  }
   const uint16_t dsp16 = dsp_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(dsp_us);
   // Retain complete evidence for every miss (up to the existing late-event
   // capacity) and the 100 slowest blocks. No allocation or output here.
@@ -1034,6 +1055,7 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
       rec.dsp_us = static_cast<uint32_t>(dsp_us);
       rec.cycle_us = static_cast<uint32_t>(cycle_us);
       vocal_fx_latest_harmonizer_trace(&rec.harmony);
+      for (size_t i = 0; i < 4; ++i) rec.grain[i] = vls.grain_audit[i];
       if (keep_top) {
         t->top[slot] = rec;
         if (filling) ++t->top_count;

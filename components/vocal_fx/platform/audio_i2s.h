@@ -420,6 +420,7 @@ struct B4D12ForensicRecord {
   uint32_t dsp_us;
   uint32_t cycle_us;
   HarmonizerBlockTraceRecord harmony;
+  PsolaGrainAuditRecord grain[4];
 };
 constexpr uint32_t kB4D12Late1200Us = 1200;
 
@@ -443,6 +444,7 @@ constexpr size_t kB4D12WindowCapacity = 1024;
 struct B4D12Telemetry {
   static constexpr size_t kLatenessBins = 6;
   static constexpr size_t kDspHistBins = 65536;
+  static constexpr size_t kGrainHistBins = 512; // 1024-cycle bins, last saturates
   static constexpr size_t kRecoveryBins = 8;
   // Exact whole-DSP histogram (1 us bins) over every observed block.
   uint32_t dsp_hist[kDspHistBins];
@@ -450,6 +452,18 @@ struct B4D12Telemetry {
   uint32_t class_hist[5][4096];
   uint64_t class_sum_us[5];
   uint32_t class_max_us[5];
+  // Whole-run cache outcomes by model-change/grain class and grain ordinal.
+  uint32_t grain_cache_path[5][4][5];
+  uint32_t grain_cache_difference[5][4][8];
+  uint32_t grain_add_hist[5][4][kGrainHistBins];
+  uint64_t grain_add_sum[5][4];
+  uint64_t grain_select_sum[5][4];
+  uint64_t grain_near_sum[5][4];
+  uint64_t grain_lookup_sum[5][4];
+  uint64_t grain_poly_sum[5][4];
+  uint64_t grain_gain_sum[5][4];
+  uint32_t grain_add_max[5][4];
+  uint32_t grain_count[5][4];
   B4D12LateEvent late[kB4D12LateEventCapacity];
   B4D12ForensicRecord top[kB4D12TopCapacity];
   B4D12ForensicRecord miss[kB4D12LateEventCapacity];
