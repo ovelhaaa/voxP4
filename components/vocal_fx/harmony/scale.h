@@ -1,7 +1,22 @@
 #pragma once
 #include <cstdint>
 
-enum class ScaleType : uint8_t { Major, NaturalMinor };
+enum class ScaleType : uint8_t {
+    Major = 0,
+    NaturalMinor = 1,
+    HarmonicMinor = 2,
+    MelodicMinor = 3,
+    Dorian = 4,
+    Phrygian = 5,
+    Lydian = 6,
+    Mixolydian = 7,
+    Locrian = 8,
+    MajorPentatonic = 9,
+    MinorPentatonic = 10,
+    BluesMinor = 11,
+    Count
+};
+
 struct ScaleConfig { uint8_t root = 0; ScaleType type = ScaleType::Major; };
 
 int chromatic_class(int midi_note);

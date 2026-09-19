@@ -41,7 +41,7 @@ const ParamDescriptor kParams[] = {
           "HarmonyMode"),
     PENUM(0x0104, "harmony.key", "Harmony Key", 0.0f, 11.0f, 0.0f, "harmony",
           "HarmonyKey"),
-    PENUM(0x0105, "harmony.scale", "Harmony Scale", 0.0f, 1.0f, 0.0f, "harmony",
+    PENUM(0x0105, "harmony.scale", "Harmony Scale", 0.0f, 11.0f, 0.0f, "harmony",
           "HarmonyScale"),
     PFLOAT(0x0107, "harmony.voice1.pan", "Harmony Voice Pan", "", -1.0f, 1.0f,
            0.0f, 0.01f, kPersistRtSmoothed, 30.0f, "harmony",
@@ -72,6 +72,14 @@ const ParamDescriptor kParams[] = {
     PFLOAT(0x0111, "harmony.dry_alignment.ms", "Dry Alignment Delay", "ms",
            0.0f, 120.0f, 32.0f, 1.0f, kPersistRtSmoothed, 0.0f, "harmony",
            "DryAlignmentMs"),
+    PFLOAT(0x0112, "harmony.voice1.non_scale_policy", "Harmony Non-Scale Policy", "", 0.0f, 2.0f,
+           0.0f, 1.0f, kPersistRt, 0.0f, "harmony", "HarmonyVoice1NonScalePolicy"),
+    PBOOL(0x0113, "harmony.voice1.voice_leading", "Harmony Voice Leading", 0.0f,
+          kPersistRt, "harmony", "HarmonyVoice1VoiceLeadingEnabled"),
+    PFLOAT(0x0114, "harmony.voice1.min_midi", "Harmony Min MIDI Note", "", 0.0f, 127.0f,
+           0.0f, 1.0f, kPersistRt, 0.0f, "harmony", "HarmonyVoice1MinMidi"),
+    PFLOAT(0x0115, "harmony.voice1.max_midi", "Harmony Max MIDI Note", "", 0.0f, 127.0f,
+           127.0f, 1.0f, kPersistRt, 0.0f, "harmony", "HarmonyVoice1MaxMidi"),
 
     // Dynamics (gate + compressor) ----------------------------------------
     PBOOL(0x0200, "compressor.enable", "Compressor Enable", 1.0f, kPersistRt,

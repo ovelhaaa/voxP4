@@ -3,18 +3,27 @@
 #include <cmath>
 #include <limits>
 namespace { float hz_to_midi(float hz){return 69+12*std::log2(hz/440.0f);} float midi_to_hz(float n){return 440*std::exp2((n-69)/12);} }
-void HarmonyEngine::reset(){have_identity_=false;previous_=0;}
+void HarmonyEngine::reset(){
+  have_identity_=false;
+  previous_=0;
+  previous_source_midi_=0;
+  previous_harmony_midi_=0;
+}
 void HarmonyEngine::set_mode(HarmonyMode m){mode_=m;reset();}
 void HarmonyEngine::set_scale(ScaleConfig s){s.root%=12;scale_=s;reset();}
 void HarmonyEngine::set_voice(size_t i,const HarmonyVoiceConfig &c){if(i<MAX_HARMONY_VOICES)voice_=c;}
 int HarmonyEngine::identify(float midi) {
+  bool force_chromatic = mode_ != HarmonyMode::Diatonic ||
+                         voice_.non_scale_policy == NonScaleNotePolicy::PreserveChromatic ||
+                         voice_.non_scale_policy == NonScaleNotePolicy::BypassHarmony;
+
   if (!have_identity_) {
-    identity_ = mode_ == HarmonyMode::Diatonic
-                    ? nearest_scale_note(scale_, midi)
-                    : static_cast<int>(std::lround(midi));
+    identity_ = force_chromatic
+                    ? static_cast<int>(std::lround(midi))
+                    : nearest_scale_note(scale_, midi);
     have_identity_ = true;
   }
-  if (mode_ != HarmonyMode::Diatonic) {
+  if (force_chromatic) {
     // Preserve the existing chromatic 65-cent Schmitt threshold.
     if (std::fabs(midi - identity_) > .65f)
       identity_ = static_cast<int>(std::lround(midi));
@@ -37,7 +46,54 @@ int HarmonyEngine::identify(float midi) {
 HarmonyVoiceTarget HarmonyEngine::target_for(float midi,int note,const std::array<bool,128>&held){
  HarmonyVoiceTarget r{}; if(!voice_.enabled)return r; float target=0;
  if(mode_==HarmonyMode::FixedInterval)target=midi+voice_.interval;
- else if(mode_==HarmonyMode::Diatonic)target=transpose_scale_degrees(scale_,note,voice_.degree)+(midi-note);
+ else if(mode_==HarmonyMode::Diatonic) {
+    bool is_scale_note = scale_contains(scale_, note);
+    if (!is_scale_note && voice_.non_scale_policy == NonScaleNotePolicy::BypassHarmony) return r; // returns valid=false
+
+    int anchor_note = note;
+    float diatonic_target = 0.0f;
+
+    if (!is_scale_note && voice_.non_scale_policy == NonScaleNotePolicy::PreserveChromatic) {
+        if (previous_source_midi_ != 0 && previous_harmony_midi_ != 0) {
+            float delta = midi - previous_source_midi_;
+            target = previous_harmony_midi_ + delta;
+        } else {
+            anchor_note = nearest_scale_note(scale_, note);
+            diatonic_target = transpose_scale_degrees(scale_, anchor_note, voice_.degree);
+            target = diatonic_target + (note - anchor_note) + (midi - note);
+        }
+    } else {
+        // NearestScale policy forces 'note' to be in scale within identify(), so is_scale_note is always true for it.
+        diatonic_target = transpose_scale_degrees(scale_, anchor_note, voice_.degree);
+        target = diatonic_target + (midi - note);
+    }
+
+    if (voice_.voice_leading_enabled && (!(!is_scale_note && voice_.non_scale_policy == NonScaleNotePolicy::PreserveChromatic && previous_source_midi_ != 0))) {
+        float dir_val = voice_.degree > 0 ? 1.0f : (voice_.degree < 0 ? -1.0f : 0.0f);
+
+        float best_target = target;
+        float min_cost = std::numeric_limits<float>::max();
+
+        for (int oct_shift = -2; oct_shift <= 2; ++oct_shift) {
+            float candidate_target = target + 12.0f * oct_shift;
+
+            if (candidate_target < voice_.min_midi || candidate_target > voice_.max_midi) continue;
+
+            if (dir_val > 0 && candidate_target < midi) continue;
+            if (dir_val < 0 && candidate_target > midi) continue;
+
+            // If previous_ is 0 (first note), prioritize the nominal target.
+            // We can do this by using the distance to the nominal target as cost when previous_ == 0.
+            float cost = previous_ ? std::fabs(candidate_target - previous_) : std::fabs(candidate_target - target);
+            if (cost < min_cost) {
+                min_cost = cost;
+                best_target = candidate_target;
+            }
+        }
+
+        target = best_target;
+    }
+ }
  else {
    // Single voice takes the lower chord tone (former voice-0 branch: n < note).
    float best=0,cost=std::numeric_limits<float>::max();
@@ -45,8 +101,16 @@ HarmonyVoiceTarget HarmonyEngine::target_for(float midi,int note,const std::arra
    if(cost==std::numeric_limits<float>::max()) return r;
    target=best+(midi-note);
  }
+
+ if (target < voice_.min_midi) target = voice_.min_midi;
+ if (target > voice_.max_midi) target = voice_.max_midi;
+
  const float hz=midi_to_hz(target); if(!std::isfinite(hz)||hz<60||hz>1500)return r;
- r.valid=true;r.target_frequency_hz=hz;r.semitone_offset=target-midi;r.source_note=note;r.deviation_cents=(midi-note)*100;previous_=target;return r;
+ r.valid=true;r.target_frequency_hz=hz;r.semitone_offset=target-midi;r.source_note=note;r.deviation_cents=(midi-note)*100;
+ previous_=target;
+ previous_source_midi_=midi;
+ previous_harmony_midi_=target;
+ return r;
 }
 HarmonyVoiceTarget HarmonyEngine::update(float hz,bool voiced,const MidiChordState&midi){
  if(!voiced||!std::isfinite(hz)||hz<=0)return HarmonyVoiceTarget{};
