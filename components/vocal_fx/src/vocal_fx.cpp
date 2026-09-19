@@ -727,28 +727,25 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
 #endif
 
-    auto get_source_mono = [&](size_t i) -> float {
-      if (e.cfg.spatial_source == SpatialFxSource::DryOnly) {
-        return e.dry_bus[i];
-      } else if (e.cfg.spatial_source == SpatialFxSource::HarmonyOnly) {
-        return e.harm_bus_mono[i];
-      } else {
-        return (e.left[i] + e.right[i]) * 0.5f;
-      }
-    };
-
     float source_mono[VOCAL_FX_MAX_BLOCK_SIZE];
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::DelayPrep);
-    for (size_t i = 0; i < n; i++) {
-      source_mono[i] = get_source_mono(i);
+    switch (e.cfg.spatial_source) {
+    case SpatialFxSource::DryOnly:
+      std::copy_n(e.dry_bus, n, source_mono);
+      break;
+    case SpatialFxSource::HarmonyOnly:
+      std::copy_n(e.harm_bus_mono, n, source_mono);
+      break;
+    default:
+      for (size_t i = 0; i < n; ++i)
+        source_mono[i] = (e.left[i] + e.right[i]) * 0.5f;
+      break;
     }
     VF_PROFILE_END(e.profiler, ProfileSection::DelayPrep, 0);
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Delay);
     if (e.cfg.enable_delay) {
-      for (size_t i = 0; i < n; i++) {
-        e.delay.process_wet(source_mono[i], e.delay_wet_l[i], e.delay_wet_r[i]);
-      }
+      e.delay.process_wet_block(source_mono, e.delay_wet_l, e.delay_wet_r, n);
     } else {
       std::fill_n(e.delay_wet_l, n, 0.0f);
       std::fill_n(e.delay_wet_r, n, 0.0f);

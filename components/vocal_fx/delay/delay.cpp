@@ -98,4 +98,45 @@ void StereoDelay::process_wet(float x, float &ol, float &orr) {
   ol = a * wet;
   orr = b * wet;
 }
+void StereoDelay::process_wet_block(const float *input, float *out_l,
+                                    float *out_r, size_t n) {
+  float *const left = l_.get(), *const right = r_.get();
+  const size_t size = size_;
+  size_t pos = pos_;
+  float lp_l = lp_l_, lp_r = lp_r_;
+  const float alpha = lp_alpha_, feedback = feedback_;
+  const float max_delay = (float)size - 2.0f;
+  for (size_t s = 0; s < n; ++s) {
+    const float dl = std::clamp(dl_.next(), 1.0f, max_delay);
+    float p = (float)pos - dl;
+    if (p < 0) p += size;
+    size_t i = (size_t)p;
+    size_t j = i + 1;
+    if (j >= size) j = 0;
+    const float f = p - i;
+    const float a = left[i] + (left[j] - left[i]) * f;
+
+    const float dr = std::clamp(dr_.next(), 1.0f, max_delay);
+    p = (float)pos - dr;
+    if (p < 0) p += size;
+    i = (size_t)p;
+    j = i + 1;
+    if (j >= size) j = 0;
+    const float fr = p - i;
+    const float b = right[i] + (right[j] - right[i]) * fr;
+
+    lp_l = (1 - alpha) * a + alpha * lp_l;
+    lp_r = (1 - alpha) * b + alpha * lp_r;
+    left[pos] = input[s] + feedback * lp_l;
+    right[pos] = input[s] + feedback * lp_r;
+    if (++pos >= size) pos = 0;
+    const float wet = wet_.next();
+    (void)dry_.next();
+    out_l[s] = a * wet;
+    out_r[s] = b * wet;
+  }
+  pos_ = pos;
+  lp_l_ = lp_l;
+  lp_r_ = lp_r;
+}
 size_t StereoDelay::memory_bytes() const { return size_ * 2U * sizeof(float); }

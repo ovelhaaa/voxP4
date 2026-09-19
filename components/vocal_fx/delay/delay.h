@@ -12,6 +12,7 @@ public:
   void set_feedback_lowpass(float hz);
   void process(float input, float &l, float &r);
   void process_wet(float input, float &l, float &r);
+  void process_wet_block(const float *input, float *l, float *r, size_t n);
   size_t memory_bytes() const;
   const void* left_ptr() const { return l_.get(); }
   const void* right_ptr() const { return r_.get(); }
