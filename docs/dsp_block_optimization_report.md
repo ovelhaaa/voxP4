@@ -55,14 +55,14 @@ must be compared with candidate `MasterMix`, which now includes both; the
 enclosing `Master` section is used here. The stage profiler includes warmup
 blocks while B4D.12 distribution statistics exclude them.
 
-| Rate | Variant | DSP avg µs | P99 µs | Worst µs | Missed blocks / 60 s | Pipeline cycles | Gate cycles | Compressor cycles | Master cycles | Delay cycles |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 44.1 kHz | Baseline | 728.976 | 1203 | 2867 | 57 | 260,612 | 3,466 | 27,783 | 8,632 | 19,554 |
-| 44.1 kHz | Phase A/B | 714.020 | 1179 | 2906 | 58 | 255,270 | 2,665 | 26,950 | 5,559 | 19,569 |
-| 44.1 kHz | Phase C | 696.578 | 1158 | 2792 | 58 | 248,941 | 2,715 | 26,863 | 5,541 | 13,170 |
-| 48 kHz | Baseline | 728.134 | 1192 | 2863 | 77 | 260,189 | 3,476 | 27,501 | 8,549 | 19,403 |
-| 48 kHz | Phase A/B | 708.623 | 1183 | 2843 | 68 | 253,307 | 2,632 | 26,637 | 5,668 | 19,828 |
-| 48 kHz | Phase C | 697.328 | 1169 | 2808 | 63 | 249,275 | 2,662 | 26,736 | 5,475 | 13,065 |
+| Rate | Variant | DSP avg µs | Median µs | P99 µs | Worst µs | Missed blocks / 60 s | Pipeline cycles | Gate cycles | Compressor cycles | Master cycles | Delay cycles |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 44.1 kHz | Baseline | 728.976 | 768 | 1203 | 2867 | 57 | 260,612 | 3,466 | 27,783 | 8,632 | 19,554 |
+| 44.1 kHz | Phase A/B | 714.020 | 754 | 1179 | 2906 | 58 | 255,270 | 2,665 | 26,950 | 5,559 | 19,569 |
+| 44.1 kHz | Phase C | 696.578 | 738 | 1158 | 2792 | 58 | 248,941 | 2,715 | 26,863 | 5,541 | 13,170 |
+| 48 kHz | Baseline | 728.134 | 774 | 1192 | 2863 | 77 | 260,189 | 3,476 | 27,501 | 8,549 | 19,403 |
+| 48 kHz | Phase A/B | 708.623 | 741 | 1183 | 2843 | 68 | 253,307 | 2,632 | 26,637 | 5,668 | 19,828 |
+| 48 kHz | Phase C | 697.328 | 741 | 1169 | 2808 | 63 | 249,275 | 2,662 | 26,736 | 5,475 | 13,065 |
 
 Full requested stage attribution, average cycles per block (baseline → final):
 
