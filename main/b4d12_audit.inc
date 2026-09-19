@@ -315,6 +315,36 @@ void b4d12_run_case(const B4D12CaseDef &def) {
          static_cast<unsigned long long>(missed),
          p.n ? misses / static_cast<double>(p.n) : 0.0, miss_per_s,
          miss_per_s * 60.0, miss_per_s * 3600.0);
+#if defined(CONFIG_VOCAL_FX_ENABLE_PROFILING)
+  if (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
+    struct Stage { const char *name; VocalFxProfileSection section; };
+    static const Stage stages[] = {
+        {"Pipeline", VocalFxProfileSection::Pipeline},
+        {"InputHpf", VocalFxProfileSection::InputHpf},
+        {"InputGate", VocalFxProfileSection::InputGate},
+        {"Compressor", VocalFxProfileSection::Compressor},
+        {"Harmony", VocalFxProfileSection::Harmony},
+        {"HarmonySlewPan", VocalFxProfileSection::HarmonySlewPan},
+        {"HarmonyLimiter", VocalFxProfileSection::HarmonyLimiter},
+        {"BusMixing", VocalFxProfileSection::BusMixing},
+        {"DelayPrep", VocalFxProfileSection::DelayPrep},
+        {"Delay", VocalFxProfileSection::Delay},
+        {"ReverbPrep", VocalFxProfileSection::ReverbPrep},
+        {"Reverb", VocalFxProfileSection::Reverb},
+        {"MasterMix", VocalFxProfileSection::MasterMix},
+        {"MasterLimiter", VocalFxProfileSection::MasterLimiter},
+        {"Master", VocalFxProfileSection::Master},
+    };
+    for (const auto &stage : stages) {
+      const auto s = vocal_fx_profile_stats(stage.section);
+      printf("B4D12_STAGE name=%s stage=%s blocks=%llu avg_cycles=%.2f "
+             "max_cycles=%llu\n", def.name, stage.name,
+             static_cast<unsigned long long>(s.blocks),
+             s.blocks ? static_cast<double>(s.total_cycles) / s.blocks : 0.0,
+             static_cast<unsigned long long>(s.worst_cycles));
+    }
+  }
+#endif
   printf("B4D12_LATE name=%s threshold_1200_blocks=%llu "
          "max_consecutive_late=%llu max_lateness_us=%llu "
          "cumulative_lateness_us=%llu late_events=%llu late_events_dropped=%llu "
