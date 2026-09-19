@@ -36,7 +36,8 @@ bool ref_model_near(const SharedLpcModel *models, size_t n, uint64_t ts,
 
 bool same_model(const SharedLpcModel &a, const SharedLpcModel &b) {
   if (a.timestamp != b.timestamp || a.order != b.order ||
-      a.valid != b.valid)
+      a.valid != b.valid ||
+      a.publication_serial != b.publication_serial)
     return false;
   if (std::memcmp(&a.confidence, &b.confidence, sizeof(float)) != 0)
     return false;
@@ -84,6 +85,22 @@ int main() {
     return 1;
   }
   snapshot.resize(n);
+
+  LpcPublishedRef refs[SharedLpcAnalysis::kModelCount]{};
+  size_t ref_count = 0;
+  if (!lpc.snapshot_model_refs(refs, SharedLpcAnalysis::kModelCount,
+                               &ref_count) || ref_count != n) {
+    std::puts("B4D5_MODEL_EQUIVALENCE reference snapshot=FAIL");
+    return 1;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (refs[i].serial != snapshot[i].publication_serial ||
+        refs[i].timestamp != snapshot[i].timestamp ||
+        refs[i].order != snapshot[i].order || !refs[i].valid) {
+      std::puts("B4D5_MODEL_EQUIVALENCE publication identity=FAIL");
+      return 1;
+    }
+  }
 
   const uint64_t window_hop = cfg.window_size + cfg.hop_size;
   uint64_t identity_mismatch = 0, coeff_mismatch = 0, cases = 0;

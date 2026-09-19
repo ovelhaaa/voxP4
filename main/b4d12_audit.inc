@@ -267,6 +267,98 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   const auto p = b4d12_pct(t);
   const PitchAnalysisAuditTelemetry pa = vocal_fx_pitch_analysis_audit_telemetry();
 
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  if (t && (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0 ||
+            std::strcmp(def.name, "d_step_80_160") == 0 ||
+            std::strcmp(def.name, "d_step_147_220_330") == 0)) {
+    printf("PRED_SLACK_HEADER case,block,class,grains,n3_us,n2_us,n1_us,n_us,lead0,lead1,lead2,lead3\n");
+    for (uint32_t i = 0; i < t->prediction_slack_count; ++i) {
+      const auto &ev = t->prediction_slack[i];
+      printf("PRED_SLACK,%s,%lu,%u,%u,%u,%u,%u,%u,%ld,%ld,%ld,%ld\n",
+             def.name, static_cast<unsigned long>(ev.block_id),
+             static_cast<unsigned>(ev.klass), static_cast<unsigned>(ev.grains),
+             static_cast<unsigned>(ev.dsp_us[0]),
+             static_cast<unsigned>(ev.dsp_us[1]),
+             static_cast<unsigned>(ev.dsp_us[2]),
+             static_cast<unsigned>(ev.dsp_us[3]),
+             static_cast<long>(ev.destination_lead[0]),
+             static_cast<long>(ev.destination_lead[1]),
+             static_cast<long>(ev.destination_lead[2]),
+             static_cast<long>(ev.destination_lead[3]));
+      printf("PRED_CONTEXT,%s,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%u,%u\n",
+             def.name, static_cast<unsigned long>(ev.block_id),
+             static_cast<unsigned long>(ev.actual_pitch_period_bits),
+             static_cast<unsigned long>(ev.prior_pitch_period_bits[0]),
+             static_cast<unsigned long>(ev.prior_pitch_period_bits[1]),
+             static_cast<unsigned long>(ev.prior_pitch_period_bits[2]),
+             static_cast<unsigned>(ev.actual_pitch_onset),
+             static_cast<unsigned>(ev.actual_pitch_changed),
+             static_cast<unsigned>(ev.actual_track_state),
+             static_cast<unsigned>(ev.actual_recovery_active),
+             static_cast<unsigned>(ev.prior_have_cursor[0]),
+             static_cast<unsigned>(ev.prior_have_cursor[1]),
+             static_cast<unsigned>(ev.prior_have_cursor[2]),
+             static_cast<unsigned>(ev.actual_have_cursor));
+      for (size_t g = 0; g < ev.grains && g < 4; ++g) {
+        const auto &a = ev.grain[g];
+        printf("PRED_GRAIN,%s,%lu,%u,%u,%016llx,%016llx,%llu,%08lx,%u,%llu,%lu,%u,%lu,%lu,%lu,%u,%u,%lu,%lu,%u\n",
+               def.name, static_cast<unsigned long>(ev.block_id),
+               static_cast<unsigned>(ev.klass), static_cast<unsigned>(g),
+               static_cast<unsigned long long>(a.destination_bits),
+               static_cast<unsigned long long>(a.requested_source_bits),
+               static_cast<unsigned long long>(a.source_center),
+               static_cast<unsigned long>(a.source_period_bits),
+               static_cast<unsigned>(a.source_period),
+               static_cast<unsigned long long>(a.model_timestamp),
+               static_cast<unsigned long>(a.model_publication_serial),
+               static_cast<unsigned>(a.model_order),
+               static_cast<unsigned long>(a.lambda_bits),
+               static_cast<unsigned long>(a.gamma_bits),
+               static_cast<unsigned long>(a.sample_rate_bits),
+               static_cast<unsigned>(a.normalization_strategy),
+               static_cast<unsigned>(a.cache_path),
+               static_cast<unsigned long>(a.formant_shift_bits),
+               static_cast<unsigned long>(a.formant_amount_bits),
+               static_cast<unsigned>(a.formant_mode));
+        for (size_t h = 0; h < 3; ++h) {
+          printf("PRED_AVAIL,%s,%lu,%u,%u,%u,%u,%u,%lu,%lu\n",
+                 def.name, static_cast<unsigned long>(ev.block_id),
+                 static_cast<unsigned>(ev.klass), static_cast<unsigned>(g),
+                 static_cast<unsigned>(3 - h),
+                 static_cast<unsigned>(ev.mark_available[h][g]),
+                 static_cast<unsigned>(ev.model_available[h][g]),
+                 static_cast<unsigned long>(ev.prior_model_serial[h]),
+                 static_cast<unsigned long>(ev.selected_model_serial[g]));
+          printf("PRED_PROJ,%s,%lu,%u,%u,%u,%u,%016llx,%016llx,%llu,%08lx,%u,%lu,%u,%lu,%lu,%lu,%lu,%lu,%u,%u\n",
+                 def.name, static_cast<unsigned long>(ev.block_id),
+                 static_cast<unsigned>(ev.klass), static_cast<unsigned>(g),
+                 static_cast<unsigned>(3 - h),
+                 static_cast<unsigned>(ev.prediction_status[h][g]),
+                 static_cast<unsigned long long>(ev.predicted_destination_bits[h][g]),
+                 static_cast<unsigned long long>(ev.predicted_source_bits[h][g]),
+                 static_cast<unsigned long long>(ev.predicted_mark[h][g]),
+                 static_cast<unsigned long>(ev.predicted_period_bits[h][g]),
+                 static_cast<unsigned>(ev.predicted_half[h][g]),
+                 static_cast<unsigned long>(ev.predicted_model_serial[h][g]),
+                 static_cast<unsigned>(ev.predicted_lpc_enabled[h][g]),
+                 static_cast<unsigned long>(ev.predicted_formant_shift_bits[h]),
+                 static_cast<unsigned long>(ev.predicted_formant_amount_bits[h]),
+                 static_cast<unsigned long>(ev.predicted_lambda_bits[h]),
+                 static_cast<unsigned long>(ev.predicted_gamma_bits[h]),
+                 static_cast<unsigned long>(ev.predicted_sample_rate_bits[h]),
+                 static_cast<unsigned>(ev.predicted_formant_mode[h]),
+                 static_cast<unsigned>(ev.predicted_normalization_strategy[h]));
+        }
+      }
+    }
+    printf("PRED_SLACK_COUNT case=%s captured=%lu dropped=%lu mc1_seen=%lu mc1_sampled=%lu\n",
+           def.name, static_cast<unsigned long>(t->prediction_slack_count),
+           static_cast<unsigned long>(t->prediction_slack_dropped),
+           static_cast<unsigned long>(t->prediction_mc1_seen),
+           static_cast<unsigned long>(t->prediction_mc1_sampled));
+  }
+#endif
+
   if (t && std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
     printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices,psola_sched_cycles,psola_addgrain_cycles,psola_deferred_cycles,psola_mark_cycles,psola_desc_cycles,psola_near_cycles,psola_poly_cycles,psola_gn_cycles\n");
     auto emit = [](const char *set, const vocal_fx_platform::B4D12ForensicRecord &r) {
@@ -666,6 +758,24 @@ void b4d12_run_case(const B4D12CaseDef &def) {
 
 void b4d12_run_campaign() {
   const uint32_t soak_s = static_cast<uint32_t>(CONFIG_VOXP4_B4D12_SOAK_MINUTES) * 60u;
+
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_AUDIT_ONLY)
+  const uint32_t reference_s = static_cast<uint32_t>(CONFIG_VOXP4_B4D12_REFERENCE_MINUTES) * 60u;
+  const uint32_t transition_s = static_cast<uint32_t>(CONFIG_VOXP4_B4D12_STRESS_SECONDS);
+  const B4D12CaseDef reference = {"a_ref_vocal_fullfx", "A_reference", reference_s,
+      B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 7.0f, B4D12Control::None};
+  b4d12_run_case(reference);
+  const B4D12CaseDef step1 = {"d_step_80_160", "D_transition", transition_s,
+      B4B6StimulusKind::Step80To160, 0.0f, false, 1,
+      true, true, true, 7.0f, B4D12Control::None};
+  b4d12_run_case(step1);
+  const B4D12CaseDef step2 = {"d_step_147_220_330", "D_transition", transition_s,
+      B4B6StimulusKind::Step147To220To330, 0.0f, false, 1,
+      true, true, true, 7.0f, B4D12Control::None};
+  b4d12_run_case(step2);
+  return;
+#endif
 
 #if !defined(CONFIG_VOXP4_B4D12_SOAK_ONLY)
   const uint32_t ref_s = static_cast<uint32_t>(CONFIG_VOXP4_B4D12_REFERENCE_MINUTES) * 60u;

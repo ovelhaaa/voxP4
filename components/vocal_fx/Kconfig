@@ -250,6 +250,22 @@ config VOXP4_B4D12_SOAK_ONLY
         long-duration soak (Test J).  Used for a dedicated production soak
         without repeating the short stress matrix.
 
+config VOXP4_PSOLA_PREDICTION_AUDIT_ONLY
+    bool "Run only TD-PSOLA prediction feasibility cases"
+    depends on VOXP4_MODE_I2S_B4D_12_BURN_IN
+    default n
+    help
+        Run the reference vocal replay and two deterministic pitch-transition
+        fixtures, then stop. This is a telemetry-only B4D.12 development mode.
+
+config VOXP4_PSOLA_PREDICTION_RECORDER
+    bool "Record detailed TD-PSOLA prediction snapshots"
+    depends on VOXP4_PSOLA_PREDICTION_AUDIT_ONLY
+    default y
+    help
+        Enable the bounded prediction snapshots. Disable for a paired timing
+        baseline with the same short fixture campaign.
+
 config VOXP4_HEADLESS_HW_TEST
     bool
     default y if VOXP4_MODE_HEADLESS

@@ -275,7 +275,7 @@ void SharedLpcAnalysis::reset() {
   telemetry_ = {}; profiler_.reset(); published_.store(0, std::memory_order_release);
   frame_cost_histogram_.fill(0); frame_cost_count_ = 0;
   frame_cost_total_us_ = 0; frame_cost_max_us_ = 0;
-  for (auto &m : models_) { m.sequence.store(0); m.valid.store(0); }
+  for (auto &m : models_) { m.sequence.store(0); m.serial.store(0); m.valid.store(0); }
   publish_telemetry();
 }
 void SharedLpcAnalysis::reset_measurement_telemetry() {
@@ -697,7 +697,9 @@ void SharedLpcAnalysis::publish(const SharedLpcModel &m) {
   for(size_t i=0;i<p.coefficients.size();++i)p.coefficients[i].store(m.coefficients[i],std::memory_order_relaxed);
   p.error.store(m.prediction_error); p.confidence.store(m.confidence);
   p.timestamp_low.store(uint32_t(m.timestamp)); p.timestamp_high.store(uint32_t(m.timestamp>>32));
-  p.order.store(m.order); p.valid.store(m.valid?1:0); p.sequence.fetch_add(1,std::memory_order_release);
+  p.order.store(m.order); p.valid.store(m.valid?1:0);
+  p.serial.store(serial, std::memory_order_relaxed);
+  p.sequence.fetch_add(1,std::memory_order_release);
   published_.store(serial,std::memory_order_release);
 }
 size_t SharedLpcAnalysis::run(size_t maximum,const PitchResult &pitch) {
@@ -788,6 +790,7 @@ size_t SharedLpcAnalysis::snapshot_models(SharedLpcModel *out,
                     (uint64_t(p.timestamp_high.load(std::memory_order_relaxed)) << 32);
       m.order = uint16_t(p.order.load(std::memory_order_relaxed));
       m.valid = p.valid.load(std::memory_order_relaxed) != 0;
+      m.publication_serial = p.serial.load(std::memory_order_relaxed);
       after = p.sequence.load(std::memory_order_acquire);
     } while (before != after || (after & 1U));
     if (!m.valid) continue;
@@ -812,6 +815,7 @@ bool SharedLpcAnalysis::latest_model(SharedLpcModel *out) const {
                    (uint64_t(p.timestamp_high.load(std::memory_order_relaxed))<<32);
     out->order=uint16_t(p.order.load(std::memory_order_relaxed));
     out->valid=p.valid.load(std::memory_order_relaxed)!=0;
+    out->publication_serial=p.serial.load(std::memory_order_relaxed);
     after=p.sequence.load(std::memory_order_acquire);
   } while(before!=after || (after&1U));
   return true;
@@ -861,6 +865,7 @@ bool SharedLpcAnalysis::model_near(uint64_t ts,SharedLpcModel *out) const {
     if(d>=best) continue;
     SharedLpcModel m; for(size_t i=0;i<m.coefficients.size();++i)m.coefficients[i]=p.coefficients[i].load();
     m.prediction_error=p.error.load();m.confidence=p.confidence.load();m.timestamp=t;m.order=uint16_t(p.order.load());m.valid=true;
+    m.publication_serial = p.serial.load(std::memory_order_relaxed);
     if(before!=p.sequence.load(std::memory_order_acquire)) continue;
     best=d;*out=m;found=true;
     if(s_b4d5_model_audit){++s_b4d5_model_copies;
@@ -873,6 +878,34 @@ bool SharedLpcAnalysis::model_near(uint64_t ts,SharedLpcModel *out) const {
     if(found) s_b4d5_model_last_ts = out->timestamp;
   }
   return found && best<=uint64_t(config_.window_size+config_.hop_size);
+}
+
+bool SharedLpcAnalysis::snapshot_model_refs(LpcPublishedRef *out,
+                                            size_t capacity,
+                                            size_t *count) const {
+  if (!out || !count || capacity < kModelCount) return false;
+  *count = 0;
+  const uint32_t newest = published_.load(std::memory_order_acquire);
+  const size_t n = std::min<size_t>(newest, kModelCount);
+  for (size_t k = 0; k < n; ++k) {
+    const auto &p = models_[(newest - k) % kModelCount];
+    const uint32_t before = p.sequence.load(std::memory_order_acquire);
+    if (before & 1U) return false;
+    LpcPublishedRef ref{};
+    ref.serial = p.serial.load(std::memory_order_relaxed);
+    if (ref.serial != newest - static_cast<uint32_t>(k)) return false;
+    ref.timestamp = uint64_t(p.timestamp_low.load(std::memory_order_relaxed)) |
+                    (uint64_t(p.timestamp_high.load(std::memory_order_relaxed)) << 32);
+    const float confidence = p.confidence.load(std::memory_order_relaxed);
+    std::memcpy(&ref.confidence_bits, &confidence, sizeof(confidence));
+    ref.order = static_cast<uint16_t>(p.order.load(std::memory_order_relaxed));
+    ref.valid = p.valid.load(std::memory_order_relaxed) != 0;
+    if (before != p.sequence.load(std::memory_order_acquire)) return false;
+    out[k] = ref;
+  }
+  if (newest != published_.load(std::memory_order_acquire)) return false;
+  *count = n;
+  return true;
 }
 ProfileStats SharedLpcAnalysis::profile(LpcProfileSection s) const{return profiler_.stats(section(s));}
 void SharedLpcAnalysis::publish_telemetry() {

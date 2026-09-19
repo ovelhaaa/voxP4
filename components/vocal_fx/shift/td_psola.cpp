@@ -2323,9 +2323,42 @@ void TdPsola::add_grain_ola_from_cached_windowed(
   }
 }
 
+PsolaPredictionCursor TdPsola::prediction_cursor() const {
+  PsolaPredictionCursor c{};
+  c.next_block_start = output_position_;
+  c.history_offset = history_offset_;
+  c.input_end = resources_ ? resources_->input_end() : 0;
+  c.next_synthesis_mark = next_synthesis_mark_;
+  c.current_synthesis_period = current_synthesis_period_;
+  c.current_semitones = current_semitones_;
+  c.target_semitones = target_semitones_;
+  c.slew_period_step = slew_period_step_;
+  c.smoothing_ms = smoothing_ms_;
+  c.sample_rate = sample_rate_;
+  c.slew_grains_remaining = slew_grains_remaining_;
+  c.have_cursor = have_cursor_ ? 1 : 0;
+  c.target_enabled = target_enabled_ ? 1 : 0;
+  std::memcpy(&c.formant_amount_bits, &formant_amount_, sizeof(float));
+  std::memcpy(&c.formant_shift_bits, &formant_shift_semitones_, sizeof(float));
+  std::memcpy(&c.gamma_bits, &formant_bandwidth_expansion_, sizeof(float));
+  c.formant_mode = static_cast<uint8_t>(formant_mode_);
+  c.normalization_strategy = static_cast<uint8_t>(formant_normalization_strategy_);
+  return c;
+}
+
 bool TdPsola::add_grain(double destination, double source,
                         const PitchMark *marks, size_t count) {
   last_grain_audit_ = {};
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  last_grain_audit_.scheduling_block_start = output_position_;
+  std::memcpy(&last_grain_audit_.formant_shift_bits, &formant_shift_semitones_, sizeof(float));
+  std::memcpy(&last_grain_audit_.formant_amount_bits, &formant_amount_, sizeof(float));
+  last_grain_audit_.formant_mode = static_cast<uint8_t>(formant_mode_);
+  std::memcpy(&last_grain_audit_.destination_bits, &destination,
+              sizeof(destination));
+  std::memcpy(&last_grain_audit_.requested_source_bits, &source,
+              sizeof(source));
+#endif
   b4d8_mark_count_this_block_ = static_cast<uint16_t>(count);
   const uint32_t c_ms_start = Profiler::now_cycles();
   size_t index;
@@ -2419,8 +2452,14 @@ bool TdPsola::add_grain(double destination, double source,
   last_grain_audit_.model_near_cycles = c_near;
   if (has_near) {
     last_grain_audit_.model_timestamp = model.timestamp;
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+    last_grain_audit_.model_publication_serial = model.publication_serial;
+#endif
     last_grain_audit_.model_order = model.order;
   }
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  std::memcpy(&last_grain_audit_.source_period_bits, &period, sizeof(period));
+#endif
   warp_audit_.model_near_calls++;
   warp_audit_.model_near_cycles += c_near;
 

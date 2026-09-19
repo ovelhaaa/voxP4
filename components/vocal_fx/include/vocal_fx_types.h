@@ -833,8 +833,20 @@ struct PitchResult {
 // 8=source coefficients, 16=lambda, 32=gamma, 64=sample rate,
 // 128=normalization strategy. A full cache hit has no difference bits.
 struct PsolaGrainAuditRecord {
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  uint64_t scheduling_block_start = 0;
+  uint64_t destination_bits = 0;
+  uint64_t requested_source_bits = 0;
+  uint32_t source_period_bits = 0;
+  uint32_t formant_shift_bits = 0;
+  uint32_t formant_amount_bits = 0;
+  uint8_t formant_mode = 0;
+#endif
   uint64_t source_center = 0;
   uint64_t model_timestamp = 0;
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  uint32_t model_publication_serial = 0;
+#endif
   int64_t destination_center = 0;
   uint32_t addgrain_cycles = 0;
   uint32_t select_cycles = 0;
@@ -851,6 +863,44 @@ struct PsolaGrainAuditRecord {
   uint8_t local_difference = 0;
   uint8_t shared_difference = 0;
   uint8_t normalization_strategy = 0;
+};
+
+// Read-only end-of-block scheduler state used by the prediction experiment.
+// This is a value snapshot; observing it has no effect on the renderer.
+struct PsolaPredictionCursor {
+  uint64_t next_block_start = 0;
+  uint64_t history_offset = 0;
+  uint64_t input_end = 0;
+  double next_synthesis_mark = 0.0;
+  float source_period = 0.0f;
+  float current_synthesis_period = 0.0f;
+  float current_semitones = 0.0f;
+  float target_semitones = 0.0f;
+  float slew_period_step = 0.0f;
+  float smoothing_ms = 0.0f;
+  float sample_rate = 0.0f;
+  uint32_t frames = 0;
+  uint32_t model_max_distance = 0;
+  uint32_t formant_amount_bits = 0;
+  uint32_t formant_shift_bits = 0;
+  uint32_t gamma_bits = 0;
+  uint32_t slew_grains_remaining = 0;
+  uint8_t formant_mode = 0;
+  uint8_t normalization_strategy = 0;
+  uint8_t have_cursor = 0;
+  uint8_t target_enabled = 0;
+  uint8_t pitch_voiced = 0;
+  uint8_t pitch_onset = 0;
+  uint8_t pitch_changed = 0;
+  uint8_t track_state = 0;
+};
+
+struct LpcPublishedRef {
+  uint64_t timestamp = 0;
+  uint32_t serial = 0;
+  uint32_t confidence_bits = 0;
+  uint16_t order = 0;
+  uint8_t valid = 0;
 };
 
 struct PitchMark {

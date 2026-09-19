@@ -56,6 +56,9 @@ struct SharedLpcModel {
   uint64_t timestamp = 0;
   uint16_t order = 0;
   bool valid = false;
+  // Publication serial is observational. Zero means a model that has not
+  // been read from the published ring (for example, a solver result).
+  uint32_t publication_serial = 0;
 };
 
 enum class LpcProfileSection : uint8_t {
@@ -103,6 +106,10 @@ public:
   void tap(const float *samples, size_t count);
   size_t run(size_t max_frames, const PitchResult &pitch);
   bool model_near(uint64_t timestamp, SharedLpcModel *model) const;
+  // One bounded, read-only attempt. False means a publication crossed the
+  // snapshot; callers must label that observation ambiguous.
+  bool snapshot_model_refs(LpcPublishedRef *out, size_t capacity,
+                           size_t *count) const;
   LpcTelemetry telemetry() const;
   ProfileStats profile(LpcProfileSection section) const;
   bool latest_model(SharedLpcModel *model) const;
@@ -171,6 +178,7 @@ private:
   struct LpcSample { float value; uint32_t input_position; };
   struct PublishedModel {
     std::atomic<uint32_t> sequence{0};
+    std::atomic<uint32_t> serial{0};
     std::array<std::atomic<float>, VOCAL_FX_LPC_MAX_ORDER + 1> coefficients{};
     std::atomic<float> error{0}, confidence{0};
     std::atomic<uint32_t> timestamp_low{0}, timestamp_high{0}, order{0}, valid{0};

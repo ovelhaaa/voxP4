@@ -1,6 +1,7 @@
 #include "audio_i2s.h"
 #include "profiling.h"
 #include "vocal_fx.h"
+#include "td_psola.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1001,6 +1002,129 @@ void AudioI2s::b4d12_telemetry_reset() {
   t->blocks_per_window = bpw;
 }
 
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+// Project the frozen end-of-block state through one to three future blocks.
+// This runs after the measured DSP interval, and reads only the snapshot from
+// the earlier block. It cannot predict a future pitch publication, onset or
+// recovery reset; those become explicit validation failures.
+static void b4d12_project_from_snapshot(B4D12PredictionSlackEvent &ev,
+    size_t h, const PsolaPredictionCursor &snap, const PitchMark *marks,
+    size_t mark_count, const LpcPublishedRef *models, size_t model_count,
+    bool models_coherent) {
+  ev.predicted_formant_shift_bits[h] = snap.formant_shift_bits;
+  ev.predicted_formant_amount_bits[h] = snap.formant_amount_bits;
+  ev.predicted_gamma_bits[h] = snap.gamma_bits;
+  float formant_shift = 0.0f;
+  std::memcpy(&formant_shift, &snap.formant_shift_bits, sizeof(float));
+  const float lambda = SharedLpcAnalysis::lambda_from_semitones(formant_shift);
+  std::memcpy(&ev.predicted_lambda_bits[h], &lambda, sizeof(float));
+  ev.predicted_formant_mode[h] = snap.formant_mode;
+  ev.predicted_normalization_strategy[h] = snap.normalization_strategy;
+  std::memcpy(&ev.predicted_sample_rate_bits[h], &snap.sample_rate, sizeof(float));
+  if (!snap.have_cursor || !snap.target_enabled || !snap.pitch_voiced ||
+      !(snap.source_period >= 24.0f && snap.source_period <= 800.0f) ||
+      snap.frames == 0 || mark_count == 0) {
+    for (size_t i = 0; i < 4; ++i) ev.prediction_status[h][i] = 2;
+    return;
+  }
+  double cursor = snap.next_synthesis_mark;
+  float semitones = snap.current_semitones;
+  float synthesis_period = snap.current_synthesis_period;
+  uint32_t slew = snap.slew_grains_remaining;
+  const float alpha = 1.0f - std::exp(-snap.source_period /
+      (snap.sample_rate * snap.smoothing_ms * .001f));
+  for (size_t step = 1; step <= 3 - h; ++step) {
+    const uint64_t block_start = snap.next_block_start +
+        static_cast<uint64_t>(step - 1) * snap.frames;
+    const double bound = static_cast<double>(block_start + snap.frames) +
+        snap.source_period;
+    size_t produced = 0;
+    size_t attempts = 0;
+    while (cursor < bound && produced < 32 && attempts++ < 32) {
+      semitones += alpha * (snap.target_semitones - semitones);
+      const float ratio = std::exp2(semitones / 12.0f);
+      if (slew > 0) {
+        synthesis_period += snap.slew_period_step;
+        --slew;
+      } else {
+        synthesis_period = snap.source_period;
+      }
+      const double destination = cursor;
+      const double source = destination - static_cast<double>(snap.history_offset);
+      bool selected = false;
+      uint64_t center = 0;
+      float period = 0.0f;
+      int half = 0;
+      if (source >= 0.0) {
+        const size_t best = td_psola_nearest_mark_index(source, marks, mark_count);
+        center = marks[best].sample_position;
+        if (mark_count == 1) {
+          period = synthesis_period >= 24.0f && synthesis_period <= 800.0f
+              ? synthesis_period : 100.0f;
+        } else {
+          const uint64_t p0 = best ? marks[best - 1].sample_position : center;
+          const uint64_t p1 = best + 1 < mark_count
+              ? marks[best + 1].sample_position : center;
+          period = best && best + 1 < mark_count
+              ? .5f * ((center - p0) + (p1 - center))
+              : static_cast<float>(p1 - p0);
+          if ((period < 24.0f || period > 800.0f) &&
+              synthesis_period >= 24.0f && synthesis_period <= 800.0f)
+            period = synthesis_period;
+        }
+        selected = marks[best].confidence > .15f &&
+            period >= 24.0f && period <= 800.0f &&
+            std::fabs(source - static_cast<double>(center)) <=
+                std::max(2.0 * period, 256.0);
+        half = std::clamp(static_cast<int>(std::lround(period)), 24, 800);
+        const uint64_t input_end = snap.input_end +
+            static_cast<uint64_t>(step) * snap.frames;
+        const uint64_t oldest = input_end > 16384 ? input_end - 16384 : 0;
+        if (center < static_cast<uint64_t>(half + VOCAL_FX_LPC_MAX_ORDER) ||
+            center - half - VOCAL_FX_LPC_MAX_ORDER < oldest ||
+            center + half >= input_end)
+          selected = false;
+      }
+      if (selected) {
+        if (step == 3 - h && produced < 4) {
+          const size_t i = produced;
+          ev.prediction_status[h][i] = models_coherent ? 1 : 3;
+          std::memcpy(&ev.predicted_destination_bits[h][i], &destination, sizeof(double));
+          std::memcpy(&ev.predicted_source_bits[h][i], &source, sizeof(double));
+          ev.predicted_mark[h][i] = center;
+          std::memcpy(&ev.predicted_period_bits[h][i], &period, sizeof(float));
+          ev.predicted_half[h][i] = static_cast<uint16_t>(half);
+          uint64_t best_distance = UINT64_MAX;
+          float confidence = 0.0f;
+          for (size_t m = 0; m < model_count; ++m) {
+            const auto &ref = models[m];
+            if (!ref.valid) continue;
+            const uint64_t distance = center > ref.timestamp
+                ? center - ref.timestamp : ref.timestamp - center;
+            if (distance >= best_distance) continue;
+            best_distance = distance;
+            ev.predicted_model_serial[h][i] = ref.serial;
+            std::memcpy(&confidence, &ref.confidence_bits, sizeof(float));
+          }
+          if (best_distance > snap.model_max_distance)
+            ev.predicted_model_serial[h][i] = 0;
+          float amount = 0.0f;
+          std::memcpy(&amount, &snap.formant_amount_bits, sizeof(float));
+          ev.predicted_lpc_enabled[h][i] =
+              snap.formant_mode == static_cast<uint8_t>(FormantMode::Lpc) &&
+              amount > 0.0f && ev.predicted_model_serial[h][i] != 0 &&
+              confidence > .15f;
+        }
+        ++produced;
+      }
+      cursor += synthesis_period / std::max(ratio, .5f);
+    }
+    if (cursor < static_cast<double>(block_start + snap.frames))
+      cursor = block_start + snap.frames + snap.source_period;
+  }
+}
+#endif
+
 void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
                                 uint64_t block_idx) {
   B4D12Telemetry *t = b4d12_tee_;
@@ -1016,6 +1140,95 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
   const uint8_t ng = vls.new_grains;
   const uint8_t klass = mc ? (ng >= 3 ? 3 : (ng == 0 ? 4 : ng))
                            : 0; // 0=NMC,1=MC+1,2=MC+2,3=MC+3+,4=MC+0
+  const uint16_t dsp16 = dsp_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(dsp_us);
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  if (klass == 1) ++t->prediction_mc1_seen;
+  const bool sample_mc1 = klass == 1 &&
+      (t->prediction_mc1_seen % 8U) == 0 &&
+      t->prediction_mc1_sampled < 512;
+  if (sample_mc1 || klass == 2 || klass == 3) {
+    if (t->prediction_slack_count < kB4D12PredictionSlackCapacity) {
+      if (sample_mc1) ++t->prediction_mc1_sampled;
+      auto &ev = t->prediction_slack[t->prediction_slack_count++];
+      ev.block_id = static_cast<uint32_t>(block_idx);
+      ev.klass = klass;
+      ev.grains = ng;
+      ev.dsp_us[0] = t->prior_dsp_us[0];
+      ev.dsp_us[1] = t->prior_dsp_us[1];
+      ev.dsp_us[2] = t->prior_dsp_us[2];
+      ev.dsp_us[3] = dsp16;
+      const auto actual_cursor = vocal_fx_prediction_cursor();
+      std::memcpy(&ev.actual_pitch_period_bits, &actual_cursor.source_period, sizeof(float));
+      ev.actual_pitch_onset = actual_cursor.pitch_onset;
+      ev.actual_pitch_changed = actual_cursor.pitch_changed;
+      ev.actual_track_state = actual_cursor.track_state;
+      ev.actual_have_cursor = actual_cursor.have_cursor;
+      HarmonizerBlockTraceRecord last_trace{};
+      if (vocal_fx_latest_harmonizer_trace(&last_trace))
+        ev.actual_recovery_active = last_trace.recovery_active;
+      for (size_t h = 0; h < 3; ++h) {
+        const size_t slot = (t->prior_snapshot_write + h) % 3;
+        std::memcpy(&ev.prior_pitch_period_bits[h],
+                    &t->prior_cursor[slot].source_period, sizeof(float));
+        ev.prior_have_cursor[h] = t->prior_cursor[slot].have_cursor;
+        if (t->prior_snapshots_seen >= 3 - h)
+          b4d12_project_from_snapshot(ev, h, t->prior_cursor[slot],
+              t->prior_marks[slot], t->prior_mark_count[slot],
+              t->prior_model_refs[slot], t->prior_model_count[slot],
+              t->prior_model_coherent[slot] != 0);
+        else
+          for (size_t i = 0; i < 4; ++i) ev.prediction_status[h][i] = 2;
+      }
+      for (size_t i = 0; i < 4; ++i) {
+        const auto &g = vls.grain_audit[i];
+        if (i < ng) ev.grain[i] = g;
+        ev.selected_model_serial[i] = i < ng ? g.model_publication_serial : 0;
+        ev.destination_lead[i] = i < ng
+            ? static_cast<int32_t>(g.destination_center -
+                                   static_cast<int64_t>(g.scheduling_block_start))
+            : (-2147483647 - 1);
+        for (size_t h = 0; h < 3; ++h) {
+          const size_t slot = (t->prior_snapshot_write + h) % 3;
+          ev.prior_model_serial[h] = t->prior_model_serial[slot];
+          if (i >= ng) {
+            ev.mark_available[h][i] = 3;
+            ev.model_available[h][i] = 3;
+          } else if (t->prior_snapshots_seen < 3 - h) {
+            ev.mark_available[h][i] = 2;
+            ev.model_available[h][i] = 2;
+          } else {
+            bool found = false;
+            for (size_t m = 0; m < t->prior_mark_count[slot]; ++m)
+              if (t->prior_marks[slot][m].sample_position == g.source_center) found = true;
+            ev.mark_available[h][i] = found ? 1 : 0;
+            ev.model_available[h][i] = g.model_publication_serial == 0
+                ? 3
+                : (!t->prior_model_coherent[slot] ? 2
+                   : (g.model_publication_serial <= t->prior_model_serial[slot] ? 1 : 0));
+          }
+        }
+      }
+    } else {
+      ++t->prediction_slack_dropped;
+    }
+  }
+  t->prior_dsp_us[0] = t->prior_dsp_us[1];
+  t->prior_dsp_us[1] = t->prior_dsp_us[2];
+  t->prior_dsp_us[2] = dsp16;
+  const size_t snapshot_slot = t->prior_snapshot_write;
+  t->prior_mark_count[snapshot_slot] = static_cast<uint8_t>(
+      vocal_fx_copy_current_pitch_mark_records(t->prior_marks[snapshot_slot], 64));
+  t->prior_cursor[snapshot_slot] = vocal_fx_prediction_cursor();
+  size_t model_count = 0;
+  const bool coherent = vocal_fx_snapshot_lpc_refs(
+      t->prior_model_refs[snapshot_slot], 16, &model_count);
+  t->prior_model_count[snapshot_slot] = static_cast<uint8_t>(model_count);
+  t->prior_model_coherent[snapshot_slot] = coherent ? 1 : 0;
+  t->prior_model_serial[snapshot_slot] = coherent && model_count
+      ? t->prior_model_refs[snapshot_slot][0].serial : 0;
+  t->prior_snapshot_write = static_cast<uint8_t>((snapshot_slot + 1) % 3);
+  if (t->prior_snapshots_seen < 3) ++t->prior_snapshots_seen;
+#endif
   for (size_t i = 0; i < ng && i < 4; ++i) {
     const auto &g = vls.grain_audit[i];
     ++t->grain_count[klass][i];
@@ -1037,7 +1250,6 @@ void AudioI2s::b4d12_note_block(uint64_t dsp_us, uint64_t cycle_us,
         if (bits & (1u << bit)) ++t->grain_cache_difference[klass][i][bit];
     }
   }
-  const uint16_t dsp16 = dsp_us > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(dsp_us);
   // Retain complete evidence for every miss (up to the existing late-event
   // capacity) and the 100 slowest blocks. No allocation or output here.
   if (dsp_us >= 1000) {

@@ -1692,6 +1692,32 @@ size_t vocal_fx_get_harmonizer_trace(HarmonizerBlockTraceRecord *dst, size_t max
   return n;
 }
 
+size_t vocal_fx_copy_current_pitch_mark_records(PitchMark *dst,
+                                                 size_t capacity) {
+  if (!dst) return 0;
+  const size_t count = std::min(capacity, e.pitch_shift_mark_count);
+  std::copy_n(e.pitch_shift_marks, count, dst);
+  return count;
+}
+
+bool vocal_fx_snapshot_lpc_refs(LpcPublishedRef *dst, size_t capacity,
+                                size_t *count) {
+  return e.lpc_analysis.snapshot_model_refs(dst, capacity, count);
+}
+
+PsolaPredictionCursor vocal_fx_prediction_cursor() {
+  auto c = e.pitch_shift[0].prediction_cursor();
+  c.source_period = e.pitch_shift_pitch.period_samples;
+  c.pitch_voiced = e.pitch_shift_pitch.voiced ? 1 : 0;
+  c.pitch_onset = e.pitch_shift_pitch.onset ? 1 : 0;
+  c.pitch_changed = e.pitch_shift_pitch.pitch_changed ? 1 : 0;
+  c.track_state = static_cast<uint8_t>(vocal_fx_pitch_track_state());
+  c.frames = static_cast<uint32_t>(e.cfg.block_size);
+  const auto &lc = e.lpc_analysis.effective_config();
+  c.model_max_distance = lc.window_size + lc.hop_size;
+  return c;
+}
+
 void vocal_fx_reset_harmonizer_trace() {
   s_harmonizer_trace_head.store(0, std::memory_order_relaxed);
   s_harmonizer_trace_count.store(0, std::memory_order_relaxed);

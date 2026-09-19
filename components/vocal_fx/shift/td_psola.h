@@ -382,6 +382,7 @@ public:
   const PsolaGrainAuditRecord &grain_audit(size_t i) const {
     return grain_audit_[i < 4 ? i : 0];
   }
+  PsolaPredictionCursor prediction_cursor() const;
   uint16_t last_mark_count() const { return b4d8_mark_count_this_block_; }
   uint32_t last_prewarm_cycles() const { return b4d9_prewarm_cycles_this_block_; }
   int32_t last_debt_samples() const { return b4d11_debt_samples_; }

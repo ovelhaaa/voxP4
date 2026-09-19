@@ -69,6 +69,10 @@ void vocal_fx_set_psola_warp_cache(bool enable_local, bool enable_shared, bool e
 PsolaWarpCacheStats vocal_fx_get_psola_warp_cache_stats(size_t voice);
 void vocal_fx_reset_psola_warp_cache_stats();
 size_t vocal_fx_get_harmonizer_trace(HarmonizerBlockTraceRecord *dst, size_t max_count);
+size_t vocal_fx_copy_current_pitch_mark_records(PitchMark *dst, size_t capacity);
+bool vocal_fx_snapshot_lpc_refs(LpcPublishedRef *dst, size_t capacity,
+                                size_t *count);
+PsolaPredictionCursor vocal_fx_prediction_cursor();
 void vocal_fx_reset_harmonizer_trace();
 void vocal_fx_set_spatial_routing(SpatialFxRouting routing);
 void vocal_fx_set_spatial_source(SpatialFxSource source);

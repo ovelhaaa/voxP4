@@ -415,6 +415,48 @@ struct B4D12LateEvent {
 };
 constexpr size_t kB4D12LateEventCapacity = 2048;
 constexpr size_t kB4D12TopCapacity = 100;
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+// Observational MC+2/MC+3 timing context. Kept in the existing PSRAM-backed
+// B4D.12 telemetry allocation and written only by the audio task.
+struct B4D12PredictionSlackEvent {
+  uint32_t block_id;
+  uint16_t dsp_us[4];  // N-3, N-2, N-1, N
+  int32_t destination_lead[4];  // destination center - scheduling block start
+  uint32_t selected_model_serial[4];
+  uint32_t prior_model_serial[3];
+  uint8_t mark_available[3][4];  // 0=no, 1=yes, 2=no prior snapshot
+  uint8_t model_available[3][4]; // same; serial 0 means no model selected
+  PsolaGrainAuditRecord grain[4];
+  // 0=no candidate, 1=projected from earlier state, 2=not predictable,
+  // 3=ambiguous concurrent model publication.
+  uint8_t prediction_status[3][4];
+  uint64_t predicted_destination_bits[3][4];
+  uint64_t predicted_source_bits[3][4];
+  uint64_t predicted_mark[3][4];
+  uint32_t predicted_period_bits[3][4];
+  uint16_t predicted_half[3][4];
+  uint32_t predicted_model_serial[3][4];
+  uint8_t predicted_lpc_enabled[3][4];
+  uint32_t predicted_formant_shift_bits[3];
+  uint32_t predicted_formant_amount_bits[3];
+  uint32_t predicted_gamma_bits[3];
+  uint32_t predicted_lambda_bits[3];
+  uint32_t predicted_sample_rate_bits[3];
+  uint8_t predicted_formant_mode[3];
+  uint8_t predicted_normalization_strategy[3];
+  uint32_t actual_pitch_period_bits;
+  uint32_t prior_pitch_period_bits[3];
+  uint8_t actual_pitch_onset;
+  uint8_t actual_pitch_changed;
+  uint8_t actual_track_state;
+  uint8_t actual_recovery_active;
+  uint8_t actual_have_cursor;
+  uint8_t prior_have_cursor[3];
+  uint8_t klass;
+  uint8_t grains;
+};
+constexpr size_t kB4D12PredictionSlackCapacity = 2048;
+#endif
 struct B4D12ForensicRecord {
   uint32_t block_id;
   uint32_t dsp_us;
@@ -467,6 +509,23 @@ struct B4D12Telemetry {
   B4D12LateEvent late[kB4D12LateEventCapacity];
   B4D12ForensicRecord top[kB4D12TopCapacity];
   B4D12ForensicRecord miss[kB4D12LateEventCapacity];
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  B4D12PredictionSlackEvent prediction_slack[kB4D12PredictionSlackCapacity];
+  uint16_t prior_dsp_us[3]{};
+  PitchMark prior_marks[3][64]{};
+  PsolaPredictionCursor prior_cursor[3]{};
+  LpcPublishedRef prior_model_refs[3][16]{};
+  uint8_t prior_model_count[3]{};
+  uint8_t prior_model_coherent[3]{};
+  uint32_t prior_model_serial[3]{};
+  uint8_t prior_mark_count[3]{};
+  uint8_t prior_snapshot_write = 0;
+  uint8_t prior_snapshots_seen = 0;
+  uint32_t prediction_slack_count = 0;
+  uint32_t prediction_slack_dropped = 0;
+  uint32_t prediction_mc1_seen = 0;
+  uint32_t prediction_mc1_sampled = 0;
+#endif
   uint32_t top_count;
   uint32_t top_min_us;
   uint32_t miss_count;
