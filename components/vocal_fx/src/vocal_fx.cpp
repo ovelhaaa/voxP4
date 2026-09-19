@@ -634,6 +634,7 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
                          e.pitch_shift[0].has_usable_output()
                              ? 1.0f
                              : 0.0f;
+    float local_pre_peak = s_limiter_diag.harmony_pre_peak;
     for(size_t i=0;i<n;++i){
       e.last_wanted_mix[0] = wanted;
       const float diff = wanted - e.harmony_mix[0];
@@ -649,20 +650,23 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
       harm_bus_r[i] = hr;
       const float hl_abs = std::fabs(hl);
       const float hr_abs = std::fabs(hr);
-      if (hl_abs > s_limiter_diag.harmony_pre_peak) s_limiter_diag.harmony_pre_peak = hl_abs;
-      if (hr_abs > s_limiter_diag.harmony_pre_peak) s_limiter_diag.harmony_pre_peak = hr_abs;
+      if (hl_abs > local_pre_peak) local_pre_peak = hl_abs;
+      if (hr_abs > local_pre_peak) local_pre_peak = hr_abs;
     }
+    s_limiter_diag.harmony_pre_peak = local_pre_peak;
     VF_PROFILE_END(e.profiler, ProfileSection::HarmonySlewPan, 0);
 
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::HarmonyLimiter);
     if (e.cfg.enable_harmony_limiter) {
+      float local_post_peak = s_limiter_diag.harmony_post_peak;
       for(size_t i=0;i<n;++i){
         e.harmony_limiter.process(harm_bus_l[i], harm_bus_r[i]);
         const float hl_post = std::fabs(harm_bus_l[i]);
         const float hr_post = std::fabs(harm_bus_r[i]);
-        if (hl_post > s_limiter_diag.harmony_post_peak) s_limiter_diag.harmony_post_peak = hl_post;
-        if (hr_post > s_limiter_diag.harmony_post_peak) s_limiter_diag.harmony_post_peak = hr_post;
+        if (hl_post > local_post_peak) local_post_peak = hl_post;
+        if (hr_post > local_post_peak) local_post_peak = hr_post;
       }
+      s_limiter_diag.harmony_post_peak = local_post_peak;
       const float red_db = e.harmony_limiter.reduction_db();
       if (red_db > s_limiter_diag.max_reduction_db) s_limiter_diag.max_reduction_db = red_db;
     }
