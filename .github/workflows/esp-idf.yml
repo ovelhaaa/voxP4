@@ -60,6 +60,9 @@ jobs:
       - name: Regenerate VoxLink schema artifacts
         run: python tools/export_voxlink_schema.py
 
+      - name: Validate generated JSON schema
+        run: python tools/check_voxlink_schema.py
+
       - name: Fail if generated artifacts are stale
         run: |
           if ! git diff --exit-code -- integration/; then

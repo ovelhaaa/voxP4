@@ -53,6 +53,14 @@ def num(token: str) -> float:
     return float(token)
 
 
+def unq(token: str) -> str:
+    """Strip the surrounding C string quotes captured by the field regex."""
+    token = token.strip()
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        token = token[1:-1]
+    return token
+
+
 def parse():
     text = open(REGISTRY, encoding="utf-8").read()
     # Drop macro definitions so only invocations remain.
@@ -96,6 +104,11 @@ def parse():
                            unit=cont["unit"], flags=cont["flags"],
                            smoothing_ms=num(cont["smooth"]),
                            group=cont["group"], dsp_binding=cont["binding"])
+            # The field regex captures the surrounding C quotes; strip them so
+            # the JSON carries clean strings (group/unit/dsp_binding).
+            for field in ("group", "unit", "dsp_binding"):
+                if field in rec:
+                    rec[field] = unq(rec[field])
             rec["tag"] = TAGS[ptype]
             rec["flags_value"] = FLAG_BITS[rec["flags"]]
             params.append(rec)

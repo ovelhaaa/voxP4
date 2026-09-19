@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace voxlink;
@@ -76,6 +77,26 @@ int main() {
         "VOXP4_PARAM_COUNT equals registry_count()");
   check(generated_entries == static_cast<int>(registry_count()),
         "generated header lists exactly the registry parameters");
+
+  // JSON schema sanity (without a JSON dependency): correct count and no
+  // leaked C quotes in string fields.
+  const std::string json_path =
+      std::string(VOXP4_SOURCE_DIR) + "/integration/voxlink_params.json";
+  std::ifstream jf(json_path);
+  if (!jf) {
+    std::fprintf(stderr, "FAIL: cannot open generated JSON %s\n",
+                 json_path.c_str());
+    ++g_failures;
+  } else {
+    std::string json((std::istreambuf_iterator<char>(jf)),
+                     std::istreambuf_iterator<char>());
+    const std::string count_key = "\"parameter_count\": " +
+                                  std::to_string(registry_count());
+    check(json.find(count_key) != std::string::npos,
+          "JSON parameter_count matches registry_count()");
+    check(json.find("\\\"") == std::string::npos,
+          "JSON string fields have no embedded C quotes");
+  }
 
   if (g_failures == 0)
     std::printf("voxlink_schema_tests: PASS (%zu parameters)\n",
