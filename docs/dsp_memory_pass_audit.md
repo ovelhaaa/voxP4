@@ -71,5 +71,5 @@ time, wet, and dry on every sample to preserve all four trajectories. It now
 caches ring state and pointers for the block. Harmony fusion
 could combine slew/pan, limiter, mono generation, and diagnostics, but should
 preserve the limiter profiler boundary or demonstrate a material P4 gain.
-Input fusion would collapse three useful profiler sections and needs its own
-measured experiment. FDN reverb has no identified reason for churn.
+The measured input-fusion experiment did not justify collapsing three useful
+profiler sections. FDN reverb has no identified reason for churn.

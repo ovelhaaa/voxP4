@@ -38,6 +38,14 @@ processing from post-peak diagnostics, adding a full pass and about 694 cycles
 per block in the first 44.1 kHz candidate. The scalar limiter loop remains,
 with block-local diagnostic peaks.
 
+The optional input fusion experiment was also reverted. At 44.1 kHz it
+interleaved HPF, scalar gate, and scalar compressor in one loop. Its host
+input-conditioning and full-chain output CRCs matched the retained pipeline
+exactly. On the P4, the fused input section used 32,805 cycles per block versus
+32,234 cycles for the separate HPF + gate + compressor sections; pipeline
+average was 697.012 versus 696.578 µs. This is no measurable improvement and
+would remove useful profiler attribution. The separate block paths remain.
+
 ## ESP32-P4 results
 
 Stage figures below are average cycles per block. The Phase A/B column includes
