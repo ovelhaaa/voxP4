@@ -4,6 +4,7 @@
 #include "delay.h"
 #include "fdn_reverb.h"
 #include "gate.h"
+#include "limiter.h"
 #include "parameter_queue.h"
 #include "profiling.h"
 #include "smoothing.h"
@@ -85,6 +86,60 @@ int main() {
   g.init(48000);
   for (int i = 0; i < 10000; i++)
     CHECK(g.process(0) == 0);
+  {
+    Gate scalar, block;
+    Compressor cs, cb;
+    scalar.init(44100); block.init(44100);
+    cs.init(44100); cb.init(44100);
+    for (int run = 0; run < 40; ++run) {
+      if (run == 17) {
+        scalar.set(-40, 2, 10, 75, -48);
+        block.set(-40, 2, 10, 75, -48);
+        cs.set(-24, 5, 2, 80, 2, 4);
+        cb.set(-24, 5, 2, 80, 2, 4);
+      }
+      float a[64], b[64];
+      for (int i = 0; i < 64; ++i) {
+        const float x = run == 0 ? 0.0f : run == 1 && i == 0 ? 1.0f
+            : 0.7f * std::sin((run * 64 + i) * 0.073f);
+        a[i] = b[i] = x;
+      }
+      for (int i = 0; i < 64; ++i) a[i] = scalar.process(a[i]);
+      block.process_block(b, 64);
+      for (int i = 0; i < 64; ++i) CHECK(a[i] == b[i]);
+      for (int i = 0; i < 64; ++i) a[i] = cs.process(a[i]);
+      cb.process_block(b, 64);
+      for (int i = 0; i < 64; ++i) CHECK(a[i] == b[i]);
+    }
+  }
+  {
+    Limiter scalar, fused;
+    scalar.init(44100); fused.init(44100);
+    for (int run = 0; run < 40; ++run) {
+      float bl[64], br[64], dl[64], dr[64], vl[64], vr[64];
+      float expected_l[64], expected_r[64], actual_l[64], actual_r[64];
+      for (int i = 0; i < 64; ++i) {
+        const float x = std::sin((run * 64 + i) * 0.091f);
+        bl[i] = 0.8f * x; br[i] = -0.75f * x;
+        dl[i] = 0.2f * x; dr[i] = -0.15f * x;
+        vl[i] = 0.1f * x; vr[i] = -0.08f * x;
+        expected_l[i] = bl[i]; expected_r[i] = br[i];
+        expected_l[i] += dl[i] + vl[i];
+        expected_r[i] += dr[i] + vr[i];
+        scalar.process(expected_l[i], expected_r[i]);
+      }
+      const float peak = fused.process_master_block(bl, br, dl, dr, vl, vr,
+                                                    actual_l, actual_r, 64);
+      float reference_peak = 0.0f;
+      for (int i = 0; i < 64; ++i) {
+        CHECK(expected_l[i] == actual_l[i]);
+        CHECK(expected_r[i] == actual_r[i]);
+        reference_peak = std::max(reference_peak,
+                         std::max(std::fabs(expected_l[i]), std::fabs(expected_r[i])));
+      }
+      CHECK(peak == reference_peak);
+    }
+  }
   Compressor c;
   c.init(48000);
   CHECK(c.gain_db_for(-40) == 0);
@@ -112,6 +167,35 @@ int main() {
   d.reset();
   for (int i = 0; i < 5000; i++)
     d.process(i % 97 == 0 ? .1f : 0, l, r);
+  {
+    StereoDelay scalar, block;
+    CHECK(scalar.init(44100, .2f) && block.init(44100, .2f));
+    scalar.set_times(12, 19); block.set_times(12, 19);
+    scalar.set_mix(.5f, .6f); block.set_mix(.5f, .6f);
+    scalar.set_feedback(.45f); block.set_feedback(.45f);
+    for (int run = 0; run < 60; ++run) {
+      if (run == 20) {
+        scalar.set_times(31, 7); block.set_times(31, 7);
+        scalar.set_mix(.9f, .2f); block.set_mix(.9f, .2f);
+        scalar.set_feedback(-.3f); block.set_feedback(-.3f);
+        scalar.set_feedback_lowpass(1200); block.set_feedback_lowpass(1200);
+      }
+      float input[64], sl[64], sr[64], bl[64], br[64];
+      for (int i = 0; i < 64; ++i)
+        input[i] = run == 0 && i == 0 ? 1.0f
+            : .4f * std::sin((run * 64 + i) * .057f);
+      for (int i = 0; i < 64; ++i)
+        scalar.process_wet(input[i], sl[i], sr[i]);
+      block.process_wet_block(input, bl, br, 64);
+      for (int i = 0; i < 64; ++i)
+        CHECK(sl[i] == bl[i] && sr[i] == br[i]);
+    }
+    // Wet-only processing must also advance the otherwise unused dry ramp.
+    float al, ar, bl, br;
+    scalar.process(.25f, al, ar);
+    block.process(.25f, bl, br);
+    CHECK(al == bl && ar == br);
+  }
   float h[8] = {1, 0, 0, 0, 0, 0, 0, 0};
   FdnReverb::hadamard8(h);
   float energy = 0;
