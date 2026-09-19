@@ -6,7 +6,11 @@
 #include <vector>
 #ifdef ESP_PLATFORM
 #include "esp_cpu.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
+#define VOXP4_MARK_IRAM IRAM_ATTR
+#else
+#define VOXP4_MARK_IRAM
 #endif
 
 extern void vocal_fx_funnel_inc_pitch_marks_consumed(uint64_t count);
@@ -93,7 +97,7 @@ ProfileSection section(PitchShiftProfileSection s) {
 // precomputed booleans (frac>0, frac<0.5, frac>0.5); no per-candidate double
 // op is required.  A non-finite/negative/absurdly-large source falls back to
 // the exact double scan so behavior is preserved for every input.
-size_t nearest_mark_index(double source, const PitchMark *marks, size_t count) {
+size_t VOXP4_MARK_IRAM nearest_mark_index(double source, const PitchMark *marks, size_t count) {
   if (!marks || count <= 1) return 0;
   size_t best = 0;
   if (std::isfinite(source) && source >= 0.0 && source < 1.0e18) {
@@ -587,7 +591,7 @@ bool TdPsola::history_available(uint64_t first, uint64_t last) const {
       resources_->input_end() > kHistorySize ? resources_->input_end() - kHistorySize : 0;
   return first >= oldest && last < resources_->input_end() && first <= last;
 }
-bool TdPsola::select_mark(double source, const PitchMark *marks, size_t count,
+bool VOXP4_MARK_IRAM TdPsola::select_mark(double source, const PitchMark *marks, size_t count,
                           size_t &best, float &period,
                           GrainFailureReason *reason, double *out_distance,
                           double *out_allowed_distance) const {

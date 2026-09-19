@@ -5,6 +5,9 @@
 #include <limits>
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
+#define VOXP4_WARP_IRAM IRAM_ATTR
+#else
+#define VOXP4_WARP_IRAM
 #endif
 
 #ifdef ESP_PLATFORM
@@ -515,7 +518,7 @@ float SharedLpcAnalysis::lambda_from_semitones(float semitones) {
   return (1.0f - beta) / (1.0f + beta);
 }
 
-bool SharedLpcAnalysis::warp_polynomial(const float *a_in, uint16_t order,
+bool VOXP4_WARP_IRAM SharedLpcAnalysis::warp_polynomial(const float *a_in, uint16_t order,
                                         float lambda, float gamma, float *a_out) {
   if (!a_in || !a_out || order == 0 || order > VOCAL_FX_LPC_MAX_ORDER)
     return false;
@@ -577,7 +580,7 @@ bool SharedLpcAnalysis::warp_polynomial(const float *a_in, uint16_t order,
   return true;
 }
 
-float SharedLpcAnalysis::compute_gain_normalization(const float *a_orig, const float *a_warped,
+float VOXP4_WARP_IRAM SharedLpcAnalysis::compute_gain_normalization(const float *a_orig, const float *a_warped,
                                                     uint16_t order, FormantNormalizationStrategy strategy,
                                                     float sample_rate) {
   if (!a_orig || !a_warped || order == 0 || order > VOCAL_FX_LPC_MAX_ORDER)
