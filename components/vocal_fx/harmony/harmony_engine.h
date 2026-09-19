@@ -27,5 +27,8 @@ private:
   int identify(float midi); HarmonyVoiceTarget target_for(float midi,int note,const std::array<bool,128>&held);
   HarmonyMode mode_=HarmonyMode::FixedInterval; ScaleConfig scale_{};
   HarmonyVoiceConfig voice_{false,.501187f,-.25f,50,4,2,NonScaleNotePolicy::NearestScale,false,0,127};
-  int identity_=0; bool have_identity_=false; float previous_=0;
+  int identity_=0; bool have_identity_=false;
+  float previous_=0;
+  float previous_source_midi_=0;
+  float previous_harmony_midi_=0;
 };

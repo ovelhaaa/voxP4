@@ -149,22 +149,27 @@ void test_non_scale_policies() {
     // Target = 65 + (61.2 - 62) = 65 - 0.8 = 64.2
     near(midi(t_nearest.target_frequency_hz), 64.2f);
 
-    // 2. PreserveChromatic
+    // 2. PreserveChromatic sequence test
     v.non_scale_policy = NonScaleNotePolicy::PreserveChromatic;
     e.set_voice(0,v);
     e.reset();
-    // Use an unambiguous pitch: D# (63). Nearest is E (64) or D (62). Both 1 semitone away.
-    // nearest_scale_note prefers lower note if equidistant? Let's trace.
-    // best = 63. scale_contains(s, 63-1=62). c=1. cost=1. best=62.
-    // scale_contains(s, 63+1=64). c=1. cost=1 < 1 is false. So best=62.
-    // Anchor = 62. Diatonic target (degree +2) from 62 is 65 (F).
-    // note = 63. anchor = 62. offset = +1. Target = 65 + 1 = 66 (F#).
-    // Let's test F# (66). Nearest is G (67) or F (65).
-    // F# (66): center=66. n=65, c=1, cost=1, best=65. n=67, c=1, cost=1 (not <1). best=65.
-    // Anchor = 65. Diatonic (+2) from F (65) is A (69).
-    // note=66. anchor=65. offset=+1. Target = 69 + 1 = 70 (A#).
-    auto t_preserve = e.update(hz(66.0f), true, chord);
-    near(midi(t_preserve.target_frequency_hz), 70.0f);
+
+    // First, establish a valid history with an in-scale note.
+    // C (60) in C Major. Third above is E (64).
+    auto t_base = e.update(hz(60.0f), true, chord);
+    near(midi(t_base.target_frequency_hz), 64.0f);
+
+    // Now slide to an out-of-scale note: C# (61).
+    // Delta = 61 - 60 = 1.
+    // Expected Target = 64 + 1 = 65 (F).
+    auto t_pass_up = e.update(hz(61.0f), true, chord);
+    near(midi(t_pass_up.target_frequency_hz), 65.0f);
+
+    // Slide back to C (60).
+    // Delta = 60 - 61 = -1.
+    // Expected Target = 65 - 1 = 64 (E).
+    auto t_pass_down = e.update(hz(60.0f), true, chord);
+    near(midi(t_pass_down.target_frequency_hz), 64.0f);
 
     // 3. BypassHarmony
     v.non_scale_policy = NonScaleNotePolicy::BypassHarmony;

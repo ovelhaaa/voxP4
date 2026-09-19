@@ -938,9 +938,9 @@ void apply_parameter(VocalFxParameter p, float v) {
       e.harmony.set_voice(0, c);
     }
     break;
-  case VocalFxParameter::HarmonyMode:e.harmony.set_mode(static_cast<HarmonyMode>(std::clamp(static_cast<int>(v),0,2)));break;
-  case VocalFxParameter::HarmonyKey:e.harmony.set_root(static_cast<uint8_t>(std::clamp(static_cast<int>(v),0,11)));break;
-  case VocalFxParameter::HarmonyScale:e.harmony.set_scale_type(static_cast<ScaleType>(std::clamp(static_cast<int>(v),0,static_cast<int>(ScaleType::Count)-1)));break;
+  case VocalFxParameter::HarmonyScale:if(std::isfinite(v))e.harmony.set_scale_type(static_cast<ScaleType>(std::clamp(static_cast<int>(v),0,static_cast<int>(ScaleType::Count)-1)));break;
+  case VocalFxParameter::HarmonyKey:if(std::isfinite(v))e.harmony.set_root(static_cast<uint8_t>(std::clamp(static_cast<int>(v),0,11)));break;
+  case VocalFxParameter::HarmonyMode:if(std::isfinite(v))e.harmony.set_mode(static_cast<HarmonyMode>(std::clamp(static_cast<int>(v),0,2)));break;
   case VocalFxParameter::FormantVoice1Mode:
   case VocalFxParameter::FormantVoice2Mode: {
     const size_t voice=static_cast<size_t>(p)-static_cast<size_t>(VocalFxParameter::FormantVoice1Mode);
@@ -988,7 +988,7 @@ void apply_parameter(VocalFxParameter p, float v) {
     break;
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
-    if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
+    if(x>=0 && std::isfinite(v)){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
       if(field==0)c.enabled=v>=.5f;else if(field==1)c.interval=v;else if(field==2)c.degree=static_cast<int>(v);else if(field==3)c.gain=std::clamp(v,0.0f,1.0f);else if(field==4)c.pan=std::clamp(v,-1.0f,1.0f);else if(field==5)c.smoothing_ms=std::clamp(v,1.0f,500.0f);
       else if(field==6)c.non_scale_policy=static_cast<NonScaleNotePolicy>(std::clamp(static_cast<int>(v),0,2));
       else if(field==7)c.voice_leading_enabled=v>=.5f;

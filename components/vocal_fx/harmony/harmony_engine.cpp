@@ -3,7 +3,12 @@
 #include <cmath>
 #include <limits>
 namespace { float hz_to_midi(float hz){return 69+12*std::log2(hz/440.0f);} float midi_to_hz(float n){return 440*std::exp2((n-69)/12);} }
-void HarmonyEngine::reset(){have_identity_=false;previous_=0;}
+void HarmonyEngine::reset(){
+  have_identity_=false;
+  previous_=0;
+  previous_source_midi_=0;
+  previous_harmony_midi_=0;
+}
 void HarmonyEngine::set_mode(HarmonyMode m){mode_=m;reset();}
 void HarmonyEngine::set_scale(ScaleConfig s){s.root%=12;scale_=s;reset();}
 void HarmonyEngine::set_voice(size_t i,const HarmonyVoiceConfig &c){if(i<MAX_HARMONY_VOICES)voice_=c;}
@@ -49,20 +54,11 @@ HarmonyVoiceTarget HarmonyEngine::target_for(float midi,int note,const std::arra
     float diatonic_target = 0.0f;
 
     if (!is_scale_note && voice_.non_scale_policy == NonScaleNotePolicy::PreserveChromatic) {
-        anchor_note = nearest_scale_note(scale_, note);
-        // The user explicitly stated: "Do not interpret it merely as blindly adding the source chromatic deviation to the nearest diatonic target. It should prioritize continuity for chromatic passing tones while preserving the established harmony relationship."
-        // That means we must check the previous relationship or apply the previous valid diatonic target if available, or just fallback to the nearest_scale_note + 0 if no prior context, but wait, the instruction states: "apply to the target the chromatic movement observed in the main voice".
-        float movement = previous_ ? (midi - identity_) : 0.0f; // This is the deviation from the tracked note.
-        // Implement "preserve temporarily the chromatic relation of previous harmony"
-        // We calculate the chromatic difference between the last note and the last target,
-        // and apply it to the new note. If no previous, fallback to the diatonic + offset.
-        if (previous_ && identify(previous_) != 0) {
-            float previous_interval = previous_ - identify(previous_); // We don't have the previous lead note easily accessible.
-            // Let's just use the simpler robust calculation that preserves the passing tone's
-            // relative chromaticism to the diatonic target, which satisfies "prioritize continuity".
-            diatonic_target = transpose_scale_degrees(scale_, anchor_note, voice_.degree);
-            target = diatonic_target + (note - anchor_note) + (midi - note);
+        if (previous_source_midi_ != 0 && previous_harmony_midi_ != 0) {
+            float delta = midi - previous_source_midi_;
+            target = previous_harmony_midi_ + delta;
         } else {
+            anchor_note = nearest_scale_note(scale_, note);
             diatonic_target = transpose_scale_degrees(scale_, anchor_note, voice_.degree);
             target = diatonic_target + (note - anchor_note) + (midi - note);
         }
@@ -72,11 +68,7 @@ HarmonyVoiceTarget HarmonyEngine::target_for(float midi,int note,const std::arra
         target = diatonic_target + (midi - note);
     }
 
-    // Range and voice leading
-    if (target < voice_.min_midi) target = voice_.min_midi;
-    if (target > voice_.max_midi) target = voice_.max_midi;
-
-    if (voice_.voice_leading_enabled) {
+    if (voice_.voice_leading_enabled && (!(!is_scale_note && voice_.non_scale_policy == NonScaleNotePolicy::PreserveChromatic && previous_source_midi_ != 0))) {
         float dir_val = voice_.degree > 0 ? 1.0f : (voice_.degree < 0 ? -1.0f : 0.0f);
 
         float best_target = target;
@@ -109,8 +101,16 @@ HarmonyVoiceTarget HarmonyEngine::target_for(float midi,int note,const std::arra
    if(cost==std::numeric_limits<float>::max()) return r;
    target=best+(midi-note);
  }
+
+ if (target < voice_.min_midi) target = voice_.min_midi;
+ if (target > voice_.max_midi) target = voice_.max_midi;
+
  const float hz=midi_to_hz(target); if(!std::isfinite(hz)||hz<60||hz>1500)return r;
- r.valid=true;r.target_frequency_hz=hz;r.semitone_offset=target-midi;r.source_note=note;r.deviation_cents=(midi-note)*100;previous_=target;return r;
+ r.valid=true;r.target_frequency_hz=hz;r.semitone_offset=target-midi;r.source_note=note;r.deviation_cents=(midi-note)*100;
+ previous_=target;
+ previous_source_midi_=midi;
+ previous_harmony_midi_=target;
+ return r;
 }
 HarmonyVoiceTarget HarmonyEngine::update(float hz,bool voiced,const MidiChordState&midi){
  if(!voiced||!std::isfinite(hz)||hz<=0)return HarmonyVoiceTarget{};
