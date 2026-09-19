@@ -64,6 +64,26 @@ blocks while B4D.12 distribution statistics exclude them.
 | 48 kHz | Phase A/B | 708.623 | 1183 | 2843 | 68 | 253,307 | 2,632 | 26,637 | 5,668 | 19,828 |
 | 48 kHz | Phase C | 697.328 | 1169 | 2808 | 63 | 249,275 | 2,662 | 26,736 | 5,475 | 13,065 |
 
+Full requested stage attribution, average cycles per block (baseline → final):
+
+| Stage | 44.1 kHz | 48 kHz |
+|---|---:|---:|
+| Pipeline | 260,612 → 248,941 | 260,189 → 249,275 |
+| InputHpf | 2,694 → 2,656 | 2,666 → 2,630 |
+| InputGate | 3,466 → 2,715 | 3,476 → 2,662 |
+| Compressor | 27,783 → 26,863 | 27,501 → 26,736 |
+| Harmony | 103,750 → 103,964 | 103,021 → 104,960 |
+| HarmonySlewPan | 3,471 → 3,420 | 3,340 → 3,381 |
+| HarmonyLimiter | 4,375 → 4,330 | 4,342 → 4,320 |
+| BusMixing | 2,130 → 2,130 | 2,014 → 2,163 |
+| DelayPrep | 1,396 → 1,346 | 1,473 → 1,266 |
+| Delay | 19,554 → 13,170 | 19,403 → 13,065 |
+| ReverbPrep | 2,539 → 2,270 | 2,528 → 2,168 |
+| Reverb | 26,512 → 26,497 | 26,175 → 26,120 |
+| MasterMix | 1,712 → 4,643 | 1,693 → 4,591 |
+| MasterLimiter | 5,469 → 0 (fused) | 5,429 → 0 (fused) |
+| Master | 8,632 → 5,541 | 8,549 → 5,475 |
+
 At 44.1 kHz, the 64-frame deadline is 1451.25 µs. Final average utilization
 was 48.0%, leaving 754.7 µs average slack; baseline was 50.2%, leaving
 722.3 µs. At 48 kHz, the deadline is 1333.33 µs. Final average utilization
