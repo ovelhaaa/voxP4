@@ -523,6 +523,15 @@ struct HarmonizerBlockTraceRecord {
   uint32_t delay_cycles = 0;
   uint32_t reverb_cycles = 0;
   uint32_t master_cycles = 0;
+  // Existing TD-PSOLA cycle accumulators, sampled once per audio block.
+  uint32_t psola_sched_cycles = 0;
+  uint32_t psola_addgrain_cycles = 0;
+  uint32_t psola_deferred_cycles = 0;
+  uint32_t psola_mark_cycles = 0;
+  uint32_t psola_desc_cycles = 0;
+  uint32_t psola_near_cycles = 0;
+  uint32_t psola_poly_cycles = 0;
+  uint32_t psola_gn_cycles = 0;
   float block_runtime_us = 0.0f;
   float pipeline_base_us = 0.0f;
   float voice0_runtime_us = 0.0f;

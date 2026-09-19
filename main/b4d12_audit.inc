@@ -266,10 +266,10 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   stop_pipeline_tasks(false);
 
   if (t && std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
-    printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices\n");
+    printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices,psola_sched_cycles,psola_addgrain_cycles,psola_deferred_cycles,psola_mark_cycles,psola_desc_cycles,psola_near_cycles,psola_poly_cycles,psola_gn_cycles\n");
     auto emit = [](const char *set, const vocal_fx_platform::B4D12ForensicRecord &r) {
       const auto &h = r.harmony;
-      printf("B4D12_FORENSIC,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u\n",
+      printf("B4D12_FORENSIC,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
              set, static_cast<unsigned long>(r.block_id),
              static_cast<unsigned long>(r.dsp_us),
              static_cast<unsigned long>(r.cycle_us),
@@ -293,7 +293,15 @@ void b4d12_run_case(const B4D12CaseDef &def) {
              static_cast<unsigned>(h.recovery_active),
              static_cast<unsigned>(h.fir_samples_computed),
              static_cast<unsigned>(h.fir_samples_reused),
-             static_cast<unsigned>(h.deferred_slices_rendered_v0));
+             static_cast<unsigned>(h.deferred_slices_rendered_v0),
+             static_cast<unsigned long>(h.psola_sched_cycles),
+             static_cast<unsigned long>(h.psola_addgrain_cycles),
+             static_cast<unsigned long>(h.psola_deferred_cycles),
+             static_cast<unsigned long>(h.psola_mark_cycles),
+             static_cast<unsigned long>(h.psola_desc_cycles),
+             static_cast<unsigned long>(h.psola_near_cycles),
+             static_cast<unsigned long>(h.psola_poly_cycles),
+             static_cast<unsigned long>(h.psola_gn_cycles));
     };
     printf("B4D12_FORENSIC_COUNT top=%lu misses=%lu miss_dropped=%lu\n",
            static_cast<unsigned long>(t->top_count),

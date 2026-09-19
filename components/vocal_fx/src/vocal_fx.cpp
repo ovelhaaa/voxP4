@@ -585,6 +585,14 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     trace_rec.block_runtime_us = static_cast<float>(c_harm_block_end - c_harm_block_start) * cycles_to_us;
     trace_rec.pipeline_base_us = static_cast<float>(c_harm_block_start > c_pipe_start ? (c_harm_block_start - c_pipe_start) : 0) * cycles_to_us;
     trace_rec.voice0_runtime_us = static_cast<float>(e.pitch_shift[0].last_block_cycles()) * cycles_to_us;
+    trace_rec.psola_sched_cycles = e.pitch_shift[0].last_sched_cycles();
+    trace_rec.psola_addgrain_cycles = e.pitch_shift[0].last_addgrain_cycles();
+    trace_rec.psola_deferred_cycles = e.pitch_shift[0].last_deferred_cycles();
+    trace_rec.psola_mark_cycles = e.pitch_shift[0].last_mark_cycles();
+    trace_rec.psola_desc_cycles = e.pitch_shift[0].last_desc_cycles();
+    trace_rec.psola_near_cycles = e.pitch_shift[0].last_near_cycles();
+    trace_rec.psola_poly_cycles = e.pitch_shift[0].last_poly_cycles();
+    trace_rec.psola_gn_cycles = e.pitch_shift[0].last_gn_cycles();
     trace_rec.new_grains_scheduled_v0 = e.pitch_shift[0].last_grains_scheduled();
     trace_rec.active_grains_rendered_v0 = e.pitch_shift[0].last_grains_rendered();
     trace_rec.source_grains_built_v0 = e.pitch_shift[0].last_source_grains_built();
