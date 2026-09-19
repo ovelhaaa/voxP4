@@ -40,7 +40,11 @@ enum class VocalFxParameter : uint16_t {
   HarmonyVoice1Degree, HarmonyVoice2Degree,
   HarmonyVoice1Gain, HarmonyVoice2Gain,
   HarmonyVoice1Pan, HarmonyVoice2Pan,
-  HarmonyVoice1Smoothing, HarmonyVoice2Smoothing
+  HarmonyVoice1Smoothing, HarmonyVoice2Smoothing,
+  HarmonyVoice1NonScalePolicy, HarmonyVoice2NonScalePolicy,
+  HarmonyVoice1VoiceLeadingEnabled, HarmonyVoice2VoiceLeadingEnabled,
+  HarmonyVoice1MinMidi, HarmonyVoice2MinMidi,
+  HarmonyVoice1MaxMidi, HarmonyVoice2MaxMidi
   ,FormantVoice1Mode, FormantVoice2Mode,
   FormantVoice1Amount, FormantVoice2Amount,
   FormantVoice1ShiftSemitones, FormantVoice2ShiftSemitones,

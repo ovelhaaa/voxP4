@@ -940,7 +940,7 @@ void apply_parameter(VocalFxParameter p, float v) {
     break;
   case VocalFxParameter::HarmonyMode:e.harmony.set_mode(static_cast<HarmonyMode>(std::clamp(static_cast<int>(v),0,2)));break;
   case VocalFxParameter::HarmonyKey:e.harmony.set_root(static_cast<uint8_t>(std::clamp(static_cast<int>(v),0,11)));break;
-  case VocalFxParameter::HarmonyScale:e.harmony.set_scale_type(static_cast<ScaleType>(std::clamp(static_cast<int>(v),0,1)));break;
+  case VocalFxParameter::HarmonyScale:e.harmony.set_scale_type(static_cast<ScaleType>(std::clamp(static_cast<int>(v),0,static_cast<int>(ScaleType::Count)-1)));break;
   case VocalFxParameter::FormantVoice1Mode:
   case VocalFxParameter::FormantVoice2Mode: {
     const size_t voice=static_cast<size_t>(p)-static_cast<size_t>(VocalFxParameter::FormantVoice1Mode);
@@ -990,6 +990,10 @@ void apply_parameter(VocalFxParameter p, float v) {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
       if(field==0)c.enabled=v>=.5f;else if(field==1)c.interval=v;else if(field==2)c.degree=static_cast<int>(v);else if(field==3)c.gain=std::clamp(v,0.0f,1.0f);else if(field==4)c.pan=std::clamp(v,-1.0f,1.0f);else if(field==5)c.smoothing_ms=std::clamp(v,1.0f,500.0f);
+      else if(field==6)c.non_scale_policy=static_cast<NonScaleNotePolicy>(std::clamp(static_cast<int>(v),0,2));
+      else if(field==7)c.voice_leading_enabled=v>=.5f;
+      else if(field==8)c.min_midi=static_cast<int>(std::clamp(v,0.0f,127.0f));
+      else if(field==9)c.max_midi=static_cast<int>(std::clamp(v,0.0f,127.0f));
       e.harmony.set_voice(voice,c);vf_voice(voice).set_smoothing(c.smoothing_ms);}
     break; }
   }
@@ -1032,6 +1036,14 @@ void vocal_fx_set_harmony_degree(size_t v,int x){if(v<MAX_HARMONY_VOICES)vocal_f
 void vocal_fx_set_harmony_gain(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Gain),x);}
 void vocal_fx_set_harmony_pan(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Pan),x);}
 void vocal_fx_set_harmony_smoothing(size_t v,float x){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1Smoothing),x);}
+void vocal_fx_set_non_scale_policy(size_t v,NonScaleNotePolicy p){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1NonScalePolicy),static_cast<float>(p));}
+void vocal_fx_set_voice_leading(size_t v,bool enabled){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1VoiceLeadingEnabled),enabled?1.0f:0.0f);}
+void vocal_fx_set_harmony_range(size_t v,int min_midi,int max_midi){
+  if(v<MAX_HARMONY_VOICES){
+    vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1MinMidi),static_cast<float>(min_midi));
+    vocal_fx_set_parameter(voice_param(v,VocalFxParameter::HarmonyVoice1MaxMidi),static_cast<float>(max_midi));
+  }
+}
 void vocal_fx_set_formant_mode(size_t v,FormantMode mode){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Mode),mode==FormantMode::Lpc?1.0f:0.0f);}
 void vocal_fx_set_formant_amount(size_t v,float amount){if(v<MAX_HARMONY_VOICES)vocal_fx_set_parameter(voice_param(v,VocalFxParameter::FormantVoice1Amount),amount);}
 void vocal_fx_set_dry_alignment(bool enabled, float delay_ms) {

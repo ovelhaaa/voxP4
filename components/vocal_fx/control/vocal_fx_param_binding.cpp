@@ -27,6 +27,10 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out) {
   case 0x010F: mapped = VocalFxParameter::HarmonyLimiterThresholdDb; break;
   case 0x0110: mapped = VocalFxParameter::DryAlignmentEnabled; break;
   case 0x0111: mapped = VocalFxParameter::DryAlignmentMs; break;
+  case 0x0112: mapped = VocalFxParameter::HarmonyVoice1NonScalePolicy; break;
+  case 0x0113: mapped = VocalFxParameter::HarmonyVoice1VoiceLeadingEnabled; break;
+  case 0x0114: mapped = VocalFxParameter::HarmonyVoice1MinMidi; break;
+  case 0x0115: mapped = VocalFxParameter::HarmonyVoice1MaxMidi; break;
   // Dynamics
   case 0x0200: mapped = VocalFxParameter::EnableCompressor; break;
   case 0x0201: mapped = VocalFxParameter::CompressorThresholdDb; break;
