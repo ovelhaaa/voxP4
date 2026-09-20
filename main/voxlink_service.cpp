@@ -85,7 +85,16 @@ bool voxlink_service_start() {
     return false;
   }
 
+  ESP_LOGI(kVoxlinkTag, "VoxLink enabled: UART%d TX=%d RX=%d baud=%d", uart.port,
+           uart.tx_gpio, uart.rx_gpio, uart.baud);
   g_started = g_transport.start(uart, &g_session);
+  if (!g_started) {
+    // The audio engine must keep running standalone if the control link fails.
+    ESP_LOGE(kVoxlinkTag,
+             "VoxLink UART init failed (port=%d tx=%d rx=%d baud=%d); audio "
+             "continues without the control plane",
+             uart.port, uart.tx_gpio, uart.rx_gpio, uart.baud);
+  }
   return g_started;
 }
 

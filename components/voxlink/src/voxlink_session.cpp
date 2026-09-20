@@ -1,6 +1,17 @@
 #include "voxlink_session.h"
 #include <cstring>
 
+#if defined(ESP_PLATFORM)
+#include "sdkconfig.h"
+#endif
+#if defined(ESP_PLATFORM) && defined(CONFIG_VOXLINK_DEBUG_LOG) && \
+    CONFIG_VOXLINK_DEBUG_LOG
+#include "esp_log.h"
+#define VL_LOGI(...) ESP_LOGI("voxlink", __VA_ARGS__)
+#else
+#define VL_LOGI(...) ((void)0)
+#endif
+
 namespace voxlink {
 namespace {
 
@@ -128,6 +139,7 @@ void Session::tick(uint32_t now_ms) {
   if (cfg_.heartbeat_timeout_ms != 0 &&
       now_ms - last_rx_ms_ > cfg_.heartbeat_timeout_ms) {
     connection_ = ConnectionState::Disconnected;
+    VL_LOGI("client timeout/disconnect");
     return;
   }
   if (cfg_.heartbeat_interval_ms != 0 &&
@@ -177,6 +189,7 @@ void Session::handle_hello(const Frame &frame) {
   client_type_ = frame.payload[1];
   connection_ = ConnectionState::HelloReceived;
   ++counters_.reconnect_count;
+  VL_LOGI("HELLO client_type=%u", static_cast<unsigned>(client_type_));
 
   uint8_t payload[kMaxPayload];
   size_t n = 0;
@@ -211,6 +224,7 @@ void Session::handle_hello(const Frame &frame) {
 
 void Session::handle_caps_request(const Frame &frame) {
   const size_t count = registry_count();
+  VL_LOGI("CAPS request count=%u", static_cast<unsigned>(count));
   uint8_t payload[kMaxPayload];
   size_t n = 0;
   payload[n++] = kVersion;
@@ -252,6 +266,8 @@ void Session::handle_caps_request(const Frame &frame) {
 void Session::handle_get_state(const Frame &frame) {
   const size_t count = state_ != nullptr ? state_->value_count() : 0;
   const uint32_t revision = state_ != nullptr ? state_->revision() : 0;
+  VL_LOGI("GET_STATE count=%u revision=%u", static_cast<unsigned>(count),
+          static_cast<unsigned>(revision));
   uint8_t payload[kMaxPayload];
   size_t n = 0;
   put_u32(payload + n, revision); n += 4;
@@ -315,6 +331,8 @@ void Session::handle_set_param(const Frame &frame) {
   }
   const uint16_t id = get_u16(frame.payload);
   const ValueTag tag = static_cast<ValueTag>(frame.payload[2]);
+  VL_LOGI("SET id=0x%04X tag=%u", static_cast<unsigned>(id),
+          static_cast<unsigned>(tag));
   float raw = 0.0f;
   size_t consumed = 0;
   if (!decode_value(tag, frame.payload + 3, frame.payload_len - 3, &raw,

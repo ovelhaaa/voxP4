@@ -42,3 +42,14 @@
 
 // Ground connection reference pin
 #define VOXP4_I2S_GND_PIN_DESC "Pin 9 (GND) Common Ground"
+
+// =============================================================================
+// VoxLink control-plane UART (M6.2 bring-up)
+// =============================================================================
+// The VoxLink server pins are configured through Kconfig, not hardcoded here:
+//   CONFIG_VOXLINK_UART_TX_GPIO = 16   (P4 TX -> CYD GPIO19 RX)
+//   CONFIG_VOXLINK_UART_RX_GPIO = 17   (P4 RX <- CYD GPIO18 TX)
+//   CONFIG_VOXLINK_UART_BAUD    = 921600 8N1, common GND, 3.3 V logic only.
+// GPIO16/17 are free header GPIOs on the WT9932P4-TINY and must not collide
+// with the I2S audio pins above (GPIO19-23) or GPIO37/38 (console/JTAG).
+// See docs/hardware/voxlink_uart_bringup.md.

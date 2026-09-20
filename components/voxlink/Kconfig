@@ -32,4 +32,12 @@ config VOXLINK_UART_RX_GPIO
     help
         P4 RX <- CYD TX. Same constraints as the TX pin. -1 keeps the server
         disabled at runtime and prevents accidental binding of audio pins.
+config VOXLINK_DEBUG_LOG
+    bool "Log VoxLink handshake/command milestones"
+    default n
+    depends on VOXLINK_ENABLE_SERVER
+    help
+        Emit one DEBUG line per handshake milestone and per SET_PARAM on the
+        control task. Never logs individual bytes and never runs on the audio
+        task. Useful for the first physical bring-up.
 endmenu
