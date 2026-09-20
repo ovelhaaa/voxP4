@@ -162,9 +162,13 @@ add_test(NAME b4d5_mark_equivalence_tests COMMAND b4d5_mark_equivalence_tests)
 add_executable(b4d5_ola_ab b4d5_ola_ab.cpp)
 target_link_libraries(b4d5_ola_ab PRIVATE vocal_fx_dsp)
 add_test(NAME b4d5_ola_ab COMMAND b4d5_ola_ab)
-add_executable(b4d5_model_equivalence_tests test_b4d5_model_equivalence.cpp)
-target_link_libraries(b4d5_model_equivalence_tests PRIVATE vocal_fx_dsp)
-add_test(NAME b4d5_model_equivalence_tests COMMAND b4d5_model_equivalence_tests)
+  add_executable(b4d5_model_equivalence_tests test_b4d5_model_equivalence.cpp)
+  target_link_libraries(b4d5_model_equivalence_tests PRIVATE vocal_fx_dsp)
+  add_test(NAME b4d5_model_equivalence_tests COMMAND b4d5_model_equivalence_tests)
+
+  add_executable(psola_prepared_tests test_psola_prepared.cpp)
+  target_link_libraries(psola_prepared_tests PRIVATE vocal_fx_dsp)
+  add_test(NAME psola_prepared_tests COMMAND psola_prepared_tests)
 
 # VoxLink control-plane host tests.
 add_executable(voxlink_registry_tests test_voxlink_registry.cpp)
