@@ -248,48 +248,162 @@ The selected mark and destination do not enter the polynomial or gain
 functions. Existing local/shared warp-cache state is demand driven and must
 not be changed by an early computation.
 
-The data support trying a separate, exact-key prepared cache of at most the
+The data supported trying a separate, exact-key prepared cache of at most the
 newest four models as a bounded experiment. At the observed mean math cost,
 four cold preparations would cost roughly 320–380 us and all 16 roughly
 1.3–1.5 ms before cache/snapshot overhead; the latter is already comparable
-to the whole block deadline. Those are extrapolations, not measured placement
-costs. Publication frequency, actual prewarm CPU overhead, prepared hit rate,
-stale-result behavior, audio equivalence and conditional after latencies have
-**not been measured**. The existing 32-bit serial is observational and must be
-upgraded to a concurrency-safe generation before any prepared result is
-consumed. No prepared path or production policy is introduced by this audit.
+to the whole block deadline. To establish empirical performance without
+disturbing demand caches, the 32-bit serial was upgraded to a concurrency-safe
+64-bit generation, a lock-free snapshot API was added, and a dedicated scratch
+store (`PsolaPreparedWarpStore`) was implemented and qualified on hardware.
 
-### B1 audit decision
+### B1 feasibility verdict
 
-Exact N-1 control stability and newest-four model coverage pass the
-*feasibility* checks. Model math is only about 80–95 us per cold first grain,
-so B1-A (model pre-warming alone sufficient) is not supported by the measured
-cost decomposition. Classification among B1-B/C/D requires an actual bounded
-prepared-cache experiment and paired COM11 runs; it is not inferred from
-candidate coverage. No burst improvement or deadline reduction is claimed.
+Exact N-1 control stability and newest-four model coverage pass the initial
+*feasibility* checks. However, because model math is only about 80–95 us per
+cold first grain, B1-A (model pre-warming alone sufficient) was theoretically
+implausible. Full device evaluation with the prepared-cache consumer enabled
+across policies 0, 1, 2, 4, 8, and 16 was conducted on COM11 to measure actual
+burst reduction and normal-block overhead.
 
-## Experiment A decision
+## Experiment B1 device qualification (with prepared consumer enabled)
 
-**C — information arrives too late for complete-grain prediction under the
-current scheduler.** In every measured MC+2/MC+3+ burst, the prior cursor was
-inactive and became active in N, when current pitch/marks and the onset
-decision were available. The destination and requested source therefore had
-no exact N-1/N-2/N-3 candidate. Earlier blocks generally had enough measured
-CPU slack, so the evidence does not support D. Many eventual models and first
-marks already existed, which may justify a separate *component-only* model
-math experiment, but their availability does not provide the complete key or
-authorize a prepared grain. No grain scheduling, activation or audio timing
-was changed.
+The firmware was extended with an exact-key, lock-free prepared warp store
+(`PsolaPreparedWarpStore`) and evaluated on ESP32-P4 hardware (COM11) across
+policies 0, 1, 2, 4, 8, and 16.
+
+### Concurrency-safe model publication and snapshot architecture
+
+1. **64-bit publication generation**:
+   - `std::atomic<uint32_t> generation_low, generation_high` added to each slot in
+     the 16-entry published model ring.
+   - The single-writer pitch worker thread monotonically advances a 64-bit counter
+     `next_generation_` upon publishing a valid LPC model.
+   - Wraparound safety: generation zero is explicitly reserved as invalid. If the
+     counter ever saturates `UINT64_MAX`, generation 0 permanently disables
+     prepared-result reuse rather than permitting collisions.
+2. **Lock-free, bounded audio-thread snapshot (`snapshot_models_once`)**:
+   - Single bounded pass over the ring without blocking or retrying.
+   - Sequence checks before and after each slot: an active writer (odd sequence),
+     a sequence change, or a ring publication index advance immediately aborts
+     the snapshot (`return false`).
+3. **Strict bit-exact validation key**:
+   - Model identity: `publication_generation` (uint64_t != 0), `timestamp`, `order`.
+   - Model coefficients: exact floating-point bit pattern for all `order + 1` coefficients.
+   - Formant warp controls: bit-exact `lambda` (uint32_t bits), `gamma` (uint32_t bits).
+   - Normalization & rate: `normalization_strategy` (enum), `sample_rate` (uint32_t float bits).
+4. **Commit-time revalidation & zero timing jitter**:
+   - In `add_grain()`, the existing demand caches are checked first. On a cold miss,
+     `prepared_warps.find(model, lambda, gamma, strat, sample_rate_, consume=true)` is queried.
+   - If an exact key matches:
+     - Sets `grain_model_.coefficients = prepared->warped_coefficients`
+     - Sets `formant_filter_gain_ = prepared->formant_filter_gain`
+     - Populates the demand caches (`warp_cache_`, `shared_warp_cache_`) for consistency.
+     - Records `cache_path = 5` (prepared hit).
+   - If validation fails or no match exists, the scheduler falls back directly to the
+     authoritative synchronous calculation (`handled = false`).
+   - Grain destination sample, source center, activation bounds, and OLA timeline
+     remain 100% bit-identical to the synchronous reference.
+
+### Device policy evaluation results (measured on COM11)
+
+The matrix evaluated policy 0 (baseline disabled), policy 1 (bounded scan & publication guard),
+and policies 2, 4, 8, 16 across the 44.1 kHz 1-minute musical reference (`a_ref_vocal_fullfx`,
+deadline = 1451.247 us) and two 10-second step fixtures (`d_step_147_220_330`, `d_step_80_160`).
+
+The raw records are retained in `docs/psola_prediction_data/psola_b1_device_policies.csv`.
+
+| Policy | Variant | Class | Blocks | First-grain prepared hits | Burst mean (us) | Burst p99 (us) | Burst max (us) | Miss rate | Normal mean (us) | Normal p99 (us) | Normal misses |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **0 (Off)** | bounded_scan | MC+2 | 3 | 0 / 3 (0%) | 2304.7 | 2426 | 2426 | 3/3 (100%) | 600.95 | 1063 | 0 |
+| | bounded_scan | MC+3+ | 52 | 0 / 52 (0%) | 2339.9 | 2564 | 2564 | 52/52 (100%) | 600.95 | 1063 | 0 |
+| **1** | bounded_scan | MC+2 | 2 | 2 / 2 (100%) | 1874.0 | 2109 | 2109 | 2/2 (100%) | 640.02 | 1155 | 1 |
+| | bounded_scan | MC+3+ | 54 | 54 / 54 (100%) | 2356.7 | 2605 | 2605 | 54/54 (100%) | 640.02 | 1155 | 1 |
+| **1 (Guard)** | pub_guard | MC+2 | 4 | 4 / 4 (100%) | 2313.3 | 2441 | 2441 | 4/4 (100%) | 635.17 | 1203 | 2 |
+| | pub_guard | MC+3+ | 51 | 51 / 51 (100%) | 2368.9 | 2705 | 2705 | 51/51 (100%) | 635.17 | 1203 | 2 |
+| **2** | bounded_scan | MC+2 | 4 | 4 / 4 (100%) | 2352.0 | 2420 | 2420 | 4/4 (100%) | 640.75 | 1165 | 1 |
+| | bounded_scan | MC+3+ | 52 | 52 / 52 (100%) | 2342.7 | 2622 | 2622 | 52/52 (100%) | 640.75 | 1165 | 1 |
+| **4** | bounded_scan | MC+2 | 2 | 2 / 2 (100%) | 1911.5 | 2125 | 2125 | 2/2 (100%) | 641.26 | 1151 | 2 |
+| | bounded_scan | MC+3+ | 53 | 53 / 53 (100%) | 2358.2 | 2621 | 2621 | 53/53 (100%) | 641.26 | 1151 | 2 |
+| **8** | bounded_scan | MC+2 | 2 | 2 / 2 (100%) | 1917.0 | 2139 | 2139 | 2/2 (100%) | 643.29 | 1160 | 1 |
+| | bounded_scan | MC+3+ | 53 | 53 / 53 (100%) | 2354.8 | 2570 | 2570 | 53/53 (100%) | 643.29 | 1160 | 1 |
+| **16** | bounded_scan | MC+2 | 2 | 2 / 2 (100%) | 2202.5 | 2231 | 2231 | 2/2 (100%) | 645.70 | 1162 | 2 |
+| | bounded_scan | MC+3+ | 53 | 53 / 53 (100%) | 2357.5 | 2575 | 2575 | 53/53 (100%) | 645.70 | 1162 | 2 |
+
+### Cost accounting and redistribution analysis
+
+1. **Prediction hit rate was perfect**:
+   Across all enabled policies (1 through 16), **100% of first grains in MC+2 and MC+3+ bursts
+   successfully hit the prepared cache** (cache path 5).
+2. **Burst latency did not clear the deadline**:
+   Despite 100% first-grain prepared hits, **$P(\text{miss} \mid \text{MC}+2) = 100\%$ and
+   $P(\text{miss} \mid \text{MC}+3+) = 100\%$ across all policies**. The mean MC+3+ burst
+   latency remained between 2342 us and 2369 us, exceeding the 1451.247 us deadline by ~900 us.
+3. **Preparation math savings vs. critical-path deficit**:
+   - The polynomial warp and gain normalization save ~80–95 us (28,900–34,300 cycles @ 360 MHz).
+   - To bring MC+2/MC+3+ under the deadline, roughly 880–1000 us must leave the critical block.
+   - The model math accounts for only **~9% to 10%** of the required reduction.
+   - The remaining ~700–800 us of work in the burst block (mark search ~20 us, `model_near` ~30 us,
+     OLA/synthesis ~500 us, and surrounding pipeline components ~300+ us) cannot be removed
+     by model math pre-warming.
+4. **Collateral overhead on normal blocks**:
+   - Polling and pre-warming models after each block added +34 to +45 us to normal-block mean DSP
+     (rising from 600.95 us in Policy 0 to 635–646 us in Policies 1–16).
+   - Normal-block p99 rose by ~90 to ~140 us.
+   - Crucially, pre-warming on the audio task caused **1 to 2 deadline misses in previously clean,
+     normal non-model-change blocks** where zero misses previously occurred.
+
+## Audio equivalence
+
+- **Host unit tests**: `test_psola_prepared.cpp` runs 94,765 iterations with concurrent ring
+  publications, verifying exact bit equality (`same_bits`) for polynomial coefficients and
+  gain normalization between the prepared cache and synchronous reference.
+- **Whole-chain CRCs**: 45/45 host tests pass. The authoritative audio CRCs remain:
+  - FullChain: `0xA1D62ACE`
+  - 3,750-block fixture: `0xB5B0F372`
+- **Onset and sample alignment**: Zero timing shifts (+0 / -0 samples). All grain destination
+  centers, source centers, and render intervals are exactly preserved.
+
+## Final architectural decision classification
+
+1. **Complete-grain predictive preparation**:
+   **Class C — Insufficient prediction horizon**.
+   In every observed MC+2 and MC+3+ burst, the PSOLA scheduler cursor was inactive
+   (`have_cursor_ == 0`) across blocks N-1, N-2, and N-3, becoming active only in block N upon
+   evaluating block N pitch tracking and onset/recovery rules. Destination centers, requested
+   source marks, and alignment cannot be predicted cross-block under the current scheduler.
+
+2. **Component-only model math preparation (Experiment B1)**:
+   **Class D — Preparation cost cannot be redistributed safely on the audio timeline**,
+   combined with **Class B — Preparation helps marginally (~90 us) but is fundamentally
+   insufficient to eliminate the deadline burst (~900 us deficit)**.
+   - Moving the immutable mathematical operations (`warp_polynomial`, `compute_gain_normalization`)
+     earlier achieves 100% hit rate on burst first grains, but leaves 90% of the burst latency intact.
+   - Executing preparation on the audio thread consumes CPU headroom in normal blocks, increasing
+     baseline DSP by ~6% and inducing new deadline misses in ordinary blocks.
+
+### Production recommendation
+
+- Keep the concurrency-safe 64-bit publication generation tokens, lock-free ring snapshot API,
+  and prepared store infrastructure behind `CONFIG_VOXP4_PSOLA_PREDICTION_AUDIT_ONLY`.
+- Set `CONFIG_VOXP4_PSOLA_B1_NEWEST_LIMIT=0` by default in production, ensuring that no speculative
+  pre-warming is executed on the audio thread during normal operation.
+- Any future architectural effort to address the remaining ~800 us deficit must address the
+  synthesis/OLA and scheduling structure directly, or explore off-audio-thread asynchronous
+  delegation without consuming audio-thread DSP slack.
 
 ## Evidence status
 
-- **Measured:** per-grain N-1/N-2/N-3 projections and availability, burst
-  context, predecessor DSP time, device class misses, paired recorder on/off
-  timing, host tests and CRCs.
-- **Inferred:** available slack is a theoretical preparation budget; matching
-  publication serials represent matching immutable LPC contents during this
-  bounded run. The C decision applies to complete-grain preparation with the
-  current cursor initialization rule.
-- **Not measured:** the CPU cost of preparing any component, commit cost,
-  prepared-path audio equivalence, and a five-minute post-change qualification.
-  No prepared path exists in this experiment.
+- **Measured**:
+  - Exact N-1/N-2/N-3 candidate availability and failure context (60 burst blocks, 698 MC+1 samples).
+  - ESP32-P4 device evaluation across policies 0, 1, 2, 4, 8, 16 on COM11 (`psola_b1_device_policies.csv`).
+  - First-grain prepared hit rates, burst latencies, and normal-block distributions.
+  - Paired recorder on/off intrusiveness baseline.
+  - Host unit tests (45/45 pass), bit-exact mathematical validation, and CRC suites (`0xA1D62ACE`, `0xB5B0F372`).
+- **Inferred**:
+  - Model math represents ~80–95 us out of the ~880–1000 us required reduction; complete burst
+    elimination requires tackling mark selection, model search, and synthesis/OLA directly.
+- **Architectural Classification**:
+  - Complete-grain prediction: **Class C** (insufficient look-ahead horizon).
+  - Component model preparation: **Class D** (unsafe redistribution on audio thread) & **Class B** (insufficient alone).
+
