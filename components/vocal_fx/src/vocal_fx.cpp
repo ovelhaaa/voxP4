@@ -431,6 +431,11 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
   if (!e.ready || !in || !ol || !orr)
     return;
   while (frames) {
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+    static std::atomic<uint32_t> b1_audio_block{0};
+    e.lpc_analysis.note_audio_block(
+        b1_audio_block.fetch_add(1, std::memory_order_relaxed) + 1);
+#endif
     size_t n = std::min<size_t>(frames, VOCAL_FX_MAX_BLOCK_SIZE);
     if (s_b4d5_global_enabled)
       for (size_t g = 0; g < kB4D5GlobalGroups; ++g)
@@ -569,6 +574,21 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
     e.pitch_shift[0].process_shared(e.work,e.shifted[0],n,current_pitch,
         vocal_fx_pitch_track_state(),e.pitch_shift_marks,e.pitch_shift_mark_count);
+#if defined(CONFIG_VOXP4_PSOLA_B1_NEWEST_LIMIT) && CONFIG_VOXP4_PSOLA_B1_NEWEST_LIMIT > 0
+    // Prepare only after the current grain commits. A future block may use
+    // these immutable results after its normal mark and model selection.
+    if (e.pitch_shift[0].formant_mode() == FormantMode::Lpc &&
+        e.pitch_shift[0].formant_amount() > 0.0f) {
+      e.pitch_resources.prepared_warps.prepare(
+          e.lpc_analysis,
+          SharedLpcAnalysis::lambda_from_semitones(
+              e.pitch_shift[0].formant_shift_semitones()),
+          e.pitch_shift[0].formant_bandwidth_expansion(),
+          e.pitch_shift[0].formant_normalization_strategy(),
+          e.cfg.sample_rate, CONFIG_VOXP4_PSOLA_B1_NEWEST_LIMIT,
+          CONFIG_VOXP4_PSOLA_B1_MAX_PER_BLOCK);
+    }
+#endif
     VF_PROFILE_END(e.profiler, ProfileSection::HarmonyVoice0, 0);
     // B4C.8B: record per-block data after the voice is processed.
     {
@@ -1735,6 +1755,10 @@ PsolaWarpCacheStats vocal_fx_get_psola_warp_cache_stats(size_t voice) {
     return vf_voice(voice).warp_cache_stats();
   }
   return PsolaWarpCacheStats{};
+}
+
+PsolaPreparedWarpStats vocal_fx_get_psola_prepared_warp_stats() {
+  return e.pitch_resources.prepared_warps.stats;
 }
 
 void vocal_fx_reset_psola_warp_cache_stats() {

@@ -266,6 +266,32 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   // disabling capture could mix an earlier maximum with later miss counters.
   const auto p = b4d12_pct(t);
   const PitchAnalysisAuditTelemetry pa = vocal_fx_pitch_analysis_audit_telemetry();
+  const auto b1_end = vocal_fx_get_psola_prepared_warp_stats();
+  printf("B1_PREP case=%s limit=%d max_per_block=%d polls=%llu poll_cycles=%llu preparations=%llu prep_cycles=%llu prep_blocks=%llu prep_block_cycles=%llu prep_block_max_cycles=%lu poly_cycles=%llu gain_cycles=%llu useful=%llu hits=%llu misses=%llu snapshot_failures=%llu\n",
+         def.name,
+#if defined(CONFIG_VOXP4_PSOLA_B1_NEWEST_LIMIT)
+         CONFIG_VOXP4_PSOLA_B1_NEWEST_LIMIT,
+#else
+         0,
+#endif
+#if defined(CONFIG_VOXP4_PSOLA_B1_MAX_PER_BLOCK)
+         CONFIG_VOXP4_PSOLA_B1_MAX_PER_BLOCK,
+#else
+         0,
+#endif
+         static_cast<unsigned long long>(b1_end.polls),
+         static_cast<unsigned long long>(b1_end.poll_cycles),
+         static_cast<unsigned long long>(b1_end.preparations),
+         static_cast<unsigned long long>(b1_end.preparation_cycles),
+         static_cast<unsigned long long>(b1_end.preparation_blocks),
+         static_cast<unsigned long long>(b1_end.preparation_block_cycles),
+         static_cast<unsigned long>(b1_end.max_preparation_block_cycles),
+         static_cast<unsigned long long>(b1_end.polynomial_cycles),
+         static_cast<unsigned long long>(b1_end.gain_cycles),
+         static_cast<unsigned long long>(b1_end.useful_preparations),
+         static_cast<unsigned long long>(b1_end.hits),
+         static_cast<unsigned long long>(b1_end.misses),
+         static_cast<unsigned long long>(b1_end.snapshot_failures));
 
 #if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
   if (t && (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0 ||
@@ -301,7 +327,7 @@ void b4d12_run_case(const B4D12CaseDef &def) {
              static_cast<unsigned>(ev.actual_have_cursor));
       for (size_t g = 0; g < ev.grains && g < 4; ++g) {
         const auto &a = ev.grain[g];
-        printf("PRED_GRAIN,%s,%lu,%u,%u,%016llx,%016llx,%llu,%08lx,%u,%llu,%lu,%u,%lu,%lu,%lu,%u,%u,%lu,%lu,%u\n",
+        printf("PRED_GRAIN,%s,%lu,%u,%u,%016llx,%016llx,%llu,%08lx,%u,%llu,%lu,%u,%lu,%lu,%lu,%u,%u,%lu,%lu,%u,%lu,%lu,%llu,%llu\n",
                def.name, static_cast<unsigned long>(ev.block_id),
                static_cast<unsigned>(ev.klass), static_cast<unsigned>(g),
                static_cast<unsigned long long>(a.destination_bits),
@@ -319,7 +345,11 @@ void b4d12_run_case(const B4D12CaseDef &def) {
                static_cast<unsigned>(a.cache_path),
                static_cast<unsigned long>(a.formant_shift_bits),
                static_cast<unsigned long>(a.formant_amount_bits),
-               static_cast<unsigned>(a.formant_mode));
+               static_cast<unsigned>(a.formant_mode),
+               static_cast<unsigned long>(a.model_publication_block),
+               static_cast<unsigned long>(a.model_consumption_block),
+               static_cast<unsigned long long>(a.model_publication_time_us),
+               static_cast<unsigned long long>(a.model_consumption_time_us));
         for (size_t h = 0; h < 3; ++h) {
           printf("PRED_AVAIL,%s,%lu,%u,%u,%u,%u,%u,%lu,%lu\n",
                  def.name, static_cast<unsigned long>(ev.block_id),

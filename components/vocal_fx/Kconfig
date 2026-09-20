@@ -266,6 +266,22 @@ config VOXP4_PSOLA_PREDICTION_RECORDER
         Enable the bounded prediction snapshots. Disable for a paired timing
         baseline with the same short fixture campaign.
 
+config VOXP4_PSOLA_B1_NEWEST_LIMIT
+    int "Experiment B1 newest LPC models to pre-warm (0 disables)"
+    depends on VOXP4_PSOLA_PREDICTION_AUDIT_ONLY
+    range 0 16
+    default 0
+    help
+        Separate scratch preparation after each audio block. Values 1, 2,
+        4, 8 and 16 support bounded policy comparisons. No grain is
+        predicted and the existing scheduler is unchanged.
+
+config VOXP4_PSOLA_B1_MAX_PER_BLOCK
+    int "Experiment B1 maximum new preparations in one block"
+    depends on VOXP4_PSOLA_PREDICTION_AUDIT_ONLY
+    range 1 16
+    default 1
+
 config VOXP4_HEADLESS_HW_TEST
     bool
     default y if VOXP4_MODE_HEADLESS

@@ -67,6 +67,7 @@ void vocal_fx_set_psola_kernels(PsolaLpcKernel lpc, PsolaOlaKernel ola,
                                 PsolaGrainKernel grain, PsolaSynthesisKernel synth);
 void vocal_fx_set_psola_warp_cache(bool enable_local, bool enable_shared, bool enable_neutral_fast_path);
 PsolaWarpCacheStats vocal_fx_get_psola_warp_cache_stats(size_t voice);
+PsolaPreparedWarpStats vocal_fx_get_psola_prepared_warp_stats();
 void vocal_fx_reset_psola_warp_cache_stats();
 size_t vocal_fx_get_harmonizer_trace(HarmonizerBlockTraceRecord *dst, size_t max_count);
 size_t vocal_fx_copy_current_pitch_mark_records(PitchMark *dst, size_t capacity);

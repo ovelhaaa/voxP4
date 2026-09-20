@@ -846,6 +846,10 @@ struct PsolaGrainAuditRecord {
   uint64_t model_timestamp = 0;
 #if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
   uint32_t model_publication_serial = 0;
+  uint32_t model_publication_block = 0;
+  uint32_t model_consumption_block = 0;
+  uint64_t model_publication_time_us = 0;
+  uint64_t model_consumption_time_us = 0;
 #endif
   int64_t destination_center = 0;
   uint32_t addgrain_cycles = 0;
@@ -863,6 +867,22 @@ struct PsolaGrainAuditRecord {
   uint8_t local_difference = 0;
   uint8_t shared_difference = 0;
   uint8_t normalization_strategy = 0;
+};
+
+struct PsolaPreparedWarpStats {
+  uint64_t polls = 0;
+  uint64_t poll_cycles = 0;
+  uint64_t preparations = 0;
+  uint64_t preparation_cycles = 0;
+  uint64_t preparation_blocks = 0;
+  uint64_t preparation_block_cycles = 0;
+  uint32_t max_preparation_block_cycles = 0;
+  uint64_t polynomial_cycles = 0;
+  uint64_t gain_cycles = 0;
+  uint64_t useful_preparations = 0;
+  uint64_t hits = 0;
+  uint64_t misses = 0;
+  uint64_t snapshot_failures = 0;
 };
 
 // Read-only end-of-block scheduler state used by the prediction experiment.

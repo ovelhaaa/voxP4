@@ -101,6 +101,52 @@ struct FormantWarpCache {
   }
 };
 
+// Audio-thread-owned scratch. It never changes the demand-driven warp caches.
+struct PsolaPreparedWarpStore {
+  static constexpr size_t kCapacity = SharedLpcAnalysis::kModelCount;
+  std::array<FormantWarpCache, kCapacity> result{};
+  std::array<uint64_t, kCapacity> generation{};
+  std::array<bool, kCapacity> used{};
+  size_t next_slot = 0;
+  uint32_t last_serial = 0;
+  uint32_t last_lambda_bits = 0, last_gamma_bits = 0, last_rate_bits = 0;
+  uint8_t last_strategy = 0;
+  bool last_key_valid = false;
+  bool pending = false;
+  PsolaPreparedWarpStats stats{};
+
+  void reset() {
+    for (auto &entry : result) entry.reset();
+    generation.fill(0);
+    used.fill(false);
+    next_slot = 0;
+    last_serial = 0;
+    last_key_valid = false;
+    pending = false;
+    stats = {};
+  }
+  const FormantWarpCache *find(const SharedLpcModel &model, float lambda,
+                              float gamma, FormantNormalizationStrategy strat,
+                              float sample_rate, bool consume = false) {
+    if (model.publication_generation == 0) return nullptr;
+    for (size_t i = 0; i < kCapacity; ++i)
+      if (generation[i] == model.publication_generation &&
+          result[i].is_hit(model.timestamp, model.order,
+                           model.coefficients.data(), lambda, gamma, strat,
+                           sample_rate)) {
+        if (consume && !used[i]) {
+          used[i] = true;
+          ++stats.useful_preparations;
+        }
+        return &result[i];
+      }
+    return nullptr;
+  }
+  void prepare(const SharedLpcAnalysis &lpc, float lambda, float gamma,
+               FormantNormalizationStrategy strat, float sample_rate,
+               size_t newest_limit, size_t max_per_block);
+};
+
 struct SourceResidualCacheEntry {
   SourceGrainKey key{};
   int half_window = 0;
@@ -134,6 +180,7 @@ public:
   static constexpr size_t kMaxGrainScratch = 2048;
   const float* get_contiguous_history(uint64_t center, uint32_t half, size_t order);
   FormantWarpCache shared_warp_cache{};
+  PsolaPreparedWarpStore prepared_warps{};
 
   struct RecentGrainEntry {
     SourceGrainKey key{};

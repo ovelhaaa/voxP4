@@ -249,7 +249,89 @@ void SharedPitchShiftResources::reset() {
   history_.fill(0);
   grain_scratch_.fill(0);
   shared_warp_cache.reset();
+  prepared_warps.reset();
   input_end_ = 0;
+}
+
+void PsolaPreparedWarpStore::prepare(const SharedLpcAnalysis &lpc,
+                                     float lambda, float gamma,
+                                     FormantNormalizationStrategy strat,
+                                     float sample_rate, size_t newest_limit,
+                                     size_t max_per_block) {
+  if (newest_limit == 0 || max_per_block == 0) return;
+  const uint32_t start = Profiler::now_cycles();
+  ++stats.polls;
+  const uint32_t serial = lpc.latest_publication_serial();
+  const uint32_t lambda_bits = FormantWarpCache::f2b(lambda);
+  const uint32_t gamma_bits = FormantWarpCache::f2b(gamma);
+  const uint32_t rate_bits = FormantWarpCache::f2b(sample_rate);
+  const uint8_t strategy = static_cast<uint8_t>(strat);
+  if (last_key_valid && !pending && serial == last_serial &&
+      lambda_bits == last_lambda_bits && gamma_bits == last_gamma_bits &&
+      rate_bits == last_rate_bits && strategy == last_strategy) {
+    stats.poll_cycles += Profiler::now_cycles() - start;
+    return;
+  }
+  std::array<SharedLpcModel, kCapacity> models{};
+  size_t count = 0;
+  if (!lpc.snapshot_models_once(models.data(), models.size(), &count)) {
+    ++stats.snapshot_failures;
+    stats.poll_cycles += Profiler::now_cycles() - start;
+    return;
+  }
+  last_serial = serial;
+  last_lambda_bits = lambda_bits;
+  last_gamma_bits = gamma_bits;
+  last_rate_bits = rate_bits;
+  last_strategy = strategy;
+  last_key_valid = true;
+  const size_t limit = std::min(count, newest_limit);
+  size_t made = 0;
+  // Oldest first within the policy set avoids indefinitely starving rank 3/4.
+  for (size_t k = limit; k > 0 && made < max_per_block; --k) {
+    const auto &model = models[k - 1];
+    if (!model.valid || model.order == 0 || model.publication_generation == 0 ||
+        model.order > VOCAL_FX_LPC_MAX_ORDER ||
+        find(model, lambda, gamma, strat, sample_rate))
+      continue;
+    std::array<float, VOCAL_FX_LPC_MAX_ORDER + 1> warped{};
+    const uint32_t poly_start = Profiler::now_cycles();
+    (void)SharedLpcAnalysis::warp_polynomial(
+        model.coefficients.data(), model.order, lambda, gamma,
+        warped.data());
+    stats.polynomial_cycles += Profiler::now_cycles() - poly_start;
+    const uint32_t gain_start = Profiler::now_cycles();
+    const float gain = SharedLpcAnalysis::compute_gain_normalization(
+        model.coefficients.data(), warped.data(), model.order, strat,
+        sample_rate);
+    stats.gain_cycles += Profiler::now_cycles() - gain_start;
+    const size_t slot = next_slot++ % kCapacity;
+    result[slot].update(model.timestamp, model.order,
+                        model.coefficients.data(), lambda, gamma, strat,
+                        warped, gain, sample_rate);
+    generation[slot] = model.publication_generation;
+    used[slot] = false;
+    ++stats.preparations;
+    ++made;
+  }
+  pending = false;
+  for (size_t k = 0; k < limit; ++k) {
+    const auto &model = models[k];
+    if (model.valid && model.order != 0 && model.publication_generation != 0 &&
+        !find(model, lambda, gamma, strat, sample_rate)) {
+      pending = true;
+      break;
+    }
+  }
+  const uint32_t elapsed = Profiler::now_cycles() - start;
+  stats.poll_cycles += elapsed;
+  if (made) {
+    stats.preparation_cycles += elapsed;
+    ++stats.preparation_blocks;
+    stats.preparation_block_cycles += elapsed;
+    stats.max_preparation_block_cycles =
+        std::max(stats.max_preparation_block_cycles, elapsed);
+  }
 }
 void SharedPitchShiftResources::push(const float *input, size_t frames) {
   for (size_t i = 0; i < frames; ++i)
@@ -2454,6 +2536,10 @@ bool TdPsola::add_grain(double destination, double source,
     last_grain_audit_.model_timestamp = model.timestamp;
 #if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
     last_grain_audit_.model_publication_serial = model.publication_serial;
+    last_grain_audit_.model_publication_block = model.publication_audio_block;
+    last_grain_audit_.model_consumption_block = lpc_->current_audio_block();
+    last_grain_audit_.model_publication_time_us = model.publication_time_us;
+    last_grain_audit_.model_consumption_time_us = Profiler::now_us();
 #endif
     last_grain_audit_.model_order = model.order;
   }
@@ -2573,6 +2659,40 @@ bool TdPsola::add_grain(double destination, double source,
       ++warp_stats_.neutral_hits;
       ++b4d7_warp_hit_this_block_;
       handled = true;
+    }
+
+    // A prepared result is eligible only after the existing demand-driven
+    // local/shared/neutral paths have made their original decision. Its exact
+    // model generation and full mathematical key must both match.
+    if (!handled && resources_ && resources_->prepared_warps.stats.preparations) {
+      const FormantWarpCache *prepared = resources_->prepared_warps.find(
+          model, lambda, gamma, strat, sample_rate_, true);
+      if (prepared) {
+        last_grain_audit_.cache_path = 5;
+        const uint32_t c_hit_start = Profiler::now_cycles();
+        grain_model_.coefficients = prepared->warped_coefficients;
+        formant_filter_gain_ = prepared->formant_filter_gain;
+        if (warp_cache_enabled_)
+          warp_cache_.update(model.timestamp, model.order,
+                             model.coefficients.data(), lambda, gamma, strat,
+                             grain_model_.coefficients, formant_filter_gain_,
+                             sample_rate_);
+        if (shared_warp_cache_enabled_)
+          resources_->shared_warp_cache.update(
+              model.timestamp, model.order, model.coefficients.data(), lambda,
+              gamma, strat, grain_model_.coefficients, formant_filter_gain_,
+              sample_rate_);
+        const uint32_t c_hit = Profiler::now_cycles() - c_hit_start;
+        warp_audit_.cache_hit_calls++;
+        warp_audit_.cache_hit_cycles += c_hit;
+        warp_audit_.coeff_copy_calls++;
+        warp_audit_.coeff_copy_cycles += c_hit;
+        ++resources_->prepared_warps.stats.hits;
+        ++b4d7_warp_hit_this_block_;
+        handled = true;
+      } else {
+        ++resources_->prepared_warps.stats.misses;
+      }
     }
 
     if (!handled) {
