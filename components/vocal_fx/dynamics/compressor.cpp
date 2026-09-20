@@ -11,13 +11,17 @@ void Compressor::set(float t, float r, float a, float rel, float m, float k) {
   threshold_ = t;
   ratio_ = std::max(r, 1.0f);
   knee_ = std::max(k, 0.0f);
-  makeup_ = std::pow(10.0f, m / 20);
+  // Constants for fast log2/exp2 approximations of log10/pow10:
+  // std::pow(10.0f, x / 20) == std::exp2(x * log2(10) / 20)
+  constexpr float kDbToLog2 = 0.16609640474436813f;
+
+  makeup_ = std::exp2(m * kDbToLog2);
   attack_ = std::exp(-1 / (sr_ * std::max(a, .01f) * .001f));
   release_ = std::exp(-1 / (sr_ * std::max(rel, .01f) * .001f));
   // Linear guard 1 dB below the knee edge. Below it the exact gain computer is
   // 0 dB, so process() may return x*makeup_ directly (bit-identical).
   threshold_lo_linear_ =
-      std::pow(10.0f, (threshold_ - knee_ * 0.5f - 1.0f) * 0.05f);
+      std::exp2((threshold_ - knee_ * 0.5f - 1.0f) * kDbToLog2);
 }
 float Compressor::gain_db_for(float x) const {
   float over = x - threshold_;
@@ -31,14 +35,20 @@ float Compressor::process(float x) {
   float p = std::fabs(x);
   float c = p > env_ ? attack_ : release_;
   env_ = p + (env_ - p) * c;
+  // Constants for fast log2/exp2 approximations of log10/pow10
+  constexpr float kLog2ToDb = 6.020599913279624f;     // 20 * log10(2)
+  constexpr float kDbToLog2 = 0.16609640474436813f;   // log2(10) / 20
+
   // Exact fast path: provably 0 dB gain, so pow(10, 0) == 1 and log10 is not
   // needed. Identical output to the general path.
   if (env_ <= threshold_lo_linear_)
     return x * makeup_;
-  float db = 20 * std::log10(std::max(env_, 1e-12f));
-  return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
+  float db = kLog2ToDb * std::log2(std::max(env_, 1e-12f));
+  return x * std::exp2(gain_db_for(db) * kDbToLog2) * makeup_;
 }
 void Compressor::process_block(float *buffer, size_t n) {
+  constexpr float kLog2ToDb = 6.020599913279624f;
+  constexpr float kDbToLog2 = 0.16609640474436813f;
   float env = env_;
   const float attack = attack_, release = release_;
   const float makeup = makeup_, linear_limit = threshold_lo_linear_;
@@ -50,8 +60,8 @@ void Compressor::process_block(float *buffer, size_t n) {
     if (env <= linear_limit) {
       buffer[i] = x * makeup;
     } else {
-      const float db = 20 * std::log10(std::max(env, 1e-12f));
-      buffer[i] = x * std::pow(10.0f, gain_db_for(db) / 20) * makeup;
+      const float db = kLog2ToDb * std::log2(std::max(env, 1e-12f));
+      buffer[i] = x * std::exp2(gain_db_for(db) * kDbToLog2) * makeup;
     }
   }
   env_ = env;

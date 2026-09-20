@@ -1,7 +1,11 @@
 #include "gate.h"
 #include <algorithm>
 #include <cmath>
-float Gate::db_to_linear(float d) { return std::pow(10.0f, d / 20); }
+float Gate::db_to_linear(float d) {
+  // std::pow(10.0f, d / 20) == std::exp2(d * log2(10) / 20)
+  constexpr float kDbToLog2 = 0.16609640474436813f;
+  return std::exp2(d * kDbToLog2);
+}
 void Gate::init(float sr) {
   sr_ = sr;
   set(-55, 5, 40, 120, -60);
