@@ -59,6 +59,11 @@ struct SharedLpcModel {
   // Publication serial is observational. Zero means a model that has not
   // been read from the published ring (for example, a solver result).
   uint32_t publication_serial = 0;
+  // Exact immutable publication identity for prepared model math. Zero is
+  // reserved for unpublished models and disables prepared-cache matching.
+  uint64_t publication_generation = 0;
+  uint32_t publication_audio_block = 0;
+  uint64_t publication_time_us = 0;
 };
 
 enum class LpcProfileSection : uint8_t {
@@ -122,6 +127,19 @@ public:
   // first) so the exact model_near selection can be checked against a
   // reference implementation.
   size_t snapshot_models(SharedLpcModel *out, size_t cap) const;
+  // One bounded attempt suitable for the audio thread. A concurrent
+  // publication makes the whole snapshot fail; no retry or waiting.
+  bool snapshot_models_once(SharedLpcModel *out, size_t cap,
+                            size_t *count) const;
+  uint32_t latest_publication_serial() const {
+    return published_.load(std::memory_order_acquire);
+  }
+  void note_audio_block(uint32_t block) {
+    current_audio_block_.store(block, std::memory_order_release);
+  }
+  uint32_t current_audio_block() const {
+    return current_audio_block_.load(std::memory_order_acquire);
+  }
   const LpcConfig &effective_config() const { return config_; }
   size_t memory_bytes() const { return sizeof(*this); }
   const void* fifo_ptr() const { return &fifo_; }
@@ -179,6 +197,9 @@ private:
   struct PublishedModel {
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint32_t> serial{0};
+    std::atomic<uint32_t> generation_low{0}, generation_high{0};
+    std::atomic<uint32_t> audio_block{0};
+    std::atomic<uint32_t> publication_us_low{0}, publication_us_high{0};
     std::array<std::atomic<float>, VOCAL_FX_LPC_MAX_ORDER + 1> coefficients{};
     std::atomic<float> error{0}, confidence{0};
     std::atomic<uint32_t> timestamp_low{0}, timestamp_high{0}, order{0}, valid{0};
@@ -213,6 +234,10 @@ private:
   uint64_t last_position_ = 0;
   std::array<PublishedModel, kModelCount> models_{};
   std::atomic<uint32_t> published_{0};
+  // Single writer. On exhaustion, generation zero permanently disables
+  // preparation rather than ever reusing an identity.
+  uint64_t next_generation_ = 0;
+  std::atomic<uint32_t> current_audio_block_{0};
   LpcTelemetry telemetry_{};
   PublishedTelemetry published_telemetry_{};
   Profiler profiler_{};

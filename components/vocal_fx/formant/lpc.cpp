@@ -275,7 +275,7 @@ void SharedLpcAnalysis::reset() {
   telemetry_ = {}; profiler_.reset(); published_.store(0, std::memory_order_release);
   frame_cost_histogram_.fill(0); frame_cost_count_ = 0;
   frame_cost_total_us_ = 0; frame_cost_max_us_ = 0;
-  for (auto &m : models_) { m.sequence.store(0); m.serial.store(0); m.valid.store(0); }
+  for (auto &m : models_) { m.sequence.store(0); m.serial.store(0); m.generation_low.store(0); m.generation_high.store(0); m.audio_block.store(0); m.publication_us_low.store(0); m.publication_us_high.store(0); m.valid.store(0); }
   publish_telemetry();
 }
 void SharedLpcAnalysis::reset_measurement_telemetry() {
@@ -693,12 +693,24 @@ float VOXP4_WARP_IRAM SharedLpcAnalysis::compute_gain_normalization(const float 
 
 void SharedLpcAnalysis::publish(const SharedLpcModel &m) {
   const uint32_t serial=published_.load(std::memory_order_relaxed)+1;
+  if (next_generation_ != UINT64_MAX) ++next_generation_;
+  const uint64_t generation = next_generation_ == UINT64_MAX ? 0 : next_generation_;
   auto &p=models_[serial%kModelCount]; p.sequence.fetch_add(1,std::memory_order_acq_rel);
   for(size_t i=0;i<p.coefficients.size();++i)p.coefficients[i].store(m.coefficients[i],std::memory_order_relaxed);
   p.error.store(m.prediction_error); p.confidence.store(m.confidence);
   p.timestamp_low.store(uint32_t(m.timestamp)); p.timestamp_high.store(uint32_t(m.timestamp>>32));
   p.order.store(m.order); p.valid.store(m.valid?1:0);
   p.serial.store(serial, std::memory_order_relaxed);
+  p.generation_low.store(static_cast<uint32_t>(generation), std::memory_order_relaxed);
+  p.generation_high.store(static_cast<uint32_t>(generation >> 32), std::memory_order_relaxed);
+  uint64_t publication_us = 0;
+#if defined(CONFIG_VOXP4_PSOLA_PREDICTION_RECORDER)
+  publication_us = Profiler::now_us();
+#endif
+  p.audio_block.store(current_audio_block_.load(std::memory_order_acquire),
+                      std::memory_order_relaxed);
+  p.publication_us_low.store(static_cast<uint32_t>(publication_us), std::memory_order_relaxed);
+  p.publication_us_high.store(static_cast<uint32_t>(publication_us >> 32), std::memory_order_relaxed);
   p.sequence.fetch_add(1,std::memory_order_release);
   published_.store(serial,std::memory_order_release);
 }
@@ -791,12 +803,50 @@ size_t SharedLpcAnalysis::snapshot_models(SharedLpcModel *out,
       m.order = uint16_t(p.order.load(std::memory_order_relaxed));
       m.valid = p.valid.load(std::memory_order_relaxed) != 0;
       m.publication_serial = p.serial.load(std::memory_order_relaxed);
+      m.publication_generation = uint64_t(p.generation_low.load(std::memory_order_relaxed)) |
+          (uint64_t(p.generation_high.load(std::memory_order_relaxed)) << 32);
+      m.publication_audio_block = p.audio_block.load(std::memory_order_relaxed);
+      m.publication_time_us = uint64_t(p.publication_us_low.load(std::memory_order_relaxed)) |
+          (uint64_t(p.publication_us_high.load(std::memory_order_relaxed)) << 32);
       after = p.sequence.load(std::memory_order_acquire);
     } while (before != after || (after & 1U));
     if (!m.valid) continue;
     out[n++] = m;
   }
   return n;
+}
+bool SharedLpcAnalysis::snapshot_models_once(SharedLpcModel *out, size_t cap,
+                                              size_t *count) const {
+  if (!out || !count || cap < kModelCount) return false;
+  *count = 0;
+  const uint32_t newest = published_.load(std::memory_order_acquire);
+  const size_t n = std::min<size_t>(newest, kModelCount);
+  for (size_t k = 0; k < n; ++k) {
+    const auto &p = models_[(newest - static_cast<uint32_t>(k)) % kModelCount];
+    const uint32_t before = p.sequence.load(std::memory_order_acquire);
+    if (before & 1U) return false;
+    SharedLpcModel m{};
+    m.publication_serial = p.serial.load(std::memory_order_relaxed);
+    if (m.publication_serial != newest - static_cast<uint32_t>(k)) return false;
+    m.publication_generation = uint64_t(p.generation_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.generation_high.load(std::memory_order_relaxed)) << 32);
+    m.publication_audio_block = p.audio_block.load(std::memory_order_relaxed);
+    m.publication_time_us = uint64_t(p.publication_us_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.publication_us_high.load(std::memory_order_relaxed)) << 32);
+    m.timestamp = uint64_t(p.timestamp_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.timestamp_high.load(std::memory_order_relaxed)) << 32);
+    m.order = static_cast<uint16_t>(p.order.load(std::memory_order_relaxed));
+    m.valid = p.valid.load(std::memory_order_relaxed) != 0;
+    m.confidence = p.confidence.load(std::memory_order_relaxed);
+    m.prediction_error = p.error.load(std::memory_order_relaxed);
+    if (m.order > VOCAL_FX_LPC_MAX_ORDER) return false;
+    for (size_t i = 0; i <= m.order; ++i)
+      m.coefficients[i] = p.coefficients[i].load(std::memory_order_relaxed);
+    const uint32_t after = p.sequence.load(std::memory_order_acquire);
+    if (before != after || (after & 1U)) return false;
+    if (m.valid) out[(*count)++] = m;
+  }
+  return newest == published_.load(std::memory_order_acquire);
 }
 bool SharedLpcAnalysis::latest_model(SharedLpcModel *out) const {
   if (!out) return false;
@@ -816,6 +866,11 @@ bool SharedLpcAnalysis::latest_model(SharedLpcModel *out) const {
     out->order=uint16_t(p.order.load(std::memory_order_relaxed));
     out->valid=p.valid.load(std::memory_order_relaxed)!=0;
     out->publication_serial=p.serial.load(std::memory_order_relaxed);
+    out->publication_generation=uint64_t(p.generation_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.generation_high.load(std::memory_order_relaxed)) << 32);
+    out->publication_audio_block=p.audio_block.load(std::memory_order_relaxed);
+    out->publication_time_us=uint64_t(p.publication_us_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.publication_us_high.load(std::memory_order_relaxed)) << 32);
     after=p.sequence.load(std::memory_order_acquire);
   } while(before!=after || (after&1U));
   return true;
@@ -866,6 +921,11 @@ bool SharedLpcAnalysis::model_near(uint64_t ts,SharedLpcModel *out) const {
     SharedLpcModel m; for(size_t i=0;i<m.coefficients.size();++i)m.coefficients[i]=p.coefficients[i].load();
     m.prediction_error=p.error.load();m.confidence=p.confidence.load();m.timestamp=t;m.order=uint16_t(p.order.load());m.valid=true;
     m.publication_serial = p.serial.load(std::memory_order_relaxed);
+    m.publication_generation = uint64_t(p.generation_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.generation_high.load(std::memory_order_relaxed)) << 32);
+    m.publication_audio_block = p.audio_block.load(std::memory_order_relaxed);
+    m.publication_time_us = uint64_t(p.publication_us_low.load(std::memory_order_relaxed)) |
+        (uint64_t(p.publication_us_high.load(std::memory_order_relaxed)) << 32);
     if(before!=p.sequence.load(std::memory_order_acquire)) continue;
     best=d;*out=m;found=true;
     if(s_b4d5_model_audit){++s_b4d5_model_copies;
