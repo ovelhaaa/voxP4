@@ -78,6 +78,13 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out) {
   case 0x0606: mapped = VocalFxParameter::ChorusDepthMs; break;
   case 0x0607: mapped = VocalFxParameter::ChorusBaseDelayMs; break;
   case 0x0608: mapped = VocalFxParameter::ChorusWidth; break;
+  // Drive
+  case 0x0700: mapped = VocalFxParameter::EnableDrive; break;
+  case 0x0701: mapped = VocalFxParameter::DriveMode; break;
+  case 0x0702: mapped = VocalFxParameter::DriveDrive; break;
+  case 0x0703: mapped = VocalFxParameter::DriveTone; break;
+  case 0x0704: mapped = VocalFxParameter::DriveMix; break;
+  case 0x0705: mapped = VocalFxParameter::DriveOutputLevel; break;
   default:
     return false;
   }

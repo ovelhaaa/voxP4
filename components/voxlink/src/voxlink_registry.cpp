@@ -182,6 +182,20 @@ const ParamDescriptor kParams[] = {
            7.0f, 0.1f, kPersistRtSmoothed, 0.0f, "chorus", "ChorusBaseDelayMs"),
     PFLOAT(0x0608, "chorus.width", "Chorus Width", "", 0.0f, 1.0f, 1.0f, 0.01f,
            kPersistRtSmoothed, 0.0f, "chorus", "ChorusWidth"),
+
+    // Drive -----------------------------------------------------------------
+    PBOOL(0x0700, "drive.enable", "Drive Enable", 0.0f, kPersistRt, "drive",
+          "EnableDrive"),
+    PENUM(0x0701, "drive.mode", "Drive Mode", 0.0f, 2.0f, 0.0f, "drive",
+          "DriveMode"),
+    PFLOAT(0x0702, "drive.drive", "Drive Amount", "", 0.0f, 1.0f, 0.3f, 0.01f,
+           kPersistRtSmoothed, 20.0f, "drive", "DriveDrive"),
+    PFLOAT(0x0703, "drive.tone", "Drive Tone", "", 0.0f, 1.0f, 0.5f, 0.01f,
+           kPersistRtSmoothed, 20.0f, "drive", "DriveTone"),
+    PFLOAT(0x0704, "drive.mix", "Drive Mix", "", 0.0f, 1.0f, 1.0f, 0.01f,
+           kPersistRtSmoothed, 20.0f, "drive", "DriveMix"),
+    PFLOAT(0x0705, "drive.output_level", "Drive Output Level", "", 0.0f, 2.0f,
+           1.0f, 0.01f, kPersistRtSmoothed, 20.0f, "drive", "DriveOutputLevel"),
 };
 
 #undef PBOOL
