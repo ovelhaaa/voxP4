@@ -13,7 +13,7 @@ target_include_directories(voxlink_core PUBLIC ${VOXLINK}/include)
 target_compile_features(voxlink_core PUBLIC cxx_std_17)
 target_compile_options(voxlink_core PRIVATE -Wall -Wextra -Werror)
 add_library(vocal_fx_dsp
- ${VF}/dsp/biquad.cpp ${VF}/dsp/smoothing.cpp ${VF}/dsp/limiter.cpp
+ ${VF}/dsp/biquad.cpp ${VF}/dsp/smoothing.cpp ${VF}/dsp/limiter.cpp ${VF}/dsp/tempo.cpp
  ${VF}/dynamics/gate.cpp ${VF}/dynamics/compressor.cpp ${VF}/delay/delay.cpp
  ${VF}/src/vocal_fx.cpp ${VF}/reverb/diffuser.cpp ${VF}/reverb/fdn_reverb.cpp
  ${VF}/platform/profiling.cpp ${VF}/platform/audio_i2s.cpp)
@@ -28,6 +28,9 @@ target_compile_definitions(vocal_fx_dsp PRIVATE VOCAL_FX_ENABLE_PROFILING=1)
 add_executable(dsp_tests test_dsp.cpp)
 target_link_libraries(dsp_tests PRIVATE vocal_fx_dsp)
 add_test(NAME dsp_tests COMMAND dsp_tests)
+add_executable(test_tempo test_tempo.cpp)
+target_link_libraries(test_tempo PRIVATE vocal_fx_dsp)
+add_test(NAME test_tempo COMMAND test_tempo)
 add_executable(pitch_tests test_pitch.cpp)
 target_link_libraries(pitch_tests PRIVATE vocal_fx_dsp)
 add_test(NAME pitch_tests COMMAND pitch_tests)

@@ -1,4 +1,4 @@
-set(SRCS src/vocal_fx.cpp dsp/biquad.cpp dsp/smoothing.cpp dsp/limiter.cpp
+set(SRCS src/vocal_fx.cpp dsp/biquad.cpp dsp/smoothing.cpp dsp/limiter.cpp dsp/tempo.cpp
  dynamics/gate.cpp dynamics/compressor.cpp delay/delay.cpp
  reverb/diffuser.cpp reverb/fdn_reverb.cpp platform/profiling.cpp platform/audio_i2s.cpp)
 list(APPEND SRCS pitch/decimator.cpp pitch/yin_detector.cpp pitch/pitch_mark_ncc.cpp pitch/pitch_analysis.cpp)
