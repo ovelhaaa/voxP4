@@ -14,14 +14,14 @@ target_compile_features(voxlink_core PUBLIC cxx_std_17)
 target_compile_options(voxlink_core PRIVATE -Wall -Wextra -Werror)
 add_library(vocal_fx_dsp
  ${VF}/dsp/biquad.cpp ${VF}/dsp/smoothing.cpp ${VF}/dsp/limiter.cpp ${VF}/dsp/tempo.cpp
- ${VF}/dynamics/gate.cpp ${VF}/dynamics/compressor.cpp ${VF}/delay/delay.cpp
+ ${VF}/dynamics/gate.cpp ${VF}/dynamics/compressor.cpp ${VF}/delay/delay.cpp ${VF}/modulation/chorus.cpp
  ${VF}/src/vocal_fx.cpp ${VF}/reverb/diffuser.cpp ${VF}/reverb/fdn_reverb.cpp
  ${VF}/platform/profiling.cpp ${VF}/platform/audio_i2s.cpp)
 target_sources(vocal_fx_dsp PRIVATE ${VF}/pitch/decimator.cpp
  ${VF}/pitch/yin_detector.cpp ${VF}/pitch/pitch_mark_ncc.cpp ${VF}/pitch/pitch_analysis.cpp ${VF}/shift/td_psola.cpp
  ${VF}/formant/lpc.cpp
  ${VF}/harmony/scale.cpp ${VF}/harmony/midi_harmony.cpp ${VF}/harmony/harmony_engine.cpp ${VF}/harmony/harmony_articulation_envelope.cpp ${VF}/harmony/harmony_unvoiced_articulation.cpp ${VF}/harmony/harmony_plosive_bridge.cpp)
-target_include_directories(vocal_fx_dsp PUBLIC ${VF}/include ${VF}/src ${VF}/dsp ${VF}/dynamics ${VF}/delay ${VF}/reverb ${VF}/platform ${VF}/pitch ${VF}/shift ${VF}/harmony ${VF}/formant)
+target_include_directories(vocal_fx_dsp PUBLIC ${VF}/include ${VF}/src ${VF}/dsp ${VF}/dynamics ${VF}/delay ${VF}/modulation ${VF}/reverb ${VF}/platform ${VF}/pitch ${VF}/shift ${VF}/harmony ${VF}/formant)
 target_compile_features(vocal_fx_dsp PUBLIC cxx_std_17)
 target_compile_options(vocal_fx_dsp PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(vocal_fx_dsp PRIVATE VOCAL_FX_ENABLE_PROFILING=1)
@@ -34,6 +34,11 @@ add_test(NAME test_tempo COMMAND test_tempo)
 add_executable(test_delay_sync test_delay_sync.cpp)
 target_link_libraries(test_delay_sync PRIVATE vocal_fx_dsp)
 add_test(NAME test_delay_sync COMMAND test_delay_sync)
+add_executable(test_chorus test_chorus.cpp)
+target_link_libraries(test_chorus PRIVATE vocal_fx_dsp)
+add_test(NAME test_chorus COMMAND test_chorus)
+add_executable(render_fx render_fx.cpp)
+target_link_libraries(render_fx PRIVATE vocal_fx_dsp)
 add_executable(pitch_tests test_pitch.cpp)
 target_link_libraries(pitch_tests PRIVATE vocal_fx_dsp)
 add_test(NAME pitch_tests COMMAND pitch_tests)
