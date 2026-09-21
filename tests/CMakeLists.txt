@@ -234,5 +234,8 @@ add_executable(voxlink_protocol_conformance_tests test_voxlink_conformance.cpp)
 target_link_libraries(voxlink_protocol_conformance_tests PRIVATE voxlink_core)
 target_include_directories(voxlink_protocol_conformance_tests PRIVATE
  ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(pipeline_full_benchmark pipeline_full_benchmark.cpp)
+target_link_libraries(pipeline_full_benchmark PRIVATE vocal_fx_dsp)
 add_test(NAME voxlink_protocol_conformance_tests
  COMMAND voxlink_protocol_conformance_tests)
