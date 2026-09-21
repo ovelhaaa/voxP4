@@ -68,6 +68,16 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out) {
   case 0x0501: mapped = VocalFxParameter::MuteDry; break;
   case 0x0502: mapped = VocalFxParameter::SpatialRouting; break;
   case 0x0503: mapped = VocalFxParameter::SpatialSource; break;
+  // Chorus
+  case 0x0600: mapped = VocalFxParameter::EnableChorus; break;
+  case 0x0601: mapped = VocalFxParameter::ChorusMode; break;
+  case 0x0602: mapped = VocalFxParameter::ChorusMix; break;
+  case 0x0603: mapped = VocalFxParameter::ChorusSyncEnabled; break;
+  case 0x0604: mapped = VocalFxParameter::ChorusRateHz; break;
+  case 0x0605: mapped = VocalFxParameter::ChorusSubdivision; break;
+  case 0x0606: mapped = VocalFxParameter::ChorusDepthMs; break;
+  case 0x0607: mapped = VocalFxParameter::ChorusBaseDelayMs; break;
+  case 0x0608: mapped = VocalFxParameter::ChorusWidth; break;
   default:
     return false;
   }

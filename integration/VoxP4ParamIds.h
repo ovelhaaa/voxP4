@@ -3,7 +3,7 @@
 // components/voxlink/src/voxlink_registry.cpp. Do not edit by hand.
 
 #define VOXP4_VOXLINK_VERSION 0x10u
-#define VOXP4_PARAM_COUNT 53u
+#define VOXP4_PARAM_COUNT 62u
 
 #define VOXP4_PARAM_TEMPO_BPM                    0x0010u  /* float */
 #define VOXP4_PARAM_HARMONY_ENABLE               0x0100u  /* bool */
@@ -58,3 +58,12 @@
 #define VOXP4_PARAM_OUTPUT_MUTE_DRY              0x0501u  /* bool */
 #define VOXP4_PARAM_OUTPUT_SPATIAL_ROUTING       0x0502u  /* enum */
 #define VOXP4_PARAM_OUTPUT_SPATIAL_SOURCE        0x0503u  /* enum */
+#define VOXP4_PARAM_CHORUS_ENABLE                0x0600u  /* bool */
+#define VOXP4_PARAM_CHORUS_MODE                  0x0601u  /* enum */
+#define VOXP4_PARAM_CHORUS_MIX                   0x0602u  /* float */
+#define VOXP4_PARAM_CHORUS_SYNC_ENABLE           0x0603u  /* bool */
+#define VOXP4_PARAM_CHORUS_RATE_HZ               0x0604u  /* float */
+#define VOXP4_PARAM_CHORUS_SUBDIVISION           0x0605u  /* enum */
+#define VOXP4_PARAM_CHORUS_DEPTH_MS              0x0606u  /* float */
+#define VOXP4_PARAM_CHORUS_BASE_DELAY_MS         0x0607u  /* float */
+#define VOXP4_PARAM_CHORUS_WIDTH                 0x0608u  /* float */
