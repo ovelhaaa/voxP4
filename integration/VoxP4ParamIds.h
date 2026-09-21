@@ -3,8 +3,9 @@
 // components/voxlink/src/voxlink_registry.cpp. Do not edit by hand.
 
 #define VOXP4_VOXLINK_VERSION 0x10u
-#define VOXP4_PARAM_COUNT 49u
+#define VOXP4_PARAM_COUNT 53u
 
+#define VOXP4_PARAM_TEMPO_BPM                    0x0010u  /* float */
 #define VOXP4_PARAM_HARMONY_ENABLE               0x0100u  /* bool */
 #define VOXP4_PARAM_HARMONY_INTERVAL             0x0101u  /* int */
 #define VOXP4_PARAM_HARMONY_LEVEL                0x0102u  /* float */
@@ -46,6 +47,9 @@
 #define VOXP4_PARAM_DELAY_WET                    0x0304u  /* float */
 #define VOXP4_PARAM_DELAY_DRY                    0x0305u  /* float */
 #define VOXP4_PARAM_DELAY_FEEDBACK_LOWPASS_HZ    0x0306u  /* float */
+#define VOXP4_PARAM_DELAY_SYNC_ENABLE            0x0307u  /* bool */
+#define VOXP4_PARAM_DELAY_LEFT_SUBDIVISION       0x0308u  /* enum */
+#define VOXP4_PARAM_DELAY_RIGHT_SUBDIVISION      0x0309u  /* enum */
 #define VOXP4_PARAM_REVERB_ENABLE                0x0400u  /* bool */
 #define VOXP4_PARAM_REVERB_WET                   0x0401u  /* float */
 #define VOXP4_PARAM_REVERB_DECAY_S               0x0402u  /* float */

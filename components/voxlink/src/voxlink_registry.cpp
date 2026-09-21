@@ -30,6 +30,10 @@ constexpr uint32_t kPersistRtDiscrete =
 // not change. Ranges mirror the engine's own clamps.
 // ---------------------------------------------------------------------------
 const ParamDescriptor kParams[] = {
+    // Global / Tempo --------------------------------------------------------
+    PFLOAT(0x0010, "tempo.bpm", "Tempo BPM", "BPM", 30.0f, 300.0f, 120.0f,
+           0.1f, kPersistRtSmoothed, 0.0f, "tempo", "TempoBpm"),
+
     // Harmony ---------------------------------------------------------------
     PBOOL(0x0100, "harmony.enable", "Harmony Enable", 0.0f, kPersistRt,
           "harmony", "PitchShiftEnabled"),
@@ -132,6 +136,12 @@ const ParamDescriptor kParams[] = {
     PFLOAT(0x0306, "delay.feedback_lowpass_hz", "Delay Feedback Lowpass", "Hz",
            200.0f, 20000.0f, 6000.0f, 1.0f, kPersistRtSmoothed, 0.0f, "delay",
            "DelayFeedbackLowpassHz"),
+    PBOOL(0x0307, "delay.sync_enable", "Delay Sync", 0.0f, kPersistRt, "delay",
+          "DelaySyncEnabled"),
+    PENUM(0x0308, "delay.left_subdivision", "Delay Left Subdivision", 0.0f,
+          12.0f, 3.0f, "delay", "DelayLeftSubdivision"),
+    PENUM(0x0309, "delay.right_subdivision", "Delay Right Subdivision", 0.0f,
+          12.0f, 8.0f, "delay", "DelayRightSubdivision"),
 
     // Reverb ----------------------------------------------------------------
     PBOOL(0x0400, "reverb.enable", "Reverb Enable", 1.0f, kPersistRt, "reverb",

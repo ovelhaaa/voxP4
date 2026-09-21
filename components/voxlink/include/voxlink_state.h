@@ -24,7 +24,7 @@ public:
   bool value_at(size_t index, uint16_t *id, float *out) const;
 
 private:
-  static constexpr size_t kCapacity = 64;
+  static constexpr size_t kCapacity = 128;
   uint16_t ids_[kCapacity] = {0};
   std::atomic<float> values_[kCapacity];
   size_t count_ = 0;

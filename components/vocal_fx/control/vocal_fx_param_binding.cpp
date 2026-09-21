@@ -9,6 +9,8 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out) {
     return false;
   VocalFxParameter mapped;
   switch (id) {
+  // Global / Tempo
+  case 0x0010: mapped = VocalFxParameter::TempoBpm; break;
   // Harmony
   case 0x0100: mapped = VocalFxParameter::PitchShiftEnabled; break;
   case 0x0101: mapped = VocalFxParameter::PitchShiftSemitones; break;
@@ -53,6 +55,9 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out) {
   case 0x0304: mapped = VocalFxParameter::DelayWet; break;
   case 0x0305: mapped = VocalFxParameter::DelayDry; break;
   case 0x0306: mapped = VocalFxParameter::DelayFeedbackLowpassHz; break;
+  case 0x0307: mapped = VocalFxParameter::DelaySyncEnabled; break;
+  case 0x0308: mapped = VocalFxParameter::DelayLeftSubdivision; break;
+  case 0x0309: mapped = VocalFxParameter::DelayRightSubdivision; break;
   // Reverb
   case 0x0400: mapped = VocalFxParameter::EnableReverb; break;
   case 0x0401: mapped = VocalFxParameter::ReverbWet; break;
