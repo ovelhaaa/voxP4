@@ -63,6 +63,7 @@ enum class ProfileSection : uint8_t {
   HarmonyVoice0, HarmonyVoice1,
   InputHpf, InputGate,
   MasterMix, MasterLimiter,
+  Chorus, Drive,
   Count
 };
 struct ProfileStats {

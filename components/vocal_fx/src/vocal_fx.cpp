@@ -13,6 +13,7 @@
 #include "td_psola.h"
 #include "harmony_engine.h"
 #include "lpc.h"
+#include "chorus.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -39,6 +40,7 @@ struct Engine {
   Biquad hpf;
   Gate gate;
   Compressor compressor;
+  VocalChorus chorus;
   StereoDelay delay;
   FdnReverb reverb;
   Limiter limiter;
@@ -282,9 +284,19 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   e.hpf.configure(BiquadType::HighPass, c.sample_rate, 80);
   e.gate.init(c.sample_rate);
   e.compressor.init(c.sample_rate);
-  if (!e.delay.init(c.sample_rate, VOCAL_FX_MAX_DELAY_SECONDS) ||
+  if (!e.chorus.init(c.sample_rate, 50.0f) ||
+      !e.delay.init(c.sample_rate, VOCAL_FX_MAX_DELAY_SECONDS) ||
       !e.reverb.init(c.sample_rate))
     return false;
+  e.chorus.set_mode(c.chorus.mode);
+  e.chorus.set_interpolation(c.chorus.interpolation);
+  e.chorus.set_sync_enabled(c.chorus.sync_enabled);
+  e.chorus.set_rate_hz(c.chorus.rate_hz);
+  e.chorus.set_subdivision(c.chorus.subdivision);
+  e.chorus.set_depth_ms(c.chorus.depth_ms);
+  e.chorus.set_base_delay_ms(c.chorus.base_delay_ms);
+  e.chorus.set_width(c.chorus.width);
+  e.chorus.set_mix(c.chorus.mix);
   e.limiter.init(c.sample_rate);
   e.dry_delay.init(c.sample_rate, c.dry_alignment_ms, c.align_dry_to_harmony);
   e.harmony_limiter.init(c.sample_rate, c.harmony_limiter_threshold_db,
@@ -376,6 +388,7 @@ void vocal_fx_reset() {
   e.hpf.reset();
   e.gate.reset();
   e.compressor.reset();
+  e.chorus.reset();
   e.delay.reset();
   update_delay_times();
   e.reverb.reset();
@@ -464,6 +477,8 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
         e.profiler.raw_total_cycles(ProfileSection::Input),
         e.profiler.raw_total_cycles(ProfileSection::Compressor),
         e.profiler.raw_total_cycles(ProfileSection::Harmony),
+        e.profiler.raw_total_cycles(ProfileSection::Chorus),
+        e.profiler.raw_total_cycles(ProfileSection::Drive),
         e.profiler.raw_total_cycles(ProfileSection::Delay),
         e.profiler.raw_total_cycles(ProfileSection::Reverb),
         e.profiler.raw_total_cycles(ProfileSection::Master)};
@@ -741,6 +756,12 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
     VF_PROFILE_END(e.profiler, ProfileSection::BusMixing, 0);
 
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Chorus);
+    if (e.cfg.enable_chorus) {
+      e.chorus.process(e.left, e.right, e.left, e.right, n, e.tempo_bpm);
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::Chorus, 0);
+
 #ifndef ESP_PLATFORM
     if (s_sample_telemetry_cb) {
       e.pitch_shift[iso_v].set_sample_telemetry_buffer(nullptr);
@@ -833,12 +854,16 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
         e.profiler.raw_total_cycles(ProfileSection::Compressor) - stage_before[1]);
     trace_rec.harmony_cycles = static_cast<uint32_t>(
         e.profiler.raw_total_cycles(ProfileSection::Harmony) - stage_before[2]);
+    trace_rec.chorus_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Chorus) - stage_before[3]);
+    trace_rec.drive_cycles = static_cast<uint32_t>(
+        e.profiler.raw_total_cycles(ProfileSection::Drive) - stage_before[4]);
     trace_rec.delay_cycles = static_cast<uint32_t>(
-        e.profiler.raw_total_cycles(ProfileSection::Delay) - stage_before[3]);
+        e.profiler.raw_total_cycles(ProfileSection::Delay) - stage_before[5]);
     trace_rec.reverb_cycles = static_cast<uint32_t>(
-        e.profiler.raw_total_cycles(ProfileSection::Reverb) - stage_before[4]);
+        e.profiler.raw_total_cycles(ProfileSection::Reverb) - stage_before[6]);
     trace_rec.master_cycles = static_cast<uint32_t>(
-        e.profiler.raw_total_cycles(ProfileSection::Master) - stage_before[5]);
+        e.profiler.raw_total_cycles(ProfileSection::Master) - stage_before[7]);
 #endif
     record_harmonizer_trace(trace_rec);
     if (s_b4d5_global_enabled) {
@@ -1044,6 +1069,35 @@ void apply_parameter(VocalFxParameter p, float v) {
         std::clamp(static_cast<int>(std::round(v)), 0, static_cast<int>(TempoSubdivision::Count) - 1));
     update_delay_times();
     break;
+  case VocalFxParameter::EnableChorus:
+    e.cfg.enable_chorus = (v >= 0.5f);
+    break;
+  case VocalFxParameter::ChorusMode:
+    e.chorus.set_mode(static_cast<ChorusMode>(
+        std::clamp(static_cast<int>(std::round(v)), 0, static_cast<int>(ChorusMode::Count) - 1)));
+    break;
+  case VocalFxParameter::ChorusMix:
+    e.chorus.set_mix(std::clamp(v, 0.0f, 1.0f));
+    break;
+  case VocalFxParameter::ChorusSyncEnabled:
+    e.chorus.set_sync_enabled(v >= 0.5f);
+    break;
+  case VocalFxParameter::ChorusRateHz:
+    e.chorus.set_rate_hz(std::clamp(v, 0.05f, 10.0f));
+    break;
+  case VocalFxParameter::ChorusSubdivision:
+    e.chorus.set_subdivision(static_cast<TempoSubdivision>(
+        std::clamp(static_cast<int>(std::round(v)), 0, static_cast<int>(TempoSubdivision::Count) - 1)));
+    break;
+  case VocalFxParameter::ChorusDepthMs:
+    e.chorus.set_depth_ms(std::clamp(v, 0.1f, 15.0f));
+    break;
+  case VocalFxParameter::ChorusBaseDelayMs:
+    e.chorus.set_base_delay_ms(std::clamp(v, 1.0f, 30.0f));
+    break;
+  case VocalFxParameter::ChorusWidth:
+    e.chorus.set_width(std::clamp(v, 0.0f, 1.0f));
+    break;
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0 && std::isfinite(v)){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
@@ -1149,6 +1203,51 @@ bool vocal_fx_get_delay_sync_enabled() {
 void vocal_fx_set_delay_subdivisions(TempoSubdivision left, TempoSubdivision right) {
   vocal_fx_set_parameter(VocalFxParameter::DelayLeftSubdivision, static_cast<float>(left));
   vocal_fx_set_parameter(VocalFxParameter::DelayRightSubdivision, static_cast<float>(right));
+}
+void vocal_fx_set_chorus_enabled(bool enabled) {
+  vocal_fx_set_parameter(VocalFxParameter::EnableChorus, enabled ? 1.0f : 0.0f);
+}
+bool vocal_fx_get_chorus_enabled() {
+  return e.cfg.enable_chorus;
+}
+void vocal_fx_set_chorus_mode(ChorusMode mode) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusMode, static_cast<float>(mode));
+}
+ChorusMode vocal_fx_get_chorus_mode() {
+  return e.chorus.mode();
+}
+void vocal_fx_set_chorus_mix(float mix) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusMix, mix);
+}
+float vocal_fx_get_chorus_mix() {
+  return e.chorus.mix();
+}
+void vocal_fx_set_chorus_sync_enabled(bool enabled) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusSyncEnabled, enabled ? 1.0f : 0.0f);
+}
+bool vocal_fx_get_chorus_sync_enabled() {
+  return e.chorus.sync_enabled();
+}
+void vocal_fx_set_chorus_rate_hz(float hz) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusRateHz, hz);
+}
+float vocal_fx_get_chorus_rate_hz() {
+  return e.chorus.rate_hz();
+}
+void vocal_fx_set_chorus_subdivision(TempoSubdivision subdivision) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusSubdivision, static_cast<float>(subdivision));
+}
+void vocal_fx_set_chorus_depth_ms(float depth_ms) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusDepthMs, depth_ms);
+}
+void vocal_fx_set_chorus_base_delay_ms(float base_delay_ms) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusBaseDelayMs, base_delay_ms);
+}
+void vocal_fx_set_chorus_width(float width) {
+  vocal_fx_set_parameter(VocalFxParameter::ChorusWidth, width);
+}
+size_t vocal_fx_chorus_memory_bytes() {
+  return e.chorus.memory_bytes();
 }
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
@@ -1304,6 +1403,7 @@ vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section) {
 }
 size_t vocal_fx_dsp_memory_bytes() {
   return e.delay.memory_bytes() + e.reverb.memory_bytes() +
+         e.chorus.memory_bytes() +
          e.pitch_resources.memory_bytes() +
          e.pitch_shift[0].memory_bytes() +
          e.lpc_analysis.memory_bytes() +
@@ -1335,6 +1435,8 @@ ProfileSection to_profile_section(VocalFxProfileSection s) {
   case VocalFxProfileSection::Reverb: return ProfileSection::Reverb;
   case VocalFxProfileSection::Pipeline: return ProfileSection::Pipeline;
   case VocalFxProfileSection::Harmony: return ProfileSection::Harmony;
+  case VocalFxProfileSection::Chorus: return ProfileSection::Chorus;
+  case VocalFxProfileSection::Drive: return ProfileSection::Drive;
   case VocalFxProfileSection::Master: return ProfileSection::Master;
   case VocalFxProfileSection::ParameterQueue: return ProfileSection::ParameterQueue;
   case VocalFxProfileSection::PitchLpcTap: return ProfileSection::PitchLpcTap;

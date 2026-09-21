@@ -1,5 +1,6 @@
 #pragma once
 #include "tempo.h"
+#include "chorus.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -54,7 +55,9 @@ enum class VocalFxParameter : uint16_t {
   HarmonyLimiterEnabled, HarmonyLimiterThresholdDb,
   SpatialRouting, SpatialSource, MuteDry,
   TempoBpm,
-  DelaySyncEnabled, DelayLeftSubdivision, DelayRightSubdivision
+  DelaySyncEnabled, DelayLeftSubdivision, DelayRightSubdivision,
+  EnableChorus, ChorusMode, ChorusMix, ChorusSyncEnabled, ChorusRateHz,
+  ChorusSubdivision, ChorusDepthMs, ChorusBaseDelayMs, ChorusWidth
 };
 
 enum class SpatialFxRouting : uint8_t {
@@ -526,6 +529,8 @@ struct HarmonizerBlockTraceRecord {
   uint32_t delay_cycles = 0;
   uint32_t reverb_cycles = 0;
   uint32_t master_cycles = 0;
+  uint32_t chorus_cycles = 0;
+  uint32_t drive_cycles = 0;
   // Existing TD-PSOLA cycle accumulators, sampled once per audio block.
   uint32_t psola_sched_cycles = 0;
   uint32_t psola_addgrain_cycles = 0;
@@ -1126,6 +1131,8 @@ enum class VocalFxProfileSection : uint8_t {
   InputGate,
   MasterMix,
   MasterLimiter,
+  Chorus,
+  Drive,
   Count
 };
 

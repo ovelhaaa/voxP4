@@ -64,6 +64,9 @@ struct VocalFxConfig {
   bool delay_sync_enabled = false;
   TempoSubdivision delay_left_subdivision = TempoSubdivision::Eighth;
   TempoSubdivision delay_right_subdivision = TempoSubdivision::DottedEighth;
+  // Vocal Modulation (Chorus)
+  bool enable_chorus = false;
+  ChorusConfig chorus{};
 };
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };
