@@ -67,6 +67,9 @@ struct VocalFxConfig {
   // Vocal Modulation (Chorus)
   bool enable_chorus = false;
   ChorusConfig chorus{};
+  // Vocal Drive / Saturation
+  bool enable_drive = false;
+  DriveConfig drive{};
 };
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };

@@ -1,6 +1,7 @@
 #pragma once
 #include "tempo.h"
 #include "chorus.h"
+#include "vocal_drive.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -57,7 +58,8 @@ enum class VocalFxParameter : uint16_t {
   TempoBpm,
   DelaySyncEnabled, DelayLeftSubdivision, DelayRightSubdivision,
   EnableChorus, ChorusMode, ChorusMix, ChorusSyncEnabled, ChorusRateHz,
-  ChorusSubdivision, ChorusDepthMs, ChorusBaseDelayMs, ChorusWidth
+  ChorusSubdivision, ChorusDepthMs, ChorusBaseDelayMs, ChorusWidth,
+  EnableDrive, DriveMode, DriveDrive, DriveTone, DriveMix, DriveOutputLevel
 };
 
 enum class SpatialFxRouting : uint8_t {

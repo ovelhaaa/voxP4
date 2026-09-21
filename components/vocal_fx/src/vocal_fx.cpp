@@ -14,6 +14,7 @@
 #include "harmony_engine.h"
 #include "lpc.h"
 #include "chorus.h"
+#include "vocal_drive.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -40,6 +41,7 @@ struct Engine {
   Biquad hpf;
   Gate gate;
   Compressor compressor;
+  VocalDrive drive;
   VocalChorus chorus;
   StereoDelay delay;
   FdnReverb reverb;
@@ -284,10 +286,16 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   e.hpf.configure(BiquadType::HighPass, c.sample_rate, 80);
   e.gate.init(c.sample_rate);
   e.compressor.init(c.sample_rate);
-  if (!e.chorus.init(c.sample_rate, 50.0f) ||
+  if (!e.drive.init(c.sample_rate) ||
+      !e.chorus.init(c.sample_rate, 50.0f) ||
       !e.delay.init(c.sample_rate, VOCAL_FX_MAX_DELAY_SECONDS) ||
       !e.reverb.init(c.sample_rate))
     return false;
+  e.drive.set_mode(c.drive.mode);
+  e.drive.set_drive(c.drive.drive);
+  e.drive.set_tone(c.drive.tone);
+  e.drive.set_mix(c.drive.mix);
+  e.drive.set_output_level(c.drive.output_level);
   e.chorus.set_mode(c.chorus.mode);
   e.chorus.set_interpolation(c.chorus.interpolation);
   e.chorus.set_sync_enabled(c.chorus.sync_enabled);
@@ -388,6 +396,7 @@ void vocal_fx_reset() {
   e.hpf.reset();
   e.gate.reset();
   e.compressor.reset();
+  e.drive.reset();
   e.chorus.reset();
   e.delay.reset();
   update_delay_times();
@@ -756,6 +765,12 @@ void vocal_fx_process(const float *in, float *ol, float *orr, size_t frames) {
     }
     VF_PROFILE_END(e.profiler, ProfileSection::BusMixing, 0);
 
+    VF_PROFILE_BEGIN(e.profiler, ProfileSection::Drive);
+    if (e.cfg.enable_drive) {
+      e.drive.process(e.left, e.right, e.left, e.right, n);
+    }
+    VF_PROFILE_END(e.profiler, ProfileSection::Drive, 0);
+
     VF_PROFILE_BEGIN(e.profiler, ProfileSection::Chorus);
     if (e.cfg.enable_chorus) {
       e.chorus.process(e.left, e.right, e.left, e.right, n, e.tempo_bpm);
@@ -1098,6 +1113,25 @@ void apply_parameter(VocalFxParameter p, float v) {
   case VocalFxParameter::ChorusWidth:
     e.chorus.set_width(std::clamp(v, 0.0f, 1.0f));
     break;
+  case VocalFxParameter::EnableDrive:
+    e.cfg.enable_drive = (v >= 0.5f);
+    break;
+  case VocalFxParameter::DriveMode:
+    e.drive.set_mode(static_cast<DriveMode>(
+        std::clamp(static_cast<int>(std::round(v)), 0, static_cast<int>(DriveMode::Count) - 1)));
+    break;
+  case VocalFxParameter::DriveDrive:
+    e.drive.set_drive(std::clamp(v, 0.0f, 1.0f));
+    break;
+  case VocalFxParameter::DriveTone:
+    e.drive.set_tone(std::clamp(v, 0.0f, 1.0f));
+    break;
+  case VocalFxParameter::DriveMix:
+    e.drive.set_mix(std::clamp(v, 0.0f, 1.0f));
+    break;
+  case VocalFxParameter::DriveOutputLevel:
+    e.drive.set_output_level(std::clamp(v, 0.0f, 2.0f));
+    break;
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0 && std::isfinite(v)){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
@@ -1248,6 +1282,45 @@ void vocal_fx_set_chorus_width(float width) {
 }
 size_t vocal_fx_chorus_memory_bytes() {
   return e.chorus.memory_bytes();
+}
+void vocal_fx_set_drive_enabled(bool enabled) {
+  vocal_fx_set_parameter(VocalFxParameter::EnableDrive, enabled ? 1.0f : 0.0f);
+}
+bool vocal_fx_get_drive_enabled() {
+  return e.cfg.enable_drive;
+}
+void vocal_fx_set_drive_mode(DriveMode mode) {
+  vocal_fx_set_parameter(VocalFxParameter::DriveMode, static_cast<float>(mode));
+}
+DriveMode vocal_fx_get_drive_mode() {
+  return e.drive.mode();
+}
+void vocal_fx_set_drive_amount(float drive) {
+  vocal_fx_set_parameter(VocalFxParameter::DriveDrive, drive);
+}
+float vocal_fx_get_drive_amount() {
+  return e.drive.drive();
+}
+void vocal_fx_set_drive_tone(float tone) {
+  vocal_fx_set_parameter(VocalFxParameter::DriveTone, tone);
+}
+float vocal_fx_get_drive_tone() {
+  return e.drive.tone();
+}
+void vocal_fx_set_drive_mix(float mix) {
+  vocal_fx_set_parameter(VocalFxParameter::DriveMix, mix);
+}
+float vocal_fx_get_drive_mix() {
+  return e.drive.mix();
+}
+void vocal_fx_set_drive_output_level(float level) {
+  vocal_fx_set_parameter(VocalFxParameter::DriveOutputLevel, level);
+}
+float vocal_fx_get_drive_output_level() {
+  return e.drive.output_level();
+}
+size_t vocal_fx_drive_memory_bytes() {
+  return e.drive.memory_bytes();
 }
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
@@ -1403,6 +1476,7 @@ vocal_fx_pitch_profile_stats(PitchAnalysisProfileSection section) {
 }
 size_t vocal_fx_dsp_memory_bytes() {
   return e.delay.memory_bytes() + e.reverb.memory_bytes() +
+         e.drive.memory_bytes() +
          e.chorus.memory_bytes() +
          e.pitch_resources.memory_bytes() +
          e.pitch_shift[0].memory_bytes() +
