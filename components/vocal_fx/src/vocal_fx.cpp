@@ -305,6 +305,8 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   e.chorus.set_base_delay_ms(c.chorus.base_delay_ms);
   e.chorus.set_width(c.chorus.width);
   e.chorus.set_mix(c.chorus.mix);
+  e.chorus.set_microshift_cents(c.chorus.microshift_left_cents, c.chorus.microshift_right_cents);
+  e.chorus.set_microshift_window_ms(c.chorus.microshift_window_ms);
   e.limiter.init(c.sample_rate);
   e.dry_delay.init(c.sample_rate, c.dry_alignment_ms, c.align_dry_to_harmony);
   e.harmony_limiter.init(c.sample_rate, c.harmony_limiter_threshold_db,
@@ -1113,6 +1115,15 @@ void apply_parameter(VocalFxParameter p, float v) {
   case VocalFxParameter::ChorusWidth:
     e.chorus.set_width(std::clamp(v, 0.0f, 1.0f));
     break;
+  case VocalFxParameter::MicroshiftLeftCents:
+    e.chorus.set_microshift_left_cents(v);
+    break;
+  case VocalFxParameter::MicroshiftRightCents:
+    e.chorus.set_microshift_right_cents(v);
+    break;
+  case VocalFxParameter::MicroshiftWindowMs:
+    e.chorus.set_microshift_window_ms(v);
+    break;
   case VocalFxParameter::EnableDrive:
     e.cfg.enable_drive = (v >= 0.5f);
     break;
@@ -1282,6 +1293,24 @@ void vocal_fx_set_chorus_width(float width) {
 }
 size_t vocal_fx_chorus_memory_bytes() {
   return e.chorus.memory_bytes();
+}
+void vocal_fx_set_microshift_left_cents(float cents) {
+  vocal_fx_set_parameter(VocalFxParameter::MicroshiftLeftCents, cents);
+}
+float vocal_fx_get_microshift_left_cents() {
+  return e.chorus.microshift_left_cents();
+}
+void vocal_fx_set_microshift_right_cents(float cents) {
+  vocal_fx_set_parameter(VocalFxParameter::MicroshiftRightCents, cents);
+}
+float vocal_fx_get_microshift_right_cents() {
+  return e.chorus.microshift_right_cents();
+}
+void vocal_fx_set_microshift_window_ms(float ms) {
+  vocal_fx_set_parameter(VocalFxParameter::MicroshiftWindowMs, ms);
+}
+float vocal_fx_get_microshift_window_ms() {
+  return e.chorus.microshift_window_ms();
 }
 void vocal_fx_set_drive_enabled(bool enabled) {
   vocal_fx_set_parameter(VocalFxParameter::EnableDrive, enabled ? 1.0f : 0.0f);

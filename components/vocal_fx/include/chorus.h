@@ -11,7 +11,13 @@ enum class ChorusMode : uint8_t {
   Chorus = 0,    // Classic vocal chorus: smooth stereo widening & thickening
   Ensemble,      // Multi-tap dense doubling: 3 taps with decorrelated rates/phases
   Dimension,     // Subtle spatial widening: low depth, asymmetric delay, mono-compatible
+  Microshift,    // Dual-head crossfaded pitch delay doubling
   Count
+};
+
+enum class MicroshiftCrossfade : uint8_t {
+  Linear = 0,
+  EqualPower = 1
 };
 
 // Interpolation method for modulated delay line reads.
@@ -37,6 +43,12 @@ struct ChorusConfig {
   float base_delay_ms = 12.0f; // Sweet spot for vocal thickening (was 15.0 ms)
   float width = 1.0f;
   float mix = 0.30f;           // Transparent vocal doubling (was 0.35f)
+
+  // Microshift configuration
+  float microshift_left_cents = -7.0f;
+  float microshift_right_cents = 9.0f;
+  float microshift_window_ms = 25.0f;
+  MicroshiftCrossfade microshift_crossfade = MicroshiftCrossfade::EqualPower;
 };
 
 class VocalChorus {
@@ -80,6 +92,23 @@ public:
   void set_width(float width) { width_ = std::clamp(width, 0.0f, 1.0f); }
   float width() const { return width_; }
 
+  void set_microshift_left_cents(float cents);
+  float microshift_left_cents() const { return microshift_left_cents_; }
+
+  void set_microshift_right_cents(float cents);
+  float microshift_right_cents() const { return microshift_right_cents_; }
+
+  void set_microshift_cents(float left_cents, float right_cents) {
+    set_microshift_left_cents(left_cents);
+    set_microshift_right_cents(right_cents);
+  }
+
+  void set_microshift_window_ms(float ms);
+  float microshift_window_ms() const { return microshift_window_ms_; }
+
+  void set_microshift_crossfade(MicroshiftCrossfade cf) { microshift_crossfade_ = cf; }
+  MicroshiftCrossfade microshift_crossfade() const { return microshift_crossfade_; }
+
   // Processes a block of stereo audio in-place.
   // When bypass/disabled, caller can skip or mix == 0 is cheap pass-through.
   void process(const float *in_l, const float *in_r, float *out_l, float *out_r,
@@ -89,6 +118,7 @@ public:
 
 private:
   float effective_rate_hz(float tempo_bpm) const;
+  void update_microshift_rates();
 
   // Reads from circular buffer with linear interpolation
   float read_linear(const float *buf, float delay_samples) const;
@@ -123,4 +153,16 @@ private:
   float lfo_phase_0_ = 0.0f;
   float lfo_phase_1_ = 0.25f;
   float lfo_phase_2_ = 0.67f;
+
+  // Microshift state
+  float microshift_left_cents_ = -7.0f;
+  float microshift_right_cents_ = 9.0f;
+  float microshift_window_ms_ = 25.0f;
+  MicroshiftCrossfade microshift_crossfade_ = MicroshiftCrossfade::EqualPower;
+  float microshift_phase_inc_l_ = 0.0f;
+  float microshift_phase_inc_r_ = 0.0f;
+  float microshift_window_samples_ = 1102.5f;
+  float microshift_base_delay_samples_ = 352.8f;
+  float microshift_phase_l_ = 0.0f;
+  float microshift_phase_r_ = 0.25f;
 };

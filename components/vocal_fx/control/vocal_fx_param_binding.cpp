@@ -78,6 +78,9 @@ bool voxlink_to_engine_param(uint16_t id, VocalFxParameter *out) {
   case 0x0606: mapped = VocalFxParameter::ChorusDepthMs; break;
   case 0x0607: mapped = VocalFxParameter::ChorusBaseDelayMs; break;
   case 0x0608: mapped = VocalFxParameter::ChorusWidth; break;
+  case 0x0609: mapped = VocalFxParameter::MicroshiftLeftCents; break;
+  case 0x060A: mapped = VocalFxParameter::MicroshiftRightCents; break;
+  case 0x060B: mapped = VocalFxParameter::MicroshiftWindowMs; break;
   // Drive
   case 0x0700: mapped = VocalFxParameter::EnableDrive; break;
   case 0x0701: mapped = VocalFxParameter::DriveMode; break;

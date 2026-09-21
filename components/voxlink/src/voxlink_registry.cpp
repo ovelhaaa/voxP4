@@ -166,7 +166,7 @@ const ParamDescriptor kParams[] = {
     // Chorus ----------------------------------------------------------------
     PBOOL(0x0600, "chorus.enable", "Chorus Enable", 0.0f, kPersistRt, "chorus",
           "EnableChorus"),
-    PENUM(0x0601, "chorus.mode", "Chorus Mode", 0.0f, 2.0f, 0.0f, "chorus",
+    PENUM(0x0601, "chorus.mode", "Chorus Mode", 0.0f, 3.0f, 0.0f, "chorus",
           "ChorusMode"),
     PFLOAT(0x0602, "chorus.mix", "Chorus Mix", "", 0.0f, 1.0f, 0.30f, 0.01f,
            kPersistRtSmoothed, 20.0f, "chorus", "ChorusMix"),
@@ -182,6 +182,12 @@ const ParamDescriptor kParams[] = {
            12.0f, 0.1f, kPersistRtSmoothed, 0.0f, "chorus", "ChorusBaseDelayMs"),
     PFLOAT(0x0608, "chorus.width", "Chorus Width", "", 0.0f, 1.0f, 1.0f, 0.01f,
            kPersistRtSmoothed, 0.0f, "chorus", "ChorusWidth"),
+    PFLOAT(0x0609, "chorus.microshift_left_cents", "Microshift Left Cents", "cents", -50.0f, 50.0f,
+           -7.0f, 1.0f, kPersistRtSmoothed, 20.0f, "chorus", "MicroshiftLeftCents"),
+    PFLOAT(0x060A, "chorus.microshift_right_cents", "Microshift Right Cents", "cents", -50.0f, 50.0f,
+           9.0f, 1.0f, kPersistRtSmoothed, 20.0f, "chorus", "MicroshiftRightCents"),
+    PFLOAT(0x060B, "chorus.microshift_window_ms", "Microshift Window", "ms", 5.0f, 50.0f,
+           25.0f, 1.0f, kPersistRtSmoothed, 20.0f, "chorus", "MicroshiftWindowMs"),
 
     // Drive -----------------------------------------------------------------
     PBOOL(0x0700, "drive.enable", "Drive Enable", 0.0f, kPersistRt, "drive",

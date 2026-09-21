@@ -49,6 +49,7 @@ bool VocalChorus::init(float sample_rate, float max_delay_ms) {
   }
 
   reset();
+  update_microshift_rates();
   return true;
 }
 
@@ -59,12 +60,51 @@ void VocalChorus::reset() {
   lfo_phase_0_ = 0.0f;
   lfo_phase_1_ = 0.25f;
   lfo_phase_2_ = 0.67f;
+  microshift_phase_l_ = 0.0f;
+  microshift_phase_r_ = 0.25f;
 }
 
 void VocalChorus::set_mode(ChorusMode mode) {
   if (static_cast<uint8_t>(mode) < static_cast<uint8_t>(ChorusMode::Count)) {
     mode_ = mode;
   }
+}
+
+void VocalChorus::set_microshift_left_cents(float cents) {
+  if (std::isnan(cents)) return;
+  microshift_left_cents_ = std::clamp(cents, -50.0f, 50.0f);
+  update_microshift_rates();
+}
+
+void VocalChorus::set_microshift_right_cents(float cents) {
+  if (std::isnan(cents)) return;
+  microshift_right_cents_ = std::clamp(cents, -50.0f, 50.0f);
+  update_microshift_rates();
+}
+
+void VocalChorus::set_microshift_window_ms(float ms) {
+  if (std::isnan(ms) || ms <= 0.0f) return;
+  microshift_window_ms_ = std::clamp(ms, 5.0f, 50.0f);
+  update_microshift_rates();
+}
+
+void VocalChorus::update_microshift_rates() {
+  const float clamped_left = std::clamp(microshift_left_cents_, -50.0f, 50.0f);
+  const float clamped_right = std::clamp(microshift_right_cents_, -50.0f, 50.0f);
+  const float clamped_window = std::clamp(microshift_window_ms_, 5.0f, 50.0f);
+
+  const float ratio_l = std::exp2(clamped_left / 1200.0f);
+  const float ratio_r = std::exp2(clamped_right / 1200.0f);
+
+  microshift_window_samples_ = std::max(16.0f, clamped_window * 0.001f * sample_rate_);
+  microshift_base_delay_samples_ = 8.0f * 0.001f * sample_rate_; // 8 ms base offset
+
+  if (buf_size_ > 16 && (microshift_base_delay_samples_ + microshift_window_samples_ > static_cast<float>(buf_size_ - 8))) {
+    microshift_window_samples_ = static_cast<float>(buf_size_ - 8) - microshift_base_delay_samples_;
+  }
+
+  microshift_phase_inc_l_ = (1.0f - ratio_l) / microshift_window_samples_;
+  microshift_phase_inc_r_ = (1.0f - ratio_r) / microshift_window_samples_;
 }
 
 void VocalChorus::apply_mode_defaults(ChorusMode mode) {
@@ -90,6 +130,15 @@ void VocalChorus::apply_mode_defaults(ChorusMode mode) {
     base_delay_ms_ = 9.0f;
     mix_ = 0.35f;
     width_ = 1.0f;
+    break;
+  case ChorusMode::Microshift:
+    microshift_left_cents_ = -7.0f;
+    microshift_right_cents_ = 9.0f;
+    microshift_window_ms_ = 25.0f;
+    mix_ = 0.35f;
+    width_ = 1.0f;
+    microshift_crossfade_ = MicroshiftCrossfade::EqualPower;
+    update_microshift_rates();
     break;
   default:
     break;
@@ -155,11 +204,18 @@ void VocalChorus::process(const float *in_l, const float *in_r, float *out_l, fl
       delay_buf_r_[write_pos_] = in_r[s];
       write_pos_ = (write_pos_ + 1) & (buf_size_ - 1);
     }
-    const float rate = effective_rate_hz(tempo_bpm);
-    const float phase_inc = rate / sample_rate_;
-    lfo_phase_0_ = std::fmod(lfo_phase_0_ + phase_inc * static_cast<float>(frames), 1.0f);
-    lfo_phase_1_ = std::fmod(lfo_phase_1_ + phase_inc * 1.37f * static_cast<float>(frames), 1.0f);
-    lfo_phase_2_ = std::fmod(lfo_phase_2_ + phase_inc * 0.73f * static_cast<float>(frames), 1.0f);
+    if (mode_ == ChorusMode::Microshift) {
+      microshift_phase_l_ = std::fmod(microshift_phase_l_ + microshift_phase_inc_l_ * static_cast<float>(frames), 1.0f);
+      if (microshift_phase_l_ < 0.0f) microshift_phase_l_ += 1.0f;
+      microshift_phase_r_ = std::fmod(microshift_phase_r_ + microshift_phase_inc_r_ * static_cast<float>(frames), 1.0f);
+      if (microshift_phase_r_ < 0.0f) microshift_phase_r_ += 1.0f;
+    } else {
+      const float rate = effective_rate_hz(tempo_bpm);
+      const float phase_inc = rate / sample_rate_;
+      lfo_phase_0_ = std::fmod(lfo_phase_0_ + phase_inc * static_cast<float>(frames), 1.0f);
+      lfo_phase_1_ = std::fmod(lfo_phase_1_ + phase_inc * 1.37f * static_cast<float>(frames), 1.0f);
+      lfo_phase_2_ = std::fmod(lfo_phase_2_ + phase_inc * 0.73f * static_cast<float>(frames), 1.0f);
+    }
     return;
   }
 
@@ -255,6 +311,56 @@ void VocalChorus::process(const float *in_l, const float *in_r, float *out_l, fl
       break;
     }
 
+    case ChorusMode::Microshift: {
+      // Dual-head crossfaded pitch delay for Left channel
+      const float phi_a_l = microshift_phase_l_;
+      float phi_b_l = phi_a_l + 0.5f;
+      if (phi_b_l >= 1.0f) phi_b_l -= 1.0f;
+
+      const float d_a_l = microshift_base_delay_samples_ + phi_a_l * microshift_window_samples_;
+      const float d_b_l = microshift_base_delay_samples_ + phi_b_l * microshift_window_samples_;
+
+      const float s_a_l = read_sample(l_buf, d_a_l);
+      const float s_b_l = read_sample(l_buf, d_b_l);
+
+      float w_a_l;
+      if (microshift_crossfade_ == MicroshiftCrossfade::Linear) {
+        w_a_l = 1.0f - 2.0f * std::fabs(phi_a_l - 0.5f);
+      } else {
+        const float s = fast_sin(phi_a_l * 0.5f);
+        w_a_l = s * s;
+      }
+      const float w_b_l = 1.0f - w_a_l;
+      const float shift_l = w_a_l * s_a_l + w_b_l * s_b_l;
+
+      // Dual-head crossfaded pitch delay for Right channel
+      const float phi_a_r = microshift_phase_r_;
+      float phi_b_r = phi_a_r + 0.5f;
+      if (phi_b_r >= 1.0f) phi_b_r -= 1.0f;
+
+      const float d_a_r = microshift_base_delay_samples_ + phi_a_r * microshift_window_samples_;
+      const float d_b_r = microshift_base_delay_samples_ + phi_b_r * microshift_window_samples_;
+
+      const float s_a_r = read_sample(r_buf, d_a_r);
+      const float s_b_r = read_sample(r_buf, d_b_r);
+
+      float w_a_r;
+      if (microshift_crossfade_ == MicroshiftCrossfade::Linear) {
+        w_a_r = 1.0f - 2.0f * std::fabs(phi_a_r - 0.5f);
+      } else {
+        const float s = fast_sin(phi_a_r * 0.5f);
+        w_a_r = s * s;
+      }
+      const float w_b_r = 1.0f - w_a_r;
+      const float shift_r = w_a_r * s_a_r + w_b_r * s_b_r;
+
+      // Width panning: 0 = mono wet, 1 = full stereo
+      const float mid = 0.5f * (shift_l + shift_r);
+      wet_l = mid + width * (shift_l - mid);
+      wet_r = mid + width * (shift_r - mid);
+      break;
+    }
+
     default:
       wet_l = in_l[s];
       wet_r = in_r[s];
@@ -266,14 +372,24 @@ void VocalChorus::process(const float *in_l, const float *in_r, float *out_l, fl
 
     write_pos_ = (write_pos_ + 1) & mask;
 
-    lfo_phase_0_ += phase_inc_0;
-    if (lfo_phase_0_ >= 1.0f) lfo_phase_0_ -= 1.0f;
+    if (mode_ == ChorusMode::Microshift) {
+      microshift_phase_l_ += microshift_phase_inc_l_;
+      if (microshift_phase_l_ >= 1.0f) microshift_phase_l_ -= 1.0f;
+      else if (microshift_phase_l_ < 0.0f) microshift_phase_l_ += 1.0f;
 
-    lfo_phase_1_ += phase_inc_1;
-    if (lfo_phase_1_ >= 1.0f) lfo_phase_1_ -= 1.0f;
+      microshift_phase_r_ += microshift_phase_inc_r_;
+      if (microshift_phase_r_ >= 1.0f) microshift_phase_r_ -= 1.0f;
+      else if (microshift_phase_r_ < 0.0f) microshift_phase_r_ += 1.0f;
+    } else {
+      lfo_phase_0_ += phase_inc_0;
+      if (lfo_phase_0_ >= 1.0f) lfo_phase_0_ -= 1.0f;
 
-    lfo_phase_2_ += phase_inc_2;
-    if (lfo_phase_2_ >= 1.0f) lfo_phase_2_ -= 1.0f;
+      lfo_phase_1_ += phase_inc_1;
+      if (lfo_phase_1_ >= 1.0f) lfo_phase_1_ -= 1.0f;
+
+      lfo_phase_2_ += phase_inc_2;
+      if (lfo_phase_2_ >= 1.0f) lfo_phase_2_ -= 1.0f;
+    }
   }
 }
 

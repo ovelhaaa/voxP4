@@ -59,6 +59,7 @@ enum class VocalFxParameter : uint16_t {
   DelaySyncEnabled, DelayLeftSubdivision, DelayRightSubdivision,
   EnableChorus, ChorusMode, ChorusMix, ChorusSyncEnabled, ChorusRateHz,
   ChorusSubdivision, ChorusDepthMs, ChorusBaseDelayMs, ChorusWidth,
+  MicroshiftLeftCents, MicroshiftRightCents, MicroshiftWindowMs,
   EnableDrive, DriveMode, DriveDrive, DriveTone, DriveMix, DriveOutputLevel
 };
 
