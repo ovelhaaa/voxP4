@@ -1,4 +1,5 @@
 #pragma once
+#include "tempo.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -51,7 +52,9 @@ enum class VocalFxParameter : uint16_t {
   DryAlignmentEnabled, DryAlignmentMs,
   HarmonyAttackMs, HarmonyReleaseMs,
   HarmonyLimiterEnabled, HarmonyLimiterThresholdDb,
-  SpatialRouting, SpatialSource, MuteDry
+  SpatialRouting, SpatialSource, MuteDry,
+  TempoBpm,
+  DelaySyncEnabled, DelayLeftSubdivision, DelayRightSubdivision
 };
 
 enum class SpatialFxRouting : uint8_t {

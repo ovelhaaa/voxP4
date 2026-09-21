@@ -59,6 +59,11 @@ struct VocalFxConfig {
   SpatialFxRouting spatial_routing = SpatialFxRouting::DelayIntoReverb;
   SpatialFxSource spatial_source = SpatialFxSource::MainMix;
   bool mute_dry = false;
+  // Global Tempo & Delay Sync
+  float tempo_bpm = TEMPO_BPM_DEFAULT;
+  bool delay_sync_enabled = false;
+  TempoSubdivision delay_left_subdivision = TempoSubdivision::Eighth;
+  TempoSubdivision delay_right_subdivision = TempoSubdivision::DottedEighth;
 };
 
 enum class PitchDetectorAlgorithm : uint8_t { Yin, Mpm };

@@ -72,12 +72,25 @@ struct Engine {
         comp_t = -18, comp_ratio = 3, comp_a = 10, comp_r = 100,
         comp_makeup = 3, comp_knee = 6, delay_l = 250, delay_r = 375,
         delay_dry = 1, delay_wet = .2f;
+  float tempo_bpm = TEMPO_BPM_DEFAULT;
+  bool delay_sync_enabled = false;
+  TempoSubdivision delay_left_subdivision = TempoSubdivision::Eighth;
+  TempoSubdivision delay_right_subdivision = TempoSubdivision::DottedEighth;
 };
 Engine e;
+inline void update_delay_times() {
+  if (e.delay_sync_enabled) {
+    const float l_ms = tempo_subdivision_ms(e.tempo_bpm, e.delay_left_subdivision);
+    const float r_ms = tempo_subdivision_ms(e.tempo_bpm, e.delay_right_subdivision);
+    e.delay.set_times(l_ms, r_ms);
+  } else {
+    e.delay.set_times(e.delay_l, e.delay_r);
+  }
+}
 // B4D.6: the product has a single harmony voice, so any legacy voice index
 // resolves to voice 0 (the second TD-PSOLA instance no longer exists).
 inline TdPsola &vf_voice(size_t) { return e.pitch_shift[0]; }
-ParameterQueue<64> parameter_queue;
+ParameterQueue<128> parameter_queue;
 struct PitchMailbox {
   std::atomic_flag publisher_lock = ATOMIC_FLAG_INIT;
   std::atomic<uint32_t> seq{0};
@@ -330,6 +343,11 @@ bool vocal_fx_init(const VocalFxConfig &c) {
                   : 1.0f;
   legacy.pan=0; legacy.smoothing_ms=c.pitch_shift.smoothing_ms;
   e.harmony.set_voice(0,legacy); e.harmony.reset();
+  e.tempo_bpm = tempo_clamp_bpm(c.tempo_bpm);
+  e.delay_sync_enabled = c.delay_sync_enabled;
+  e.delay_left_subdivision = c.delay_left_subdivision;
+  e.delay_right_subdivision = c.delay_right_subdivision;
+  update_delay_times();
   e.pitch_shift_pitch = {};
   e.pitch_shift_mark_count = 0;
   parameter_queue.reset();
@@ -359,6 +377,7 @@ void vocal_fx_reset() {
   e.gate.reset();
   e.compressor.reset();
   e.delay.reset();
+  update_delay_times();
   e.reverb.reset();
   e.limiter.reset();
   e.dry_delay.reset();
@@ -898,11 +917,11 @@ void apply_parameter(VocalFxParameter p, float v) {
     break;
   case VocalFxParameter::DelayLeftMs:
     e.delay_l = v;
-    e.delay.set_times(e.delay_l, e.delay_r);
+    update_delay_times();
     break;
   case VocalFxParameter::DelayRightMs:
     e.delay_r = v;
-    e.delay.set_times(e.delay_l, e.delay_r);
+    update_delay_times();
     break;
   case VocalFxParameter::DelayFeedback:
     e.delay.set_feedback(v);
@@ -1007,6 +1026,24 @@ void apply_parameter(VocalFxParameter p, float v) {
   case VocalFxParameter::MuteDry:
     e.cfg.mute_dry = (v >= 0.5f);
     break;
+  case VocalFxParameter::TempoBpm:
+    e.tempo_bpm = tempo_clamp_bpm(v);
+    update_delay_times();
+    break;
+  case VocalFxParameter::DelaySyncEnabled:
+    e.delay_sync_enabled = (v >= 0.5f);
+    update_delay_times();
+    break;
+  case VocalFxParameter::DelayLeftSubdivision:
+    e.delay_left_subdivision = static_cast<TempoSubdivision>(
+        std::clamp(static_cast<int>(std::round(v)), 0, static_cast<int>(TempoSubdivision::Count) - 1));
+    update_delay_times();
+    break;
+  case VocalFxParameter::DelayRightSubdivision:
+    e.delay_right_subdivision = static_cast<TempoSubdivision>(
+        std::clamp(static_cast<int>(std::round(v)), 0, static_cast<int>(TempoSubdivision::Count) - 1));
+    update_delay_times();
+    break;
   default: {
     const int x=static_cast<int>(p)-static_cast<int>(VocalFxParameter::HarmonyVoice1Enabled);
     if(x>=0 && std::isfinite(v)){size_t voice=static_cast<size_t>(x%2);int field=x/2;auto c=e.harmony.voice(voice);
@@ -1096,6 +1133,22 @@ void vocal_fx_set_spatial_source(SpatialFxSource source) {
 }
 void vocal_fx_set_mute_dry(bool mute) {
   vocal_fx_set_parameter(VocalFxParameter::MuteDry, mute ? 1.0f : 0.0f);
+}
+void vocal_fx_set_tempo_bpm(float bpm) {
+  vocal_fx_set_parameter(VocalFxParameter::TempoBpm, bpm);
+}
+float vocal_fx_get_tempo_bpm() {
+  return e.tempo_bpm;
+}
+void vocal_fx_set_delay_sync_enabled(bool enabled) {
+  vocal_fx_set_parameter(VocalFxParameter::DelaySyncEnabled, enabled ? 1.0f : 0.0f);
+}
+bool vocal_fx_get_delay_sync_enabled() {
+  return e.delay_sync_enabled;
+}
+void vocal_fx_set_delay_subdivisions(TempoSubdivision left, TempoSubdivision right) {
+  vocal_fx_set_parameter(VocalFxParameter::DelayLeftSubdivision, static_cast<float>(left));
+  vocal_fx_set_parameter(VocalFxParameter::DelayRightSubdivision, static_cast<float>(right));
 }
 void vocal_fx_midi_note_on(uint8_t n,uint8_t velocity){e.midi.note_on(n,velocity);}
 void vocal_fx_midi_note_off(uint8_t n){e.midi.note_off(n);}
