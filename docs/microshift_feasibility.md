@@ -9,7 +9,7 @@
 
 ## 1. O que é Microshift no contexto vocal profissional?
 
-No ambiente de estúdio e processamento vocal ao vivo, o efeito **Microshift** (tornado lendário pelo algoritmo *MicroPitch* do Eventide H3000, e amplamente consagrado por plugins como Soundtoys MicroShift e Eventide MicroPitch) é uma técnica de alargamento estéreo e adensamento tímbrico ("vocal thickening / stereo widening").
+No ambiente de estúdio e processamento vocal ao vivo, o efeito **Microshift** (conceitualmente inspirado pelo clássico algoritmo *MicroPitch* do Eventide H3000 e por plugins contemporâneos de estúdio) é uma técnica de alargamento estéreo e adensamento tímbrico ("vocal thickening / stereo widening"). Estas referências de hardware e software servem como inspirações conceituais e alvos de design arquitetural para futuros desenvolvimentos no VoxP4, sem qualquer alegação de equivalência algorítmica direta.
 
 Sua topologia fundamental consiste em:
 - **Canal Esquerdo (L):** pitch transposto sutilmente para cima (tipicamente entre $+5$ e $+12$ cents, média $+7$ cents) com um atraso curto fixo ou quasi-estático (tipicamente entre $8$ e $15$ ms);
@@ -59,11 +59,11 @@ $$R_- = 2^{-9/1200} \approx 0.994812$$
 - Isso faz com que os grãos sintetizados fiquem praticamente sobrepostos aos grãos originais por dezenas de períodos fundamentais, antes que ocorra a duplicação ou o descarte de um grão ("grain drop/repeat").
 - Nos momentos de transição de grãos descartados/duplicados, o TD-PSOLA pode gerar micro-descontinuidades de fase audíveis ou batimentos espúrios em materiais com transientes vocais.
 
-### 4.3 Comb Filtering e Fase Destrutiva
-- Ao somar o sinal transposto em $+9$ cents com o sinal dry ou com o canal oposto ($-9$ cents) na redução mono (ou no campo acústico dos alto-falantes):
-  $$\Delta f = f_0 \times (R_+ - 1) \approx 220 \text{ Hz} \times 0.0052 \approx 1.15 \text{ Hz}$$
-- Ocorre um batimento de amplitude a $\approx 1.15$ Hz (e em harmônicos superiores a $2.3$ Hz, $3.45$ Hz, etc.).
-- Como o TD-PSOLA opera síncrono aos pitch marks com janelas Hanning de $2 \times T_0$, pequenas imprecisões no alinhamento das marcas causam variações bruscas no cancelamento de fase na soma mono, degradando o corpo vocal.
+### 4.3 Comb Filtering, Batimento Acústico e Fase
+- **Física Fundamental do Batimento Acústico:** Ao somar qualquer sinal senoidal/harmônico com uma réplica transposta em frequência ligeiramente diferente ($\Delta f = f_0 \times |R - 1|$), ocorre uma modulação de amplitude periódica (batimento) a uma taxa de exatamente $\Delta f$ Hz. Por exemplo, para $f_0 = 220$ Hz e um detune de $+9$ cents ($R_+ \approx 1.0052$):
+  $$\Delta f = 220 \text{ Hz} \times 0.0052 \approx 1.15 \text{ Hz}$$
+  **Este batimento é um fenômeno físico inevitável de QUALQUER algoritmo** (seja analógico, delay com crossfade, phase vocoder ou TD-PSOLA) quando o sinal original é somado acusticamente ou eletricamente à sua réplica transposta. Não constitui uma falha ou deficiência específica do TD-PSOLA.
+- **Onde o TD-PSOLA introduz problemas adicionais:** O que difere entre algoritmos é a presença ou ausência de descontinuidades de emenda, janelamento ou repetição de grãos. No TD-PSOLA, como os grãos são emitidos síncronos aos marcos de pitch ($T_0$), o agendamento quase síncrono para razões muito próximas de 1.0 ($R \approx 1.005$) força o algoritmo a operar em uma zona limite: por centenas de milissegundos os grãos são quase idênticos, até que ocorre o descarte ou a duplicação brusca de um grão. Além disso, quaisquer imprecisões no detector de pitch ($f_0$) ou flutuações nos pitch marks modulam erraticamente o instante de emissão, superimpondo jitter de fase e ruído de janelamento sobre o batimento acústico natural. Em contrapartida, uma linha de atraso assíncrona com velocidade linear constante mantém a progressão temporal perfeitamente contínua e suave.
 
 ### 4.4 Custo de Memória e Ciclos de um TD-PSOLA dedicado
 - Cada voz de TD-PSOLA no VoxP4 requer buffers de residual, cache de formantes LPC, tabelas de ganhos de normalização e histórico de pitch.
@@ -82,12 +82,15 @@ Para cada canal estéreo (L e R):
 3. As cabeças são espaçadas por meio período de janela triangular ou senoidal ($\pi$ radianos) e executam crossfade suave quando atingem o limite do buffer de retardo.
 4. Os tempos de atraso base são ligeiramente diferentes (ex.: $L_{\text{base}} = 11$ ms, $R_{\text{base}} = 19$ ms) para assegurar total descorrelação estéreo.
 
-### 5.2 Comparação de Recursos: TD-PSOLA vs. Crossfaded Delay
+### 5.2 Comparação Preliminar de Recursos: TD-PSOLA vs. Crossfaded Delay (Estimativas de Projeto)
 
-| Métrica | 2x Vozes TD-PSOLA | Dual Crossfaded Delay (Microshift Dedicado) |
+> [!NOTE]
+> Os valores abaixo para o Dual Crossfaded Delay representam **metas de projeto e estimativas arquiteturais preliminares**, baseadas no custo computacional de leitura linear/cúbica com rampa de ganho em blocos de 64 amostras, e NÃO medições físicas definitivas em bancada. A qualificação empírica no ESP32-P4 será conduzida quando o módulo for efetivamente desenvolvido.
+
+| Métrica | 2x Vozes TD-PSOLA (Medido P4) | Dual Crossfaded Delay (Meta de Projeto / Estimativa) |
 | :--- | :--- | :--- |
-| **Consumo de Memória** | $> 150 \text{ KB}$ (PSRAM/SRAM) | $\mathbf{\approx 15 \text{ KB}}$ (SRAM local rápida) |
-| **Tempo de CPU / Bloco (64 amostras)** | $\approx 60 - 90 \ \mu\text{s}$ no P4 | $\mathbf{\approx 1.5 - 2.5 \ \mu\text{s}}$ no P4 |
+| **Consumo de Memória** | $> 150 \text{ KB}$ (PSRAM/SRAM) | $\mathbf{\approx 15 \text{ KB}}$ (meta para SRAM interna) |
+| **Tempo de CPU / Bloco (64 amostras)** | $\approx 60 - 90 \ \mu\text{s}$ no P4 | $\mathbf{\approx 1.5 - 3.0 \ \mu\text{s}}$ (meta de projeto no P4) |
 | **Dependência de Pitch Tracker** | Sim (exige pitch marks e $f_0$) | **Não (100% assíncrono e autônomo)** |
 | **Sensibilidade a Ruído/Unvoiced** | Risco de artefatos em consoantes unvoiced | **Excelente em voz limpa, sussurrada e unvoiced** |
 | **Preservação do Baseline Congelado** | Risco alto (modifica/onera o core do Harmonizer) | **Risco Zero (módulo totalmente desacoplado)** |
@@ -128,11 +131,11 @@ Master Limiter & Output
 ### Recomendação Final
 **Não implementar o Microshift dentro do Harmonizer TD-PSOLA.**
 
-Recomenda-se implementar o Microshift através de **uma das duas opções arquiteturais desacopladas**:
+Recomenda-se implementar o Microshift em milestone futura através de **uma das duas opções arquiteturais desacopladas**:
 - **Opção A (Recomendada):** Como um modo estendido do módulo `VocalChorus` existente (`ChorusMode::Microshift`), aproveitando o buffer de delay circular estéreo e a infraestrutura de interpolação já implementada.
 - **Opção B:** Como módulo dedicado independente `VocalMicroshift`, inserido entre o `VocalDrive` e o `VocalChorus`.
 
 ### Justificativas Finais:
-1. **Qualidade Sonora:** O algoritmo de crossfaded delay head assíncrono é o padrão da indústria para micro-pitching vocal profissional. Ele preserva o ataque dos transientes e não gera os artefatos de janela ou batimentos inter-grãos que o TD-PSOLA produziria para $\Delta f < 15$ cents.
-2. **Economia de Recursos no ESP32-P4:** Custo inferior a $2 \ \mu\text{s}$ por bloco de 64 frames e menos de $16$ KB de memória, viabilizando uso conjunto com todos os efeitos da cadeia sem risco de deadline misses.
-3. **Segurança e Estabilidade do Código:** O baseline congelado do TD-PSOLA permanece intocado, preservando os marcos de confiabilidade conquistados no projeto VoxP4.
+1. **Qualidade Sonora:** O algoritmo de crossfaded delay head assíncrono é uma referência conceitual clássica para micro-pitching vocal. Ele preserva o ataque dos transientes e evita os artefatos de janela ou descontinuidades inter-grãos que o TD-PSOLA produziria para $\Delta f < 15$ cents.
+2. **Metas de Desempenho no ESP32-P4:** A meta de projeto de baixíssimo overhead computacional e consumo compacto de memória viabiliza o uso do efeito sem comprometer a margem de tempo real do deadline de 1451.25 µs.
+3. **Segurança e Estabilidade do Código:** O baseline congelado do TD-PSOLA permanece 100% intocado, preservando todos os marcos de estabilidade conquistados no projeto VoxP4.
