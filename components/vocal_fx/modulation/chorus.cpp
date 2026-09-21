@@ -67,6 +67,35 @@ void VocalChorus::set_mode(ChorusMode mode) {
   }
 }
 
+void VocalChorus::apply_mode_defaults(ChorusMode mode) {
+  set_mode(mode);
+  switch (mode) {
+  case ChorusMode::Chorus:
+    rate_hz_ = 0.75f;
+    depth_ms_ = 1.6f;
+    base_delay_ms_ = 12.0f;
+    mix_ = 0.30f;
+    width_ = 1.0f;
+    break;
+  case ChorusMode::Ensemble:
+    rate_hz_ = 0.70f;
+    depth_ms_ = 2.2f;
+    base_delay_ms_ = 12.0f;
+    mix_ = 0.35f;
+    width_ = 1.0f;
+    break;
+  case ChorusMode::Dimension:
+    rate_hz_ = 0.40f;
+    depth_ms_ = 0.8f;
+    base_delay_ms_ = 9.0f;
+    mix_ = 0.35f;
+    width_ = 1.0f;
+    break;
+  default:
+    break;
+  }
+}
+
 float VocalChorus::effective_rate_hz(float tempo_bpm) const {
   if (sync_enabled_) {
     const float period_ms = tempo_subdivision_ms(tempo_bpm, subdivision_);
