@@ -12,10 +12,10 @@ enum class DriveMode : uint8_t {
 
 struct DriveConfig {
   DriveMode mode = DriveMode::Warm;
-  float drive = 0.3f;
-  float tone = 0.5f;
-  float mix = 1.0f;
-  float output_level = 1.0f;
+  float drive = 0.40f;        // Gentle 2nd harmonic saturation (was 0.3f)
+  float tone = 0.65f;         // Open, warm presence ~7.5 kHz (was 0.5f)
+  float mix = 0.75f;          // Parallel saturation preserving transients (was 1.0f)
+  float output_level = 0.95f; // Level-compensated unity gain (was 1.0f)
 };
 
 class VocalDrive {
@@ -27,6 +27,12 @@ public:
 
   void set_mode(DriveMode mode);
   DriveMode mode() const { return mode_; }
+
+  // Applies tuned musical defaults for the specified mode:
+  // - Warm: drive 0.40, tone 0.65, mix 0.75, output_level 0.95 (subtle 2nd harmonic warmth)
+  // - Overdrive: drive 0.50, tone 0.55, mix 0.80, output_level 0.90 (rock/modern pop saturation)
+  // - Megaphone: drive 0.50, tone 0.70, mix 1.00, output_level 0.95 (500Hz-3.2kHz vintage bandpass)
+  void apply_mode_defaults(DriveMode mode);
 
   void set_drive(float drive); // 0.0 to 1.0
   float drive() const { return drive_; }
@@ -49,10 +55,10 @@ public:
 private:
   float sample_rate_ = 44100.0f;
   DriveMode mode_ = DriveMode::Warm;
-  float drive_ = 0.3f;
-  float tone_ = 0.5f;
-  float mix_ = 1.0f;
-  float output_level_ = 1.0f;
+  float drive_ = 0.40f;
+  float tone_ = 0.65f;
+  float mix_ = 0.75f;
+  float output_level_ = 0.95f;
 
   // Pre-drive 100 Hz HPF state (1-pole)
   float pre_hpf_x_l_ = 0.0f, pre_hpf_y_l_ = 0.0f;

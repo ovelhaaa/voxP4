@@ -42,6 +42,32 @@ void VocalDrive::set_mode(DriveMode mode) {
   mode_ = mode;
 }
 
+void VocalDrive::apply_mode_defaults(DriveMode mode) {
+  set_mode(mode);
+  switch (mode) {
+  case DriveMode::Warm:
+    set_drive(0.40f);
+    set_tone(0.65f);
+    set_mix(0.75f);
+    set_output_level(0.95f);
+    break;
+  case DriveMode::Overdrive:
+    set_drive(0.50f);
+    set_tone(0.55f);
+    set_mix(0.80f);
+    set_output_level(0.90f);
+    break;
+  case DriveMode::Megaphone:
+    set_drive(0.50f);
+    set_tone(0.70f);
+    set_mix(1.00f);
+    set_output_level(0.95f);
+    break;
+  default:
+    break;
+  }
+}
+
 void VocalDrive::set_drive(float drive) {
   drive_ = std::clamp(drive, 0.0f, 1.0f);
 }
