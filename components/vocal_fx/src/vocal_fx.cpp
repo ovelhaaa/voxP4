@@ -2034,6 +2034,18 @@ void vocal_fx_reset_psola_deferred_stats(size_t voice) {
   }
 }
 
+void vocal_fx_set_psola_reactivation_policy(size_t voice, PsolaReactivationPolicy policy) {
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_reactivation_policy(policy);
+  }
+}
+
+void vocal_fx_set_psola_reactivation_cold_gap_ms(size_t voice, float ms) {
+  if (voice < MAX_HARMONY_VOICES) {
+    vf_voice(voice).set_reactivation_cold_gap_ms(ms);
+  }
+}
+
 SingleGrainBenchmarkResult vocal_fx_benchmark_single_grain(
     size_t grain_length, size_t order, PsolaFirKernel kernel) {
   return TdPsola::benchmark_single_grain(

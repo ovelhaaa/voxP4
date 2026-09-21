@@ -197,6 +197,8 @@ void vocal_fx_set_psola_grain_render_mode(size_t voice, PsolaGrainRenderMode mod
 void vocal_fx_set_psola_fir_kernel(size_t voice, PsolaFirKernel kernel);
 PsolaDeferredStats vocal_fx_get_psola_deferred_stats(size_t voice);
 void vocal_fx_reset_psola_deferred_stats(size_t voice);
+void vocal_fx_set_psola_reactivation_policy(size_t voice, PsolaReactivationPolicy policy);
+void vocal_fx_set_psola_reactivation_cold_gap_ms(size_t voice, float ms);
 SingleGrainBenchmarkResult vocal_fx_benchmark_single_grain(
     size_t grain_length, size_t order, PsolaFirKernel kernel = PsolaFirKernel::Multi8);
 // Audit-only counter reset. DSP/tracker/filter state remains untouched.

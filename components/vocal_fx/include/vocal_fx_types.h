@@ -268,6 +268,27 @@ enum class PsolaSynthesisKernel : uint8_t {
   UnrolledExact = 1,
 };
 
+enum class PsolaReactivationPolicy : uint8_t {
+  BaselineReachBack = 0,    // S0 baseline: reach backward, destination lead < 0
+  ColdStartPhaseGrid = 1,   // C2.0: advance historical phase grid to first destination >= block_start
+  ColdStartBlockAnchor = 2, // C2.1: anchor first destination at block_start
+  HybridThreshold = 3,      // C2.2: inactive gap <= threshold ? Baseline : ColdStartPhaseGrid
+  HybridClearReason = 4,    // C2.3: TrackLost short gap preserves phase, Unvoiced/HardReset cold starts
+};
+
+enum class PsolaCursorClearReason : uint8_t {
+  None = 0,
+  Bypass = 1,
+  NotVoiced = 2,
+  LowConfidence = 3,
+  InvalidPeriod = 4,
+  NoMarks = 5,
+  TrackUnlocked = 6,
+  AcquiringNotReady = 7,
+  HardResetRecovery = 8,
+  MaxGrainsExceeded = 9,
+};
+
 struct PitchShiftConfig {
   bool enabled = false;
   float semitones = 0.0f;
@@ -305,6 +326,8 @@ struct PitchShiftConfig {
   PsolaOlaKernel ola_kernel = PsolaOlaKernel::Contiguous;
   PsolaGrainKernel grain_kernel = PsolaGrainKernel::ContiguousMulti8;
   PsolaSynthesisKernel synthesis_kernel = PsolaSynthesisKernel::UnrolledExact;
+  PsolaReactivationPolicy reactivation_policy = PsolaReactivationPolicy::ColdStartPhaseGrid;
+  float reactivation_cold_gap_ms = 20.0f;
 };
 
 struct PitchShiftDebug {

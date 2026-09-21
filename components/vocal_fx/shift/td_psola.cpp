@@ -67,6 +67,10 @@ static volatile uint64_t s_b4d9_prewarm_sink = 0;
 // 1 = S1 (bound block_end + output_period). Diagnostic only.
 int s_b4d10_sched_variant = 0;
 
+static PsolaReactivationPolicy s_reactivation_policy = PsolaReactivationPolicy::ColdStartPhaseGrid;
+static float s_reactivation_cold_gap_ms = 20.0f;
+static bool s_reactivation_policy_global_override = false;
+
 // B4D.4 per-grain-count section attribution (voice 0, diagnostic only).
 // buckets: 0 new grains, 1, 2, 3+; layout [bucket][PitchShiftProfileSection].
 static constexpr size_t kB4D4Sections =
@@ -414,6 +418,8 @@ bool TdPsola::init(float rate, const PitchShiftConfig &config,
   target_semitones_ = std::clamp(semitones, -12.0f, 12.0f);
   target_wet_ = std::clamp(wet, 0.0f, 1.0f);
   continuity_policy_ = config.continuity_policy;
+  reactivation_policy_ = config.reactivation_policy;
+  reactivation_cold_gap_ms_ = std::max(0.0f, config.reactivation_cold_gap_ms);
   recovery_mode_ = config.recovery_mode;
   recovery_crossfade_ms_ = std::clamp(config.recovery_crossfade_ms, 1.0f, 20.0f);
   recovery_small_error_cents_ = std::clamp(config.recovery_small_error_cents, 10.0f, 100.0f);
@@ -2367,6 +2373,12 @@ bool TdPsola::add_grain(double destination, double source,
   const int half = std::clamp(static_cast<int>(std::lround(period)), 24, 800);
   b4d11_last_half_ = static_cast<uint16_t>(half);
   b4d11_last_dest_ = static_cast<int32_t>(std::llround(destination));
+  const int64_t dst = static_cast<int64_t>(b4d11_last_dest_);
+  if (dst + half < static_cast<int64_t>(output_position_)) {
+    // Experiment C1a: Grain support ends completely before output_position_ (block_start).
+    // Zero samples can ever contribute to the current block or future blocks.
+    return true;
+  }
   const uint64_t center = marks[index].sample_position;
   last_grain_audit_.source_center = center;
   last_grain_audit_.destination_center = static_cast<int64_t>(std::llround(destination));
@@ -2607,7 +2619,6 @@ bool TdPsola::add_grain(double destination, double source,
   }
   accounted_cycles_this_block_ += c_warp_total;
 
-  const int64_t dst = static_cast<int64_t>(std::llround(destination));
   int n_min = -half;
   int n_max = half;
   while (n_min <= n_max && dst + n_min < static_cast<int64_t>(output_position_)) {
@@ -3153,22 +3164,39 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
 
   uint32_t usable_reason = static_cast<uint32_t>(PsolaUsableReason::Usable);
   if (!usable) {
-    if (!target_enabled_)
+    PsolaCursorClearReason clr_r = PsolaCursorClearReason::None;
+    if (!target_enabled_) {
       usable_reason |= static_cast<uint32_t>(PsolaUsableReason::TargetDisabled);
-    if (!pitch.voiced && !continuity_coasting)
+      clr_r = PsolaCursorClearReason::Bypass;
+    }
+    if (!pitch.voiced && !continuity_coasting) {
       usable_reason |= static_cast<uint32_t>(PsolaUsableReason::NotVoiced);
-    if (pitch.confidence < 0.70f)
+      if (clr_r == PsolaCursorClearReason::None) clr_r = PsolaCursorClearReason::NotVoiced;
+    }
+    if (pitch.confidence < 0.70f) {
       usable_reason |= static_cast<uint32_t>(PsolaUsableReason::LowConfidence);
+      if (clr_r == PsolaCursorClearReason::None) clr_r = PsolaCursorClearReason::LowConfidence;
+    }
     if (!std::isfinite(pitch.period_samples) || pitch.period_samples < 24.0f ||
-        pitch.period_samples > 800.0f)
+        pitch.period_samples > 800.0f) {
       usable_reason |= static_cast<uint32_t>(PsolaUsableReason::InvalidPeriod);
-    if (mark_count == 0)
+      if (clr_r == PsolaCursorClearReason::None) clr_r = PsolaCursorClearReason::InvalidPeriod;
+    }
+    if (mark_count == 0) {
       usable_reason |= static_cast<uint32_t>(PsolaUsableReason::NoMarks);
+      if (clr_r == PsolaCursorClearReason::None) clr_r = PsolaCursorClearReason::NoMarks;
+    }
     if (!(track == PitchTrackState::Locked || continuity_coasting || acquiring_ready)) {
-      if (track == PitchTrackState::Unlocked)
+      if (track == PitchTrackState::Unlocked) {
         usable_reason |= static_cast<uint32_t>(PsolaUsableReason::TrackUnlocked);
-      else if (track == PitchTrackState::Acquiring && !acquiring_ready)
+        if (clr_r == PsolaCursorClearReason::None) clr_r = PsolaCursorClearReason::TrackUnlocked;
+      } else if (track == PitchTrackState::Acquiring && !acquiring_ready) {
         usable_reason |= static_cast<uint32_t>(PsolaUsableReason::AcquiringNotReady);
+        if (clr_r == PsolaCursorClearReason::None) clr_r = PsolaCursorClearReason::AcquiringNotReady;
+      }
+    }
+    if (have_cursor_) {
+      last_clear_reason_ = clr_r;
     }
   }
   if (release_remaining_ > 0) {
@@ -3307,6 +3335,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
         have_cursor_ = true;
       } else if (active_recovery_class_ == PsolaRecoveryClass::HardReset) {
         have_cursor_ = false;
+        last_clear_reason_ = PsolaCursorClearReason::HardResetRecovery;
         clear_ola();
       }
       const uint32_t c_recov = Profiler::now_cycles() - c_recov_start;
@@ -3355,16 +3384,55 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
           const float synth_p = pitch.period_samples / std::max(std::exp2(current_semitones_ / 12.0f), 0.5f);
           if (aligned_synth <= static_cast<double>(block_start) && synth_p > 0.0f) {
             double m = aligned_synth;
-            if (continuity_policy_ == PsolaContinuityPolicy::Baseline) {
-              while (m + synth_p < static_cast<double>(block_start)) {
-                m += synth_p;
+            const PsolaReactivationPolicy eff_policy = s_reactivation_policy_global_override
+                                                           ? s_reactivation_policy
+                                                           : reactivation_policy_;
+            const float eff_cold_gap_ms = s_reactivation_policy_global_override
+                                              ? s_reactivation_cold_gap_ms
+                                              : reactivation_cold_gap_ms_;
+            bool do_cold_start = false;
+            if (eff_policy == PsolaReactivationPolicy::ColdStartPhaseGrid ||
+                eff_policy == PsolaReactivationPolicy::ColdStartBlockAnchor) {
+              do_cold_start = true;
+            } else if (eff_policy == PsolaReactivationPolicy::HybridThreshold) {
+              const uint64_t threshold_samples = static_cast<uint64_t>(
+                  std::lround(eff_cold_gap_ms * 0.001f * sample_rate_));
+              if (inactive_gap_samples_ > threshold_samples) {
+                do_cold_start = true;
               }
-            } else {
-              while (m + half < static_cast<double>(block_start)) {
-                m += synth_p;
+            } else if (eff_policy == PsolaReactivationPolicy::HybridClearReason) {
+              const uint64_t threshold_samples = static_cast<uint64_t>(
+                  std::lround(eff_cold_gap_ms * 0.001f * sample_rate_));
+              if ((last_clear_reason_ == PsolaCursorClearReason::LowConfidence ||
+                   last_clear_reason_ == PsolaCursorClearReason::TrackUnlocked) &&
+                  inactive_gap_samples_ <= threshold_samples) {
+                do_cold_start = false;
+              } else {
+                do_cold_start = true;
               }
             }
-            synth_mark = m;
+
+            if (do_cold_start) {
+              if (eff_policy == PsolaReactivationPolicy::ColdStartBlockAnchor) {
+                synth_mark = static_cast<double>(block_start);
+              } else {
+                while (m < static_cast<double>(block_start)) {
+                  m += synth_p;
+                }
+                synth_mark = m;
+              }
+            } else {
+              if (continuity_policy_ == PsolaContinuityPolicy::Baseline) {
+                while (m + synth_p < static_cast<double>(block_start)) {
+                  m += synth_p;
+                }
+              } else {
+                while (m + half < static_cast<double>(block_start)) {
+                  m += synth_p;
+                }
+              }
+              synth_mark = m;
+            }
           } else {
             synth_mark = aligned_synth;
           }
@@ -3377,6 +3445,8 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
       slew_period_step_ = 0.0f;
       have_cursor_ = true;
       release_remaining_ = 0;
+      inactive_gap_blocks_ = 0;
+      inactive_gap_samples_ = 0;
       if (continuity_policy_ == PsolaContinuityPolicy::OnsetContinuity ||
           continuity_policy_ == PsolaContinuityPolicy::OnsetContinuityCoasting) {
         psola_gain_ = 1.0f;
@@ -3520,6 +3590,8 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
     previous_track_state_ = track;
     crossfade_remaining_ = 0;
     slew_grains_remaining_ = 0;
+    ++inactive_gap_blocks_;
+    inactive_gap_samples_ += frames;
   }
 
 #ifndef ESP_PLATFORM
@@ -3719,7 +3791,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
           fast_psola_energy_ += kFastAlpha * (y2 - fast_psola_energy_);
 
           if (fast_lpc_energy_ > 1e-8f && fast_psola_energy_ > 1e-8f) {
-            const float instant_ratio = std::sqrt(fast_psola_energy_ / fast_lpc_energy_);
+            const float instant_ratio = sqrtf(fast_psola_energy_ / fast_lpc_energy_);
             const float target_g = std::clamp(instant_ratio, 0.4f, 2.5f);
             if (target_g <= 0.405f || target_g >= 2.495f) {
               ++gain_rail_events_;
@@ -3758,7 +3830,7 @@ void TdPsola::process_shared(const float *input, float *output, size_t frames,
         source_energy_ += energy_alpha_ * (x2 - source_energy_);
         ola_energy_ += energy_alpha_ * (y2 - ola_energy_);
         if (source_energy_ > 1e-10f && ola_energy_ > 1e-10f) {
-          g = std::clamp(std::sqrt(source_energy_ / ola_energy_), 0.25f, 4.0f);
+          g = std::clamp(sqrtf(source_energy_ / ola_energy_), 0.25f, 4.0f);
           y_new *= g;
         }
       }
@@ -4699,5 +4771,19 @@ void td_psola_b4d5_mark_audit(uint64_t *calls, uint64_t *candidates,
 size_t td_psola_nearest_mark_index(double source, const PitchMark *marks,
                                    size_t count) {
   return nearest_mark_index(source, marks, count);
+}
+
+void td_psola_set_reactivation_policy(PsolaReactivationPolicy p) {
+  s_reactivation_policy = p;
+  s_reactivation_policy_global_override = true;
+}
+PsolaReactivationPolicy td_psola_reactivation_policy() {
+  return s_reactivation_policy;
+}
+void td_psola_set_reactivation_cold_gap_ms(float ms) {
+  s_reactivation_cold_gap_ms = std::max(0.0f, ms);
+}
+float td_psola_reactivation_cold_gap_ms() {
+  return s_reactivation_cold_gap_ms;
 }
 

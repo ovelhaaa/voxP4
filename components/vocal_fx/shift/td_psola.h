@@ -281,6 +281,18 @@ public:
   void set_ola_normalization(OlaNormalizationMode mode) {
     ola_normalization_ = mode;
   }
+  void set_reactivation_policy(PsolaReactivationPolicy policy) {
+    reactivation_policy_ = policy;
+  }
+  PsolaReactivationPolicy reactivation_policy() const {
+    return reactivation_policy_;
+  }
+  void set_reactivation_cold_gap_ms(float ms) {
+    reactivation_cold_gap_ms_ = std::max(0.0f, ms);
+  }
+  float reactivation_cold_gap_ms() const {
+    return reactivation_cold_gap_ms_;
+  }
   void set_onset_unvoiced_attenuation(bool enabled) {
     onset_unvoiced_attenuation_enabled_ = enabled;
     if (!enabled)
@@ -711,6 +723,11 @@ private:
   float source_energy_ = 0.0f, ola_energy_ = 0.0f, energy_alpha_ = 0.0f;
   HarmonyFallbackPolicy fallback_policy_ = HarmonyFallbackPolicy::CurrentDry;
   PsolaContinuityPolicy continuity_policy_ = PsolaContinuityPolicy::Baseline;
+  PsolaReactivationPolicy reactivation_policy_ = PsolaReactivationPolicy::ColdStartPhaseGrid;
+  float reactivation_cold_gap_ms_ = 20.0f;
+  uint32_t inactive_gap_blocks_ = 0;
+  uint64_t inactive_gap_samples_ = 0;
+  PsolaCursorClearReason last_clear_reason_ = PsolaCursorClearReason::None;
   float unvoiced_fallback_gain_ = 0.25f, onset_fallback_gain_ = 0.15f;
   float fallback_hpf_alpha_ = 0.0f, fallback_hpf_input_ = 0.0f;
   float fallback_hpf_output_ = 0.0f;
@@ -904,3 +921,8 @@ size_t td_psola_nearest_mark_index(double source, const PitchMark *marks,
 void td_psola_b4d9_set_prewarm_variant(int v);
 // B4D.10 scheduler geometry variant (0=S0, 1=S1).
 void td_psola_b4d10_set_sched_variant(int v);
+// C2 reactivation policy hooks (file/global scope for tests & audit).
+void td_psola_set_reactivation_policy(PsolaReactivationPolicy p);
+PsolaReactivationPolicy td_psola_reactivation_policy();
+void td_psola_set_reactivation_cold_gap_ms(float ms);
+float td_psola_reactivation_cold_gap_ms();
