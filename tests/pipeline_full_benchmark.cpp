@@ -1,3 +1,14 @@
+// HOST FUNCTIONAL / COMPARATIVE BENCHMARK
+//
+// NOTE: This benchmark runs on the x86_64 host CPU using std::chrono.
+// It measures algorithmic DSP throughput of the active pipeline (Gate, Compressor,
+// Drive, Chorus, Delay, Reverb, Limiter) in host user space without the asynchronous
+// FreeRTOS Core 1 pitch worker task. Because no pitch candidate is generated,
+// TD-PSOLA operates in quiescent/fallback mode (0 grains scheduled/rendered).
+// Host timings serve as regression/comparative indicators only and MUST NOT be
+// conflated with ESP32-P4 hardware real-time execution times (~341-708 us).
+// Physical qualification must always be performed on real ESP32-P4 silicon.
+
 #include "vocal_fx.h"
 #include <algorithm>
 #include <chrono>
@@ -84,8 +95,9 @@ void run_soak(float sample_rate, const char *label) {
   double p99_us = block_times[kTotalBlocks * 99 / 100];
   double max_us = block_times.back();
 
-  std::printf("\n=== SOAK BENCHMARK: %s (%.1f kHz, 64 frames, deadline: %.1f us) ===\n",
+  std::printf("\n=== HOST SOAK BENCHMARK: %s (%.1f kHz, 64 frames, deadline: %.1f us) ===\n",
               label, sample_rate * 0.001f, deadline_us);
+  std::printf("  [NOTE] Host x86 comparative metric. Real-time deadline qualification is on ESP32-P4.\n");
   std::printf("  Blocks: %d | Finite: %s | Deadline misses: %u\n",
               kTotalBlocks, finite_output ? "YES" : "NO", deadline_misses);
   std::printf("  Avg: %.2f us (%.2f%%) | p50: %.2f us | p95: %.2f us | p99: %.2f us | Max: %.2f us\n",
@@ -95,7 +107,8 @@ void run_soak(float sample_rate, const char *label) {
 }
 
 int main() {
-  std::puts("Running Full Pipeline Soak Benchmark (Harmony + Drive + Chorus + Sync Delay + Reverb + Limiter)...");
+  std::puts("Running Full Pipeline HOST Benchmark (Harmony + Drive + Chorus + Sync Delay + Reverb + Limiter)...");
+  std::puts("Target: Host x86_64 algorithmic comparative throughput (PSOLA quiescent/fallback)");
   run_soak(44100.0f, "Full Pipeline 44.1 kHz");
   run_soak(48000.0f, "Full Pipeline 48.0 kHz");
   return 0;
