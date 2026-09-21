@@ -393,5 +393,122 @@ int main(int argc, char **argv) {
     std::printf("  Rendered: chorus_sync.wav\n");
   }
 
+  // Render 7: Drive Warm Mode
+  {
+    VocalFxConfig cfg{};
+    cfg.sample_rate = static_cast<float>(sample_rate);
+    cfg.block_size = 64;
+    cfg.enable_gate = false;
+    cfg.enable_compressor = false;
+    cfg.enable_delay = false;
+    cfg.enable_reverb = false;
+    cfg.enable_pitch_analysis = false;
+    cfg.enable_drive = true;
+    cfg.drive.mode = DriveMode::Warm;
+    cfg.drive.drive = 0.5f;
+    cfg.drive.tone = 0.6f;
+    cfg.drive.mix = 1.0f;
+    cfg.drive.output_level = 0.9f;
+
+    if (!vocal_fx_init(cfg)) {
+      std::fprintf(stderr, "vocal_fx_init failed for drive warm\n");
+      return 1;
+    }
+
+    std::vector<float> left(input.size()), right(input.size());
+    const size_t block_size = 64;
+    for (size_t offset = 0; offset < input.size(); offset += block_size) {
+      const size_t n = std::min(block_size, input.size() - offset);
+      vocal_fx_process(input.data() + offset, left.data() + offset, right.data() + offset, n);
+    }
+
+    write_wav_stereo("drive_warm.wav", left.data(), right.data(), left.size(), sample_rate);
+    auto m = analyze_stereo(left, right);
+    std::printf("\n=== DRIVE WARM MODE ===\n");
+    std::printf("  Peak L/R: %.4f / %.4f | RMS L/R: %.4f / %.4f | Crest: %.2f / %.2f dB\n",
+                m.peak_l, m.peak_r, m.rms_l, m.rms_r, m.crest_factor_db_l, m.crest_factor_db_r);
+    std::printf("  L/R Correlation: %.4f | Mono Sum Peak/RMS: %.4f / %.4f\n",
+                m.lr_correlation, m.peak_mono, m.rms_mono);
+    std::printf("  Rendered: drive_warm.wav\n");
+  }
+
+  // Render 8: Drive Overdrive Mode
+  {
+    VocalFxConfig cfg{};
+    cfg.sample_rate = static_cast<float>(sample_rate);
+    cfg.block_size = 64;
+    cfg.enable_gate = false;
+    cfg.enable_compressor = false;
+    cfg.enable_delay = false;
+    cfg.enable_reverb = false;
+    cfg.enable_pitch_analysis = false;
+    cfg.enable_drive = true;
+    cfg.drive.mode = DriveMode::Overdrive;
+    cfg.drive.drive = 0.6f;
+    cfg.drive.tone = 0.5f;
+    cfg.drive.mix = 1.0f;
+    cfg.drive.output_level = 0.85f;
+
+    if (!vocal_fx_init(cfg)) {
+      std::fprintf(stderr, "vocal_fx_init failed for drive overdrive\n");
+      return 1;
+    }
+
+    std::vector<float> left(input.size()), right(input.size());
+    const size_t block_size = 64;
+    for (size_t offset = 0; offset < input.size(); offset += block_size) {
+      const size_t n = std::min(block_size, input.size() - offset);
+      vocal_fx_process(input.data() + offset, left.data() + offset, right.data() + offset, n);
+    }
+
+    write_wav_stereo("drive_overdrive.wav", left.data(), right.data(), left.size(), sample_rate);
+    auto m = analyze_stereo(left, right);
+    std::printf("\n=== DRIVE OVERDRIVE MODE ===\n");
+    std::printf("  Peak L/R: %.4f / %.4f | RMS L/R: %.4f / %.4f | Crest: %.2f / %.2f dB\n",
+                m.peak_l, m.peak_r, m.rms_l, m.rms_r, m.crest_factor_db_l, m.crest_factor_db_r);
+    std::printf("  L/R Correlation: %.4f | Mono Sum Peak/RMS: %.4f / %.4f\n",
+                m.lr_correlation, m.peak_mono, m.rms_mono);
+    std::printf("  Rendered: drive_overdrive.wav\n");
+  }
+
+  // Render 9: Drive Megaphone Mode
+  {
+    VocalFxConfig cfg{};
+    cfg.sample_rate = static_cast<float>(sample_rate);
+    cfg.block_size = 64;
+    cfg.enable_gate = false;
+    cfg.enable_compressor = false;
+    cfg.enable_delay = false;
+    cfg.enable_reverb = false;
+    cfg.enable_pitch_analysis = false;
+    cfg.enable_drive = true;
+    cfg.drive.mode = DriveMode::Megaphone;
+    cfg.drive.drive = 0.5f;
+    cfg.drive.tone = 0.8f;
+    cfg.drive.mix = 1.0f;
+    cfg.drive.output_level = 0.9f;
+
+    if (!vocal_fx_init(cfg)) {
+      std::fprintf(stderr, "vocal_fx_init failed for drive megaphone\n");
+      return 1;
+    }
+
+    std::vector<float> left(input.size()), right(input.size());
+    const size_t block_size = 64;
+    for (size_t offset = 0; offset < input.size(); offset += block_size) {
+      const size_t n = std::min(block_size, input.size() - offset);
+      vocal_fx_process(input.data() + offset, left.data() + offset, right.data() + offset, n);
+    }
+
+    write_wav_stereo("drive_megaphone.wav", left.data(), right.data(), left.size(), sample_rate);
+    auto m = analyze_stereo(left, right);
+    std::printf("\n=== DRIVE MEGAPHONE MODE ===\n");
+    std::printf("  Peak L/R: %.4f / %.4f | RMS L/R: %.4f / %.4f | Crest: %.2f / %.2f dB\n",
+                m.peak_l, m.peak_r, m.rms_l, m.rms_r, m.crest_factor_db_l, m.crest_factor_db_r);
+    std::printf("  L/R Correlation: %.4f | Mono Sum Peak/RMS: %.4f / %.4f\n",
+                m.lr_correlation, m.peak_mono, m.rms_mono);
+    std::printf("  Rendered: drive_megaphone.wav\n");
+  }
+
   return 0;
 }
