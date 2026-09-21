@@ -239,3 +239,15 @@ add_executable(pipeline_full_benchmark pipeline_full_benchmark.cpp)
 target_link_libraries(pipeline_full_benchmark PRIVATE vocal_fx_dsp)
 add_test(NAME voxlink_protocol_conformance_tests
  COMMAND voxlink_protocol_conformance_tests)
+
+add_executable(test_microshift test_microshift.cpp)
+target_link_libraries(test_microshift PRIVATE vocal_fx_dsp)
+add_test(NAME test_microshift COMMAND test_microshift)
+
+add_executable(render_microshift_evaluation render_microshift_evaluation.cpp)
+target_link_libraries(render_microshift_evaluation PRIVATE vocal_fx_dsp)
+
+add_executable(benchmark_modulation benchmark_modulation.cpp)
+target_link_libraries(benchmark_modulation PRIVATE vocal_fx_dsp)
+
+
