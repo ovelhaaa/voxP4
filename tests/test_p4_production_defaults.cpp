@@ -1,4 +1,5 @@
 #include "vocal_fx.h"
+#include "td_psola.h"
 #include <cstdio>
 
 namespace {
@@ -31,6 +32,14 @@ int main() {
       normal.lpc.autocorrelation ==
           LpcAutocorrelationVariant::AutocorrF32DoubleSingle,
       "LPC autocorrelation is not F32_DOUBLE_SINGLE");
+  pass &= require(
+      normal.pitch_shift.reactivation_policy ==
+          PsolaReactivationPolicy::ColdStartPhaseGrid,
+      "PitchShift reactivation_policy is not ColdStartPhaseGrid");
+  pass &= require(
+      td_psola_reactivation_policy() ==
+          PsolaReactivationPolicy::ColdStartPhaseGrid,
+      "td_psola_reactivation_policy default is not ColdStartPhaseGrid");
 
   // The cross-platform pitch defaults remain explicit regression oracles.
   const PitchAnalysisConfig generic{};
