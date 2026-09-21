@@ -74,6 +74,17 @@ struct B4D12CaseDef {
   bool reverb;
   float harmony_interval;
   B4D12Control control;
+  bool drive = false;
+  DriveMode drive_mode = DriveMode::Warm;
+  float drive_val = 0.4f;
+  float drive_mix = 0.8f;
+  float drive_tone = 0.6f;
+  bool chorus = false;
+  ChorusMode chorus_mode = ChorusMode::Chorus;
+  float chorus_mix = 0.4f;
+  bool delay_sync = false;
+  TempoSubdivision delay_sub_l = TempoSubdivision::Eighth;
+  TempoSubdivision delay_sub_r = TempoSubdivision::DottedEighth;
 };
 
 struct B4D12Pct {
@@ -206,6 +217,28 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   b4d1_configure_dsp(def.voices, def.comp, def.delay, def.reverb);
   vocal_fx_set_harmony_interval(0, def.harmony_interval);
 
+  // Configure new FX parameters explicitly
+  vocal_fx_set_parameter(VocalFxParameter::EnableDrive, def.drive ? 1.0f : 0.0f);
+  if (def.drive) {
+    vocal_fx_set_parameter(VocalFxParameter::DriveMode, static_cast<float>(def.drive_mode));
+    vocal_fx_set_parameter(VocalFxParameter::DriveDrive, def.drive_val);
+    vocal_fx_set_parameter(VocalFxParameter::DriveMix, def.drive_mix);
+    vocal_fx_set_parameter(VocalFxParameter::DriveTone, def.drive_tone);
+    vocal_fx_set_parameter(VocalFxParameter::DriveOutputLevel, 0.95f);
+  }
+  vocal_fx_set_parameter(VocalFxParameter::EnableChorus, def.chorus ? 1.0f : 0.0f);
+  if (def.chorus) {
+    vocal_fx_set_parameter(VocalFxParameter::ChorusMode, static_cast<float>(def.chorus_mode));
+    vocal_fx_set_parameter(VocalFxParameter::ChorusMix, def.chorus_mix);
+    vocal_fx_set_parameter(VocalFxParameter::ChorusWidth, 1.0f);
+  }
+  vocal_fx_set_parameter(VocalFxParameter::DelaySyncEnabled, def.delay_sync ? 1.0f : 0.0f);
+  if (def.delay_sync) {
+    vocal_fx_set_parameter(VocalFxParameter::TempoBpm, 95.0f);
+    vocal_fx_set_parameter(VocalFxParameter::DelayLeftSubdivision, static_cast<float>(def.delay_sub_l));
+    vocal_fx_set_parameter(VocalFxParameter::DelayRightSubdivision, static_cast<float>(def.delay_sub_r));
+  }
+
   if (!b4d1_prestage(label, def.kind, def.f0,
                      def.vocal_fixture ? kB4b6VocalMulaw : nullptr,
                      def.vocal_fixture ? kB4b6VocalMulawSize : 0,
@@ -267,17 +300,20 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   const auto p = b4d12_pct(t);
   const PitchAnalysisAuditTelemetry pa = vocal_fx_pitch_analysis_audit_telemetry();
 
-  if (t && std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
-    printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices,psola_sched_cycles,psola_addgrain_cycles,psola_deferred_cycles,psola_mark_cycles,psola_desc_cycles,psola_near_cycles,psola_poly_cycles,psola_gn_cycles\n");
+  if (t && (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0 ||
+            std::strncmp(def.name, "mat_", 4) == 0)) {
+    printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,drive_cycles,chorus_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices,psola_sched_cycles,psola_addgrain_cycles,psola_deferred_cycles,psola_mark_cycles,psola_desc_cycles,psola_near_cycles,psola_poly_cycles,psola_gn_cycles\n");
     auto emit = [](const char *set, const vocal_fx_platform::B4D12ForensicRecord &r) {
       const auto &h = r.harmony;
-      printf("B4D12_FORENSIC,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+      printf("B4D12_FORENSIC,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
              set, static_cast<unsigned long>(r.block_id),
              static_cast<unsigned long>(r.dsp_us),
              static_cast<unsigned long>(r.cycle_us),
              static_cast<unsigned long>(h.input_cycles),
              static_cast<unsigned long>(h.compressor_cycles),
              static_cast<unsigned long>(h.harmony_cycles),
+             static_cast<unsigned long>(h.drive_cycles),
+             static_cast<unsigned long>(h.chorus_cycles),
              static_cast<unsigned long>(h.delay_cycles),
              static_cast<unsigned long>(h.reverb_cycles),
              static_cast<unsigned long>(h.master_cycles),
@@ -813,6 +849,95 @@ void b4d12_run_campaign() {
   }
 }
 
+void b4d12_run_fx_matrix() {
+  printf("\n=======================================================\n");
+  printf("  B4D12 PHYSICAL FX QUALIFICATION BENCHMARK MATRIX (A..I) \n");
+  printf("=======================================================\n");
+  constexpr uint32_t mat_s = 20;
+
+  // A — Frozen baseline (Gate, Comp, 1V PSOLA +4st, Delay free, Reverb, Limiter; Drive=OFF, Chorus=OFF, DelaySync=OFF)
+  const B4D12CaseDef case_a = {
+      "mat_a_frozen_baseline", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      false, DriveMode::Warm, 0.0f, 0.0f, 0.6f,
+      false, ChorusMode::Chorus, 0.0f,
+      false};
+  b4d12_run_case(case_a);
+
+  // B — Baseline + Delay Sync
+  const B4D12CaseDef case_b = {
+      "mat_b_delay_sync", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      false, DriveMode::Warm, 0.0f, 0.0f, 0.6f,
+      false, ChorusMode::Chorus, 0.0f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth};
+  b4d12_run_case(case_b);
+
+  // C — Baseline + Chorus
+  const B4D12CaseDef case_c = {
+      "mat_c_chorus", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      false, DriveMode::Warm, 0.0f, 0.0f, 0.6f,
+      true, ChorusMode::Chorus, 0.35f,
+      false};
+  b4d12_run_case(case_c);
+
+  // D — Baseline + Ensemble
+  const B4D12CaseDef case_d = {
+      "mat_d_ensemble", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      false, DriveMode::Warm, 0.0f, 0.0f, 0.6f,
+      true, ChorusMode::Ensemble, 0.35f,
+      false};
+  b4d12_run_case(case_d);
+
+  // E — Baseline + Dimension
+  const B4D12CaseDef case_e = {
+      "mat_e_dimension", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      false, DriveMode::Warm, 0.0f, 0.0f, 0.6f,
+      true, ChorusMode::Dimension, 0.35f,
+      false};
+  b4d12_run_case(case_e);
+
+  // F — Baseline + Drive Warm
+  const B4D12CaseDef case_f = {
+      "mat_f_drive_warm", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.40f, 0.75f, 0.65f,
+      false, ChorusMode::Chorus, 0.0f,
+      false};
+  b4d12_run_case(case_f);
+
+  // G — Baseline + Drive Overdrive
+  const B4D12CaseDef case_g = {
+      "mat_g_drive_overdrive", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Overdrive, 0.50f, 0.80f, 0.55f,
+      false, ChorusMode::Chorus, 0.0f,
+      false};
+  b4d12_run_case(case_g);
+
+  // H — Baseline + Drive Megaphone
+  const B4D12CaseDef case_h = {
+      "mat_h_drive_megaphone", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Megaphone, 0.50f, 1.0f, 0.70f,
+      false, ChorusMode::Chorus, 0.0f,
+      false};
+  b4d12_run_case(case_h);
+
+  // I — Full New FX
+  const B4D12CaseDef case_i = {
+      "mat_i_full_new_fx", "matrix", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      true, ChorusMode::Ensemble, 0.35f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth};
+  b4d12_run_case(case_i);
+  printf("=== END OF FX QUALIFICATION MATRIX ===\n\n");
+}
+
 void b4d12_coordinator_task(void *) {
   vTaskDelay(pdMS_TO_TICKS(250));
 
@@ -872,6 +997,7 @@ void b4d12_coordinator_task(void *) {
          static_cast<unsigned>(LpcConfig{}.order));
   b4d1_print_memory("init");
 
+  b4d12_run_fx_matrix();
   b4d12_run_campaign();
 
   printf("B4D12_END\n");

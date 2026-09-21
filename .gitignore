@@ -16,8 +16,8 @@ dependencies.lock
 # Test and benchmark outputs
 /tests/output/
 
-# Evaluation artifacts and scratch runs
-/artifacts/
+/artifacts/*
+!/artifacts/fx_qualification/
 /scratch/
 debug_*.csv
 debug_crash.csv
