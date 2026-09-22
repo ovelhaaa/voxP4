@@ -259,7 +259,8 @@ VocalFxEffectiveDspConfig vocal_fx_effective_dsp_config() {
           pitch.yin_cmnd,
           pitch.pitch_mark_ncc,
           lpc.windowing,
-          lpc.autocorrelation};
+          lpc.autocorrelation,
+          e.cfg.profile};
 }
 
 bool vocal_fx_init(const VocalFxConfig &c) {
@@ -318,19 +319,17 @@ bool vocal_fx_init(const VocalFxConfig &c) {
   e.delay_to_reverb_send.init(send_target, c.sample_rate, 20.0f);
   if (c.enable_pitch_analysis) {
     PitchAnalysisConfig pitch_config =
-#ifdef ESP_PLATFORM
-        vocal_fx_p4_pitch_analysis_defaults(c.sample_rate);
-#else
-        PitchAnalysisConfig{};
-#endif
+        (c.profile == VocalFxPlatformProfile::P4Production)
+            ? vocal_fx_p4_pitch_analysis_defaults(c.sample_rate)
+            : PitchAnalysisConfig{};
     pitch_config.input_sample_rate = c.sample_rate;
     // B4D.3S: keep an exact 4:1 decimation at every input rate so the pitch
     // analysis runs at the same relative rate (12000 Hz at 48 kHz, unchanged).
     pitch_config.analysis_sample_rate = c.sample_rate * 0.25f;
-#ifdef ESP_PLATFORM
-    // P4 production default selected by the B4B.6A optimization.
-    pitch_config.pitch_mark_ncc = PitchMarkNccVariant::ContiguousMulti8;
-#endif
+    if (c.profile == VocalFxPlatformProfile::P4Production) {
+      // P4 production default selected by the B4B.6A optimization.
+      pitch_config.pitch_mark_ncc = PitchMarkNccVariant::ContiguousMulti8;
+    }
     pitch_config.continuity_policy = (c.pitch_shift.continuity_policy != PsolaContinuityPolicy::Baseline)
                                          ? c.pitch_shift.continuity_policy
                                          : c.psola_continuity_policy;

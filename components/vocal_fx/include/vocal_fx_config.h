@@ -10,7 +10,17 @@ constexpr uint32_t VOCAL_FX_MAX_BLOCK_SIZE = 256;
 constexpr float VOCAL_FX_MAX_DELAY_SECONDS = 2.0f;
 constexpr float VOCAL_FX_MAX_SAMPLE_RATE = 48000.0f;
 
+enum class VocalFxPlatformProfile : uint8_t {
+  Reference,
+  P4Production,
+};
+
 struct VocalFxConfig {
+#ifdef ESP_PLATFORM
+  VocalFxPlatformProfile profile = VocalFxPlatformProfile::P4Production;
+#else
+  VocalFxPlatformProfile profile = VocalFxPlatformProfile::Reference;
+#endif
   float sample_rate = VOCAL_FX_DEFAULT_SAMPLE_RATE;
   uint32_t block_size = VOCAL_FX_DEFAULT_BLOCK_SIZE;
   bool enable_gate = true;

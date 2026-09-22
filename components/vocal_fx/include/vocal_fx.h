@@ -14,6 +14,7 @@ struct VocalFxEffectiveDspConfig {
   LpcWindowVariant lpc_windowing = LpcWindowVariant::Reference;
   LpcAutocorrelationVariant lpc_autocorrelation =
       LpcAutocorrelationVariant::AutocorrReferenceDouble;
+  VocalFxPlatformProfile profile = VocalFxPlatformProfile::Reference;
 };
 
 // Host-callable factory used by the ESP_PLATFORM production path. Keeping the

@@ -250,4 +250,9 @@ target_link_libraries(render_microshift_evaluation PRIVATE vocal_fx_dsp)
 add_executable(benchmark_modulation benchmark_modulation.cpp)
 target_link_libraries(benchmark_modulation PRIVATE vocal_fx_dsp)
 
+add_executable(parity_oracle parity_oracle.cpp)
+target_link_libraries(parity_oracle PRIVATE vocal_fx_dsp)
+add_test(NAME parity_oracle COMMAND parity_oracle)
+
+
 
