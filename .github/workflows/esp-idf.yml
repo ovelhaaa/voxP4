@@ -89,3 +89,37 @@ jobs:
 
       - name: Run VoxLink host tests
         run: ctest --test-dir build-host -R voxlink --output-on-failure
+
+  wasm-preview:
+    name: WebAssembly DSP Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+
+      - name: Verify Emscripten
+        run: emcc --version
+
+      - name: Configure WebAssembly build
+        run: emcmake cmake -S wasm -B build-wasm -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile WebAssembly target
+        run: cmake --build build-wasm
+
+      - name: Upload WASM preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxp4-wasm-preview
+          path: |
+            build-wasm/voxp4-preview.wasm
+            build-wasm/voxp4-preview.mjs
+          if-no-files-found: error
+          retention-days: 14
+
