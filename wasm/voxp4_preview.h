@@ -38,7 +38,8 @@ VOXP4_WASM_EXPORT bool voxp4_preview_render(const float *input, size_t frames, f
 // Returns the engine version identifier string.
 VOXP4_WASM_EXPORT const char *voxp4_preview_version();
 
-// Returns the compatibility manifest JSON string describing engine parameters and platform profile.
+// Returns the embedded provenance manifest JSON (engine, dspCommit, version).
+// The full compatibility manifest is generated at build time by generate-manifest.mjs.
 VOXP4_WASM_EXPORT const char *voxp4_preview_get_manifest_json();
 
 #ifdef __cplusplus

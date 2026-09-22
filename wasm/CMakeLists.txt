@@ -1,6 +1,25 @@
 cmake_minimum_required(VERSION 3.16)
 project(voxp4_wasm CXX)
 
+# Resolve the real commit used to produce this WASM build. Falls back to
+# "unknown" when Git is unavailable, never to a stale/incorrect commit.
+find_package(Git QUIET)
+set(VOXP4_GIT_COMMIT "unknown")
+if(GIT_FOUND)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+    OUTPUT_VARIABLE VOXP4_GIT_COMMIT_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE VOXP4_GIT_COMMIT_RESULT
+  )
+  if(VOXP4_GIT_COMMIT_RESULT EQUAL 0 AND VOXP4_GIT_COMMIT_OUTPUT)
+    set(VOXP4_GIT_COMMIT "${VOXP4_GIT_COMMIT_OUTPUT}")
+  endif()
+endif()
+message(STATUS "VoxP4 DSP commit: ${VOXP4_GIT_COMMIT}")
+
 set(VF ${CMAKE_CURRENT_SOURCE_DIR}/../components/vocal_fx)
 set(VOXLINK ${CMAKE_CURRENT_SOURCE_DIR}/../components/voxlink)
 
@@ -57,6 +76,7 @@ target_include_directories(voxp4-preview PRIVATE
 target_compile_features(voxp4-preview PRIVATE cxx_std_17)
 target_compile_options(voxp4-preview PRIVATE -O3 -Wall -Wextra)
 target_compile_definitions(voxp4-preview PRIVATE VOCAL_FX_ENABLE_PROFILING=0)
+target_compile_definitions(voxp4-preview PRIVATE VOXP4_GIT_COMMIT="${VOXP4_GIT_COMMIT}")
 
 if(EMSCRIPTEN)
   set_target_properties(voxp4-preview PROPERTIES

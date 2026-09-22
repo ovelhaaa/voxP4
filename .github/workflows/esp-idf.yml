@@ -113,6 +113,21 @@ jobs:
       - name: Compile WebAssembly target
         run: cmake --build build-wasm
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check out editor parameter contract
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ovelhaaa/voxP4-editor
+          path: voxP4-editor
+
+      - name: Generate DSP compatibility manifest
+        run: node scripts/generate-manifest.mjs
+
       - name: Upload WASM preview artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -120,6 +135,7 @@ jobs:
           path: |
             build-wasm/voxp4-preview.wasm
             build-wasm/voxp4-preview.mjs
+            build-wasm/dsp-compatibility.json
           if-no-files-found: error
           retention-days: 14
 

@@ -13,8 +13,11 @@ if exist "C:\emsdk\emsdk_env.bat" (
 
 cd /d "%~dp0\.."
 
-if not exist "build-wasm" (
-    call emcmake cmake -B build-wasm -S wasm -G Ninja
+rem Always reconfigure so VOXP4_GIT_COMMIT reflects the current HEAD.
+call emcmake cmake -B build-wasm -S wasm -G Ninja
+if errorlevel 1 (
+    echo [ERROR] WASM configure failed.
+    exit /b 1
 )
 
 call cmake --build build-wasm
@@ -25,19 +28,19 @@ if errorlevel 1 (
 
 echo.
 echo [SUCCESS] WASM build completed.
-echo Copying artifacts to voxP4-editor...
-
-set "EDITOR_WASM_SRC=..\voxP4-editor\src\audio\wasm"
-set "EDITOR_WASM_PUB=..\voxP4-editor\public\wasm"
-
-if not exist "!EDITOR_WASM_SRC!" mkdir "!EDITOR_WASM_SRC!"
-if not exist "!EDITOR_WASM_PUB!" mkdir "!EDITOR_WASM_PUB!"
-
-copy /y "build-wasm\voxp4-preview.mjs" "!EDITOR_WASM_SRC!\"
-copy /y "build-wasm\voxp4-preview.wasm" "!EDITOR_WASM_SRC!\"
-copy /y "build-wasm\voxp4-preview.wasm" "!EDITOR_WASM_PUB!\"
-
-echo Generating dsp-compatibility.json...
+echo Generating dsp-compatibility.json into build-wasm...
 node "%~dp0generate-manifest.mjs"
+if errorlevel 1 (
+    echo [ERROR] Manifest generation failed.
+    exit /b 1
+)
+
+echo.
+echo Atomically syncing WASM package into voxP4-editor...
+node "%~dp0..\..\voxP4-editor\scripts\sync-wasm.mjs" "build-wasm"
+if errorlevel 1 (
+    echo [ERROR] Editor WASM sync failed. Editor artifacts left untouched.
+    exit /b 1
+)
 
 echo All done!

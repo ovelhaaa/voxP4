@@ -7,21 +7,38 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <string>
+
+// Injected by CMake (git rev-parse HEAD). Falls back to "unknown" when the
+// build system cannot determine the commit, which is preferable to a stale or
+// incorrect hardcoded value.
+#ifndef VOXP4_GIT_COMMIT
+#define VOXP4_GIT_COMMIT "unknown"
+#endif
 
 namespace {
 constexpr float kDefaultSampleRate = 48000.0f;
 constexpr uint32_t kDefaultBlockSize = 64;
+constexpr const char *kPreviewVersion = "voxP4-preview-1.0.0";
 
-static const char kManifestJson[] =
-    "{\n"
-    "  \"engine\": \"voxP4\",\n"
-    "  \"dspCommit\": \"e25136226b76e2a349de0ae8b2bc518cf9477c8b\",\n"
-    "  \"contractVersion\": 1,\n"
-    "  \"parameterCount\": 71,\n"
-    "  \"sampleRate\": 48000,\n"
-    "  \"blockSize\": 64,\n"
-    "  \"profile\": \"P4Production\"\n"
-    "}";
+// The binary embeds its own provenance. Dynamic fields such as the WASM hash
+// and the parameter-contract hash are produced by the build manifest generator,
+// not hardcoded here.
+static std::string buildManifestJson() {
+  char buffer[256];
+  std::snprintf(
+      buffer,
+      sizeof(buffer),
+      "{\n"
+      "  \"engine\": \"voxP4\",\n"
+      "  \"dspCommit\": \"%s\",\n"
+      "  \"version\": \"%s\"\n"
+      "}",
+      VOXP4_GIT_COMMIT,
+      kPreviewVersion);
+  return std::string(buffer);
+}
+static const std::string kManifestJson = buildManifestJson();
 } // namespace
 
 extern "C" {
@@ -114,11 +131,11 @@ VOXP4_WASM_EXPORT bool voxp4_preview_render(const float *input, size_t frames, f
 }
 
 VOXP4_WASM_EXPORT const char *voxp4_preview_version() {
-  return "voxP4-preview-1.0.0";
+  return kPreviewVersion;
 }
 
 VOXP4_WASM_EXPORT const char *voxp4_preview_get_manifest_json() {
-  return kManifestJson;
+  return kManifestJson.c_str();
 }
 
 } // extern "C"
