@@ -85,6 +85,9 @@ struct B4D12CaseDef {
   bool delay_sync = false;
   TempoSubdivision delay_sub_l = TempoSubdivision::Eighth;
   TempoSubdivision delay_sub_r = TempoSubdivision::DottedEighth;
+  float microshift_left = -7.0f;
+  float microshift_right = 9.0f;
+  float microshift_window = 25.0f;
 };
 
 struct B4D12Pct {
@@ -231,6 +234,9 @@ void b4d12_run_case(const B4D12CaseDef &def) {
     vocal_fx_set_parameter(VocalFxParameter::ChorusMode, static_cast<float>(def.chorus_mode));
     vocal_fx_set_parameter(VocalFxParameter::ChorusMix, def.chorus_mix);
     vocal_fx_set_parameter(VocalFxParameter::ChorusWidth, 1.0f);
+    vocal_fx_set_parameter(VocalFxParameter::MicroshiftLeftCents, def.microshift_left);
+    vocal_fx_set_parameter(VocalFxParameter::MicroshiftRightCents, def.microshift_right);
+    vocal_fx_set_parameter(VocalFxParameter::MicroshiftWindowMs, def.microshift_window);
   }
   vocal_fx_set_parameter(VocalFxParameter::DelaySyncEnabled, def.delay_sync ? 1.0f : 0.0f);
   if (def.delay_sync) {
@@ -301,7 +307,8 @@ void b4d12_run_case(const B4D12CaseDef &def) {
   const PitchAnalysisAuditTelemetry pa = vocal_fx_pitch_analysis_audit_telemetry();
 
   if (t && (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0 ||
-            std::strncmp(def.name, "mat_", 4) == 0)) {
+            std::strncmp(def.name, "mat_", 4) == 0 ||
+            std::strncmp(def.name, "mod_", 4) == 0)) {
     printf("B4D12_FORENSIC_HEADER set,block,dsp_us,cycle_us,input_cycles,comp_cycles,harmony_cycles,drive_cycles,chorus_cycles,delay_cycles,reverb_cycles,master_cycles,new_grains,active_grains,source_grains,grain_samples,model_lookups,model_expensive,model_warp_us,formant_changed,pitch_changed,track_state,fallback,recovery,fir_computed,fir_reused,deferred_slices,psola_sched_cycles,psola_addgrain_cycles,psola_deferred_cycles,psola_mark_cycles,psola_desc_cycles,psola_near_cycles,psola_poly_cycles,psola_gn_cycles\n");
     auto emit = [](const char *set, const vocal_fx_platform::B4D12ForensicRecord &r) {
       const auto &h = r.harmony;
@@ -473,7 +480,9 @@ void b4d12_run_case(const B4D12CaseDef &def) {
          p.n ? misses / static_cast<double>(p.n) : 0.0, miss_per_s,
          miss_per_s * 60.0, miss_per_s * 3600.0);
 #if defined(CONFIG_VOCAL_FX_ENABLE_PROFILING)
-  if (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0) {
+  if (std::strcmp(def.name, "a_ref_vocal_fullfx") == 0 ||
+      std::strncmp(def.name, "mod_", 4) == 0 ||
+      std::strncmp(def.name, "mat_", 4) == 0) {
     struct Stage { const char *name; VocalFxProfileSection section; };
     static const Stage stages[] = {
         {"Pipeline", VocalFxProfileSection::Pipeline},
@@ -484,6 +493,8 @@ void b4d12_run_case(const B4D12CaseDef &def) {
         {"HarmonySlewPan", VocalFxProfileSection::HarmonySlewPan},
         {"HarmonyLimiter", VocalFxProfileSection::HarmonyLimiter},
         {"BusMixing", VocalFxProfileSection::BusMixing},
+        {"Drive", VocalFxProfileSection::Drive},
+        {"Chorus", VocalFxProfileSection::Chorus},
         {"DelayPrep", VocalFxProfileSection::DelayPrep},
         {"Delay", VocalFxProfileSection::Delay},
         {"ReverbPrep", VocalFxProfileSection::ReverbPrep},
@@ -938,6 +949,79 @@ void b4d12_run_fx_matrix() {
   printf("=== END OF FX QUALIFICATION MATRIX ===\n\n");
 }
 
+void b4d12_run_microshift_matrix() {
+  printf("\n=================================================================\n");
+  printf("  MICROSHIFT HARDWARE QUALIFICATION & MODULATION A/B MATRIX     \n");
+  printf("=================================================================\n");
+  constexpr uint32_t mat_s = 20;
+
+  // Base Full FX setup (common to all modulation A/B cases):
+  // Harmony (+4.0 st, 1 voice, VocalReplay)
+  // Compressor: ON
+  // Delay: ON with Sync (1/8 + 1/8D, BPM 95)
+  // Reverb: ON
+  // Drive: ON (Warm, 0.35 drive, 0.70 mix, 0.65 tone)
+  // Limiter: ON
+
+  // Ref: Full FX with Modulation Disabled (for exact incremental modulation attribution)
+  const B4D12CaseDef mod_ref_bypass = {
+      "mod_ref_bypass", "modulation_ab", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      false, ChorusMode::Chorus, 0.0f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth};
+  b4d12_run_case(mod_ref_bypass);
+
+  // A — Full FX + Chorus (Cubic Hermite, mix 35%)
+  const B4D12CaseDef mod_a_chorus = {
+      "mod_a_chorus", "modulation_ab", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      true, ChorusMode::Chorus, 0.35f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth};
+  b4d12_run_case(mod_a_chorus);
+
+  // B — Full FX + Dimension (mix 35%)
+  const B4D12CaseDef mod_b_dimension = {
+      "mod_b_dimension", "modulation_ab", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      true, ChorusMode::Dimension, 0.35f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth};
+  b4d12_run_case(mod_b_dimension);
+
+  // C — Full FX + Ensemble (mix 35%)
+  const B4D12CaseDef mod_c_ensemble = {
+      "mod_c_ensemble", "modulation_ab", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      true, ChorusMode::Ensemble, 0.35f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth};
+  b4d12_run_case(mod_c_ensemble);
+
+  // D — Full FX + Microshift (mix 35%, -7/+9 c, 25 ms)
+  const B4D12CaseDef mod_d_microshift = {
+      "mod_d_microshift", "modulation_ab", mat_s, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      true, ChorusMode::Microshift, 0.35f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth,
+      -7.0f, 9.0f, 25.0f};
+  b4d12_run_case(mod_d_microshift);
+
+  // Soak — Full-chain soak with Microshift (60s vocal soak)
+  const B4D12CaseDef mod_soak = {
+      "mod_soak_microshift", "modulation_soak", 60, B4B6StimulusKind::VocalReplay, 220.0f, true, 1,
+      true, true, true, 4.0f, B4D12Control::None,
+      true, DriveMode::Warm, 0.35f, 0.70f, 0.65f,
+      true, ChorusMode::Microshift, 0.35f,
+      true, TempoSubdivision::Eighth, TempoSubdivision::DottedEighth,
+      -7.0f, 9.0f, 25.0f};
+  b4d12_run_case(mod_soak);
+
+  printf("=== END OF MICROSHIFT QUALIFICATION MATRIX ===\n\n");
+}
+
 void b4d12_coordinator_task(void *) {
   vTaskDelay(pdMS_TO_TICKS(250));
 
@@ -997,6 +1081,7 @@ void b4d12_coordinator_task(void *) {
          static_cast<unsigned>(LpcConfig{}.order));
   b4d1_print_memory("init");
 
+  b4d12_run_microshift_matrix();
   b4d12_run_fx_matrix();
   b4d12_run_campaign();
 

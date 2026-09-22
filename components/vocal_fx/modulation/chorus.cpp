@@ -137,7 +137,7 @@ void VocalChorus::apply_mode_defaults(ChorusMode mode) {
     microshift_window_ms_ = 25.0f;
     mix_ = 0.35f;
     width_ = 1.0f;
-    microshift_crossfade_ = MicroshiftCrossfade::EqualPower;
+    microshift_crossfade_ = MicroshiftCrossfade::ComplementarySineSquared;
     update_microshift_rates();
     break;
   default:
@@ -327,6 +327,8 @@ void VocalChorus::process(const float *in_l, const float *in_r, float *out_l, fl
       if (microshift_crossfade_ == MicroshiftCrossfade::Linear) {
         w_a_l = 1.0f - 2.0f * std::fabs(phi_a_l - 0.5f);
       } else {
+        // ComplementarySineSquared: w_A = sin^2(pi*phi), w_B = 1 - w_A = cos^2(pi*phi)
+        // Satisfies w_A + w_B = 1.0 (amplitude-complementary crossfade)
         const float s = fast_sin(phi_a_l * 0.5f);
         w_a_l = s * s;
       }
@@ -348,6 +350,8 @@ void VocalChorus::process(const float *in_l, const float *in_r, float *out_l, fl
       if (microshift_crossfade_ == MicroshiftCrossfade::Linear) {
         w_a_r = 1.0f - 2.0f * std::fabs(phi_a_r - 0.5f);
       } else {
+        // ComplementarySineSquared: w_A = sin^2(pi*phi), w_B = 1 - w_A = cos^2(pi*phi)
+        // Satisfies w_A + w_B = 1.0 (amplitude-complementary crossfade)
         const float s = fast_sin(phi_a_r * 0.5f);
         w_a_r = s * s;
       }

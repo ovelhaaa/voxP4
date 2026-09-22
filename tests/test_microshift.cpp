@@ -87,18 +87,22 @@ int main() {
       check(std::fabs((w_a + w_b) - 1.0f) < 1e-5f, "Linear crossfade unity sum");
     }
 
-    vc.set_microshift_crossfade(MicroshiftCrossfade::EqualPower);
+    vc.set_microshift_crossfade(MicroshiftCrossfade::ComplementarySineSquared);
+    check(vc.microshift_crossfade() == MicroshiftCrossfade::ComplementarySineSquared,
+          "ComplementarySineSquared crossfade mode set");
+    check(vc.microshift_crossfade() == MicroshiftCrossfade::EqualPower,
+          "EqualPower alias matches ComplementarySineSquared");
     for (int i = 0; i <= 1000; ++i) {
       const float phi_a = static_cast<float>(i) / 1000.0f;
       float phi_b = phi_a + 0.5f;
       if (phi_b >= 1.0f) phi_b -= 1.0f;
 
-      // sin^2(pi*phi) + cos^2(pi*phi) = 1.0
+      // sin^2(pi*phi) + cos^2(pi*phi) = 1.0 (amplitude-complementary crossfade)
       const float s_a = std::sin(3.14159265f * phi_a);
       const float s_b = std::sin(3.14159265f * phi_b);
       const float w_a = s_a * s_a;
       const float w_b = s_b * s_b;
-      check(std::fabs((w_a + w_b) - 1.0f) < 1e-5f, "Equal power crossfade unity sum");
+      check(std::fabs((w_a + w_b) - 1.0f) < 1e-5f, "Complementary sine-squared crossfade unity sum");
     }
   }
 

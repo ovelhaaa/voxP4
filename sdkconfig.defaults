@@ -24,7 +24,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # B4D.6 production-equivalent default: detailed audio-path profiling is OFF
 # (measured cost ~84 us/block at 44.1 kHz).  Qualification/audit builds set
 # CONFIG_VOCAL_FX_ENABLE_PROFILING=y to collect per-section statistics.
-# CONFIG_VOCAL_FX_ENABLE_PROFILING is not set
+CONFIG_VOCAL_FX_ENABLE_PROFILING=y
 # B4D.12 production robustness burn-in mode (frozen 44.1 kHz S0 architecture).
 CONFIG_VOXP4_MODE_I2S_B4D_12_BURN_IN=y
 CONFIG_VOXP4_B4D12_REFERENCE_MINUTES=30

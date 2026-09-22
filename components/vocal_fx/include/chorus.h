@@ -15,9 +15,13 @@ enum class ChorusMode : uint8_t {
   Count
 };
 
+// Microshift dual-head crossfade windowing.
+// Mathematically, w_A = sin^2(pi*phi) and w_B = cos^2(pi*phi) satisfy w_A + w_B = 1.0,
+// guaranteeing exact amplitude complementarity and unity gain across transitions for correlated signals.
 enum class MicroshiftCrossfade : uint8_t {
   Linear = 0,
-  EqualPower = 1
+  ComplementarySineSquared = 1,
+  EqualPower = ComplementarySineSquared // Retained as backward-compatible alias
 };
 
 // Interpolation method for modulated delay line reads.
@@ -48,7 +52,7 @@ struct ChorusConfig {
   float microshift_left_cents = -7.0f;
   float microshift_right_cents = 9.0f;
   float microshift_window_ms = 25.0f;
-  MicroshiftCrossfade microshift_crossfade = MicroshiftCrossfade::EqualPower;
+  MicroshiftCrossfade microshift_crossfade = MicroshiftCrossfade::ComplementarySineSquared;
 };
 
 class VocalChorus {
@@ -158,7 +162,7 @@ private:
   float microshift_left_cents_ = -7.0f;
   float microshift_right_cents_ = 9.0f;
   float microshift_window_ms_ = 25.0f;
-  MicroshiftCrossfade microshift_crossfade_ = MicroshiftCrossfade::EqualPower;
+  MicroshiftCrossfade microshift_crossfade_ = MicroshiftCrossfade::ComplementarySineSquared;
   float microshift_phase_inc_l_ = 0.0f;
   float microshift_phase_inc_r_ = 0.0f;
   float microshift_window_samples_ = 1102.5f;
