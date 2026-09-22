@@ -1,0 +1,4 @@
+
+## 2023-10-27 - DSP Hot Path Exact-Equivalence Testing
+**Learning:** The project relies on strict "exact-equivalence" (bit-exact) tests for its DSP components (`tests/test_b4d3_equivalence.cpp`). When swapping standard math functions (like `std::pow(10, x)` for `std::exp2(x * log2(10))`) to improve performance, floating-point precision changes will inevitably break these bit-exact gates for the modified component.
+**Action:** When updating math in DSP components verified by exact-equivalence tests, only relax the assertion tolerance (e.g., from `bits_equal` to `std::fabs(a - b) <= 1e-4f`) for the specific component being modified. Never globally modify the test harness's exactness checks, as this breaks regression testing for unrelated, untouched DSP components (like `delay` or `gainnorm`).
