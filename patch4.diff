@@ -1,0 +1,46 @@
+--- tests/test_b4d3_equivalence.cpp
++++ tests/test_b4d3_equivalence.cpp
+@@ -21,11 +21,11 @@
+     }                                                                         \
+   } while (0)
+
+-static bool almost_equal(float a, float b) {
+-  return std::fabs(a - b) <= 1e-4f;
+-}
+-static bool almost_equal_gainnorm(float a, float b) {
+-  return std::fabs(a - b) <= 1e-4f;
++static bool bits_equal(float a, float b) {
++  uint32_t x, y;
++  std::memcpy(&x, &a, sizeof(x));
++  std::memcpy(&y, &b, sizeof(y));
++  return x == y;
+ }
+
+ // ── Compressor: new fast path vs pre-B4D.3 reference ──────────────────────
+@@ -82,7 +82,7 @@
+     float x = u * gain;
+     float ra = a.process(x);
+     float rb = b.process(x);
+-    if (!almost_equal(ra, rb)) ++mismatch;
++    if (std::fabs(ra - rb) > 1e-4f) ++mismatch;
+   }
+   CHECK(mismatch == 0);
+   std::printf("compressor equivalence: %zu mismatches\n", mismatch);
+@@ -193,7 +193,7 @@
+     float la, ra, lb, rb;
+     a.process_wet(x, la, ra);
+     b.process_wet(x, lb, rb);
+-    if (!almost_equal(la, lb) || !almost_equal(ra, rb)) ++mismatch;
++    if (!bits_equal(la, lb) || !bits_equal(ra, rb)) ++mismatch;
+   }
+   CHECK(mismatch == 0);
+   std::printf("delay equivalence: %zu mismatches\n", mismatch);
+@@ -244,7 +244,7 @@
+         ao.data(), aw.data(), 16,
+         FormantNormalizationStrategy::StrategyC_IntegratedSpectral, 48000.0f);
+     const float want = gainnorm_reference(ao.data(), aw.data(), 16);
+-    if (!almost_equal_gainnorm(got, want)) ++mismatch;
++    if (!bits_equal(got, want)) ++mismatch;
+   }
+   CHECK(mismatch == 0);
+   std::printf("gainnorm equivalence: %zu mismatches\n", mismatch);
