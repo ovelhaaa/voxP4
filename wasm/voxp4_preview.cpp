@@ -40,6 +40,16 @@ static std::string buildManifestJson() {
   return std::string(buffer);
 }
 static const std::string kManifestJson = buildManifestJson();
+
+// Processes a single block of silence so the DSP drains and applies every
+// parameter currently queued at its block boundary. Output is discarded and is
+// never part of the rendered preview audio.
+void processSilentParameterDrainBlock() {
+  float dummy_in[kDefaultBlockSize] = {0.0f};
+  float dummy_l[kDefaultBlockSize] = {0.0f};
+  float dummy_r[kDefaultBlockSize] = {0.0f};
+  vocal_fx_process(dummy_in, dummy_l, dummy_r, kDefaultBlockSize);
+}
 } // namespace
 
 extern "C" {
@@ -107,8 +117,37 @@ VOXP4_WASM_EXPORT bool voxp4_preview_set_parameter(const char *semantic_key, flo
   return vocal_fx_try_set_parameter(param, value);
 }
 
+// Transactional parameter reset for the preview bridge.
+//
+// On return `true`:
+//   - the canonical defaults have actually been applied to the engine
+//     (not merely enqueued);
+//   - the bounded parameter queue is empty and ready to accept a full
+//     71-parameter set without overflowing;
+//   - the DSP buffers are in a clean state.
+//
+// A previous render may have left the queue saturated (e.g. a failed set
+// sequence), so the first step drains any pending work before seeding. The
+// silent drain blocks are not part of the rendered audio.
 VOXP4_WASM_EXPORT bool voxp4_preview_reset_parameters() {
-  return voxp4::voxlink_seed_defaults();
+  const bool ready = vocal_fx_is_ready();
+
+  // 1. Recover from any pending/stale queue left by an earlier render.
+  if (ready) {
+    processSilentParameterDrainBlock();
+    vocal_fx_reset();
+  }
+
+  // 2. Enqueue the canonical defaults (must fit: the queue is empty here).
+  const bool seeded = voxp4::voxlink_seed_defaults();
+
+  // 3. Apply the defaults immediately and leave the DSP clean.
+  if (ready) {
+    processSilentParameterDrainBlock();
+    vocal_fx_reset();
+  }
+
+  return seeded;
 }
 
 VOXP4_WASM_EXPORT void voxp4_preview_reset() {

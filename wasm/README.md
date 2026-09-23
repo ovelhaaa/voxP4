@@ -22,7 +22,9 @@ bool voxp4_preview_init(float sample_rate, uint32_t block_size);
 // Define valor de parâmetro pela chave semântica (ex: "delay.wet", "reverb.decay_s")
 bool voxp4_preview_set_parameter(const char *semantic_key, float value);
 
-// Reseta todos os parâmetros para os defaults de fábrica
+// Reset transacional: drena qualquer fila pendente (mesmo saturada), aplica
+// os defaults canônicos e deixa a ParameterQueue vazia/pronta para um novo set
+// completo de 71 parâmetros. Ao retornar true, os defaults já estão aplicados.
 bool voxp4_preview_reset_parameters();
 
 // Reseta buffers internos de delay, reverb e histórico de pitch
