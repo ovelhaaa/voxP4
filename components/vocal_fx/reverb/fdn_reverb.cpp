@@ -77,8 +77,9 @@ void FdnReverb::reset() {
 }
 void FdnReverb::set_rt60(float s) {
   s = std::clamp(s, .15f, 20.0f);
+  constexpr float kDbToLog2Fdn = 0.1660964047443681f; // log2(10) / 20
   for (auto &x : lines_)
-    x.feedback_gain = std::pow(10.0f, -3.0f * ((float)x.size / sr_) / s);
+    x.feedback_gain = std::exp2(-60.0f * ((float)x.size / sr_) / s * kDbToLog2Fdn);
 }
 void FdnReverb::set_damping(float n) {
   n = std::clamp(n, 0.0f, 1.0f);

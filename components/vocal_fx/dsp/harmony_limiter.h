@@ -3,6 +3,9 @@
 #include <cmath>
 #include <cstddef>
 
+constexpr float kDbToLog2Limiter = 0.1660964047443681f; // log2(10) / 20
+constexpr float kLog2ToDbLimiter = 6.020599913279624f;  // 20 * log10(2)
+
 class LightHarmonyLimiter {
 public:
   void init(float sample_rate, float threshold_db = -3.0f, float attack_ms = 0.5f,
@@ -23,7 +26,7 @@ public:
 
   void set_threshold_db(float threshold_db) {
     threshold_db_ = std::clamp(threshold_db, -24.0f, 0.0f);
-    threshold_linear_ = std::pow(10.0f, threshold_db_ / 20.0f);
+    threshold_linear_ = std::exp2(threshold_db_ * kDbToLog2Limiter);
   }
 
   void set_attack_ms(float attack_ms) {
@@ -38,7 +41,7 @@ public:
 
   void set_max_reduction_db(float max_reduction_db) {
     max_reduction_db_ = std::clamp(max_reduction_db, 0.0f, 24.0f);
-    min_gain_ = std::pow(10.0f, -max_reduction_db_ / 20.0f);
+    min_gain_ = std::exp2(-max_reduction_db_ * kDbToLog2Limiter);
   }
 
   inline void process(float &l, float &r) {
@@ -71,7 +74,7 @@ public:
   float current_gain() const { return current_gain_; }
   float reduction_db() const {
     return (current_gain_ > 1e-4f && current_gain_ < 0.999f)
-               ? -20.0f * std::log10(current_gain_)
+               ? -kLog2ToDbLimiter * std::log2(current_gain_)
                : 0.0f;
   }
   float last_peak() const { return last_peak_; }

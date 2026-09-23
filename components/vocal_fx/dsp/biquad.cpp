@@ -4,8 +4,9 @@
 void Biquad::configure(BiquadType t, float sr, float hz, float q, float db) {
   hz = std::clamp(hz, 1.0f, sr * 0.499f);
   q = std::max(q, 0.01f);
+  constexpr float kDbToLog2Biquad = 0.1660964047443681f; // log2(10) / 20
   const float w = 2 * 3.14159265358979323846f * hz / sr, c = std::cos(w),
-              s = std::sin(w), A = std::pow(10.0f, db / 40),
+              s = std::sin(w), A = std::exp2(db * 0.5f * kDbToLog2Biquad),
               alpha = s / (2 * q);
   float a0;
   if (t == BiquadType::LowPass) {
