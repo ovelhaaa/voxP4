@@ -118,8 +118,10 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test WASM provenance logic
+        run: node --test scripts/lib/provenance.test.mjs
+
       - name: Check out editor parameter contract
-        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: ovelhaaa/voxP4-editor

@@ -71,8 +71,8 @@ Os artefatos gerados são:
 * `build-wasm/dsp-compatibility.json` (Manifesto de compatibilidade)
 
 No Windows, `scripts/build-wasm.bat` executa o build, gera o manifesto e
-sincroniza os três arquivos atomicamente em `voxP4-editor/src/audio/wasm`
-através de `voxP4-editor/scripts/sync-wasm.mjs`.
+sincroniza os três arquivos de forma transacional (all-or-nothing) em
+`voxP4-editor/src/audio/wasm` através de `voxP4-editor/scripts/sync-wasm.mjs`.
 
 ---
 
@@ -89,11 +89,31 @@ produz `build-wasm/dsp-compatibility.json` combinando:
   `contracts/voxp4-parameters-v1.json` do editor);
 * `engine`, `sampleRate`, `blockSize`, `profile` (configuração fixa do build).
 
-O gerador também compara o commit embutido no binário com o `HEAD` do Git. Se
-houver divergência, o script falha (`exit code != 0`) e não escreve o manifesto,
-evitando declarar uma provenance diferente do binário real. A única exceção é
-quando o Git não está disponível: nesse caso o commit é `unknown` (documentado) e
-não há `HEAD` autoritativo para comparar.
+### Provenance oficial vs. não oficial
+
+Um pacote só é considerado **oficial e reproduzível** quando todas as condições
+abaixo são satisfeitas. Caso qualquer uma falhe, o manifesto **não é escrito** e
+o processo retorna `exit code != 0`:
+
+1. `git HEAD` conhecido;
+2. working tree **limpa** para arquivos versionados
+   (`git status --porcelain --untracked-files=no` — artefatos de build ignorados
+   não contam como sujeira);
+3. commit embutido no binário (`voxp4_preview_get_manifest_json`) igual ao `HEAD`;
+4. contrato canônico disponível (`VOXP4_CONTRACT_PATH` ou checkout irmão do
+   editor).
+
+Mensagem emitida em árvore suja:
+
+```text
+Cannot generate a reproducible VoxP4 WASM package from a dirty worktree.
+Commit or stash source changes before producing editor artifacts.
+```
+
+A única exceção é um ambiente sem Git: o build pode continuar com
+`dspCommit = unknown`, mas o pacote é explicitamente marcado como **não oficial**
+(e não deve ser sincronizado no editor). A lógica pura dessa decisão vive em
+`scripts/lib/provenance.mjs` e é coberta por `node --test scripts/lib/provenance.test.mjs`.
 
 O editor valida esse manifesto com `npm run verify:wasm`, que recalcula os
 hashes reais e falha em qualquer divergência.
