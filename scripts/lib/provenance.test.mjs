@@ -2,15 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePorcelain, evaluateProvenance, UNKNOWN_COMMIT } from './provenance.mjs';
 
+const COMMIT_A = 'a'.repeat(40);
+const COMMIT_B = 'b'.repeat(40);
+
 test('clean worktree produces an official, successful provenance', () => {
   const status = parsePorcelain('');
   assert.deepEqual(status, { clean: true, changes: [] });
 
   const result = evaluateProvenance({
     gitAvailable: true,
-    gitCommit: 'abc123',
+    gitCommit: COMMIT_A,
     worktreeClean: status.clean,
-    embeddedCommit: 'abc123',
+    embeddedCommit: COMMIT_A,
   });
   assert.equal(result.ok, true);
   assert.equal(result.official, true);
@@ -24,9 +27,9 @@ test('dirty tracked file fails the provenance check', () => {
 
   const result = evaluateProvenance({
     gitAvailable: true,
-    gitCommit: 'abc123',
+    gitCommit: COMMIT_A,
     worktreeClean: status.clean,
-    embeddedCommit: 'abc123',
+    embeddedCommit: COMMIT_A,
   });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'dirty-worktree');
@@ -51,13 +54,40 @@ test('CRLF porcelain output is handled', () => {
 test('embedded commit mismatch fails even on a clean tree', () => {
   const result = evaluateProvenance({
     gitAvailable: true,
-    gitCommit: 'aaaa',
+    gitCommit: COMMIT_A,
     worktreeClean: true,
-    embeddedCommit: 'bbbb',
+    embeddedCommit: COMMIT_B,
   });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'commit-mismatch');
   assert.match(result.message, /does not match|stale|different tree/i);
+});
+
+test('official build fails when the embedded commit is null', () => {
+  const result = evaluateProvenance({
+    gitAvailable: true,
+    gitCommit: COMMIT_A,
+    worktreeClean: true,
+    embeddedCommit: null,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.official, true);
+  assert.equal(result.error, 'invalid-embedded-commit');
+  assert.match(result.message, /missing or malformed/i);
+});
+
+test('official build fails for empty, unknown or malformed embedded commits', () => {
+  const badValues = ['', UNKNOWN_COMMIT, 'abc123', 'A'.repeat(40), 'g'.repeat(40), 'a'.repeat(39)];
+  for (const bad of badValues) {
+    const result = evaluateProvenance({
+      gitAvailable: true,
+      gitCommit: COMMIT_A,
+      worktreeClean: true,
+      embeddedCommit: bad,
+    });
+    assert.equal(result.ok, false, `expected failure for ${JSON.stringify(bad)}`);
+    assert.equal(result.error, 'invalid-embedded-commit', `wrong error for ${JSON.stringify(bad)}`);
+  }
 });
 
 test('git unavailable yields a documented, non-official fallback', () => {

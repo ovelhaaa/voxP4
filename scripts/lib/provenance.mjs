@@ -8,6 +8,13 @@
 
 export const UNKNOWN_COMMIT = 'unknown';
 
+/** A canonical git commit: 40 lowercase hex characters. */
+export const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+
+export function isValidCommit(value) {
+  return typeof value === 'string' && COMMIT_PATTERN.test(value);
+}
+
 /**
  * Parses the output of:
  *   git status --porcelain --untracked-files=no
@@ -30,16 +37,18 @@ export function parsePorcelain(porcelainOutput) {
 /**
  * Decides whether provenance is acceptable for an official build.
  *
- * Official (git-backed) builds require:
+ * Official (git-backed) builds require ALL of:
  *   1. git HEAD is known;
  *   2. the tracked worktree is clean;
- *   3. the commit embedded in the binary equals git HEAD.
+ *   3. the commit embedded in the binary is a valid 40-char lowercase hex SHA
+ *      (absent / empty / "unknown" / malformed is rejected);
+ *   4. the embedded commit equals git HEAD.
  *
  * The only exemption is a truly git-less environment: the build may still
  * proceed with `dspCommit = unknown`, but it is explicitly marked as
  * non-official (not a reproducible editor artifact).
  *
- * @param {{ gitAvailable: boolean, gitCommit: string, worktreeClean: boolean, embeddedCommit: string | null }} input
+ * @param {{ gitAvailable: boolean, gitCommit: string, worktreeClean: boolean, embeddedCommit: string | null | undefined }} input
  * @returns {{ ok: true, official: boolean, reason: string } | { ok: false, official: boolean, error: string, message: string }}
  */
 export function evaluateProvenance({ gitAvailable, gitCommit, worktreeClean, embeddedCommit }) {
@@ -58,7 +67,18 @@ export function evaluateProvenance({ gitAvailable, gitCommit, worktreeClean, emb
     };
   }
 
-  if (embeddedCommit && embeddedCommit !== gitCommit) {
+  if (!isValidCommit(embeddedCommit)) {
+    return {
+      ok: false,
+      official: true,
+      error: 'invalid-embedded-commit',
+      message:
+        `WASM embedded dspCommit is missing or malformed (got ${JSON.stringify(embeddedCommit)}).\n` +
+        'An official build must embed a 40-char lowercase hex git commit.',
+    };
+  }
+
+  if (embeddedCommit !== gitCommit) {
     return {
       ok: false,
       official: true,

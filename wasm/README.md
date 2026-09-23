@@ -99,8 +99,11 @@ o processo retorna `exit code != 0`:
 2. working tree **limpa** para arquivos versionados
    (`git status --porcelain --untracked-files=no` — artefatos de build ignorados
    não contam como sujeira);
-3. commit embutido no binário (`voxp4_preview_get_manifest_json`) igual ao `HEAD`;
-4. contrato canônico disponível (`VOXP4_CONTRACT_PATH` ou checkout irmão do
+3. commit embutido no binário (`voxp4_preview_get_manifest_json`) é um SHA
+   válido de 40 caracteres hexadecimais minúsculos (ausente, vazio, `unknown` ou
+   malformado é rejeitado);
+4. commit embutido igual ao `HEAD`;
+5. contrato canônico disponível (`VOXP4_CONTRACT_PATH` ou checkout irmão do
    editor).
 
 Mensagem emitida em árvore suja:
