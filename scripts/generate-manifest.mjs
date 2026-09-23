@@ -64,22 +64,30 @@ function resolveContractFile() {
 
 const gitCommit = resolveGitCommit();
 
-// Cross-check the commit embedded in the binary against the repo HEAD.
-// This is best-effort: a module instantiation failure must not block artifact
-// publication, since the manifest is derived from build inputs regardless.
+// The commit embedded in the binary MUST match the repository HEAD used to
+// produce the manifest. A mismatch means the manifest would declare a
+// different provenance than the real binary, which is fatal.
+//
+// Exception: when Git is unavailable the compiler embeds "unknown" and there is
+// no authoritative HEAD to compare against; that case is explicitly allowed and
+// documented here.
 try {
   const createModule = (await import('file:///' + mjsFile.replace(/\\/g, '/'))).default;
   const mod = await createModule({ wasmBinary: wasmBytes });
   const embedded = JSON.parse(mod.cwrap('voxp4_preview_get_manifest_json', 'string', [])());
 
-  if (embedded.dspCommit && embedded.dspCommit !== gitCommit) {
-    console.warn(
-      `[generate-manifest] WARNING: WASM embeds dspCommit ${embedded.dspCommit} but repo HEAD is ${gitCommit}. ` +
-        'The WASM build may be stale.'
+  if (gitCommit !== 'unknown' && embedded.dspCommit && embedded.dspCommit !== gitCommit) {
+    console.error(
+      `[generate-manifest] ERROR: embedded dspCommit ${embedded.dspCommit} does not match git HEAD ${gitCommit}.\n` +
+        '  The WASM build is stale or was produced from a different tree. Rebuild before generating the manifest.'
     );
+    process.exit(1);
   }
 } catch (err) {
-  console.warn(`[generate-manifest] WARNING: could not inspect embedded manifest: ${err.message}`);
+  console.error(
+    `[generate-manifest] ERROR: could not inspect the embedded manifest to verify provenance: ${err.message}`
+  );
+  process.exit(1);
 }
 
 const contractFile = resolveContractFile();

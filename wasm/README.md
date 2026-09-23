@@ -36,6 +36,10 @@ const char *voxp4_preview_version();
 
 // Manifesto JSON de compatibilidade DSP
 const char *voxp4_preview_get_manifest_json();
+
+// Duração de uma subdivisão de tempo em ms, usando a implementação DSP real
+// (usada pelos testes de paridade do Delay BPM sync no editor)
+float voxp4_preview_tempo_subdivision_ms(float bpm, uint32_t subdivision);
 ```
 
 ---
@@ -84,6 +88,12 @@ produz `build-wasm/dsp-compatibility.json` combinando:
 * `contractSha256`, `contractVersion`, `parameterCount` (do contrato canônico
   `contracts/voxp4-parameters-v1.json` do editor);
 * `engine`, `sampleRate`, `blockSize`, `profile` (configuração fixa do build).
+
+O gerador também compara o commit embutido no binário com o `HEAD` do Git. Se
+houver divergência, o script falha (`exit code != 0`) e não escreve o manifesto,
+evitando declarar uma provenance diferente do binário real. A única exceção é
+quando o Git não está disponível: nesse caso o commit é `unknown` (documentado) e
+não há `HEAD` autoritativo para comparar.
 
 O editor valida esse manifesto com `npm run verify:wasm`, que recalcula os
 hashes reais e falha em qualquer divergência.

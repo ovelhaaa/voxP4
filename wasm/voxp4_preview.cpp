@@ -2,6 +2,7 @@
 #include "vocal_fx.h"
 #include "vocal_fx_config.h"
 #include "vocal_fx_param_binding.h"
+#include "tempo.h"
 #include "voxlink_registry.h"
 
 #include <algorithm>
@@ -136,6 +137,13 @@ VOXP4_WASM_EXPORT const char *voxp4_preview_version() {
 
 VOXP4_WASM_EXPORT const char *voxp4_preview_get_manifest_json() {
   return kManifestJson.c_str();
+}
+
+// Exposes the exact tempo subdivision -> milliseconds semantics used by the
+// delay BPM sync so the web editor can prove parity against the real DSP
+// instead of duplicating the musical ratios without verification.
+VOXP4_WASM_EXPORT float voxp4_preview_tempo_subdivision_ms(float bpm, uint32_t subdivision) {
+  return tempo_subdivision_ms(bpm, static_cast<TempoSubdivision>(subdivision));
 }
 
 } // extern "C"

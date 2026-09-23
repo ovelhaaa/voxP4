@@ -90,7 +90,7 @@ if(EMSCRIPTEN)
     -sEXPORT_ES6=1
     -sALLOW_MEMORY_GROWTH=1
     -sENVIRONMENT=web,worker
-    "-sEXPORTED_FUNCTIONS=['_voxp4_preview_init','_voxp4_preview_set_parameter','_voxp4_preview_reset_parameters','_voxp4_preview_reset','_voxp4_preview_render','_voxp4_preview_version','_voxp4_preview_get_manifest_json','_malloc','_free']"
+    "-sEXPORTED_FUNCTIONS=['_voxp4_preview_init','_voxp4_preview_set_parameter','_voxp4_preview_reset_parameters','_voxp4_preview_reset','_voxp4_preview_render','_voxp4_preview_version','_voxp4_preview_get_manifest_json','_voxp4_preview_tempo_subdivision_ms','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['cwrap','ccall','UTF8ToString','stringToUTF8','HEAPF32','HEAPU8']"
   )
 endif()

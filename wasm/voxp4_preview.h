@@ -42,6 +42,10 @@ VOXP4_WASM_EXPORT const char *voxp4_preview_version();
 // The full compatibility manifest is generated at build time by generate-manifest.mjs.
 VOXP4_WASM_EXPORT const char *voxp4_preview_get_manifest_json();
 
+// Returns the delay BPM-sync subdivision duration in milliseconds at the given
+// BPM, using the exact DSP implementation (used for editor/DSP parity tests).
+VOXP4_WASM_EXPORT float voxp4_preview_tempo_subdivision_ms(float bpm, uint32_t subdivision);
+
 #ifdef __cplusplus
 }
 #endif
