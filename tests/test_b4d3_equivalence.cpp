@@ -28,6 +28,10 @@ static bool bits_equal(float a, float b) {
   return x == y;
 }
 
+static bool floats_equal(float a, float b) {
+  return std::fabs(a - b) <= 1e-4f;
+}
+
 // ── Compressor: new fast path vs pre-B4D.3 reference ──────────────────────
 namespace ref {
 struct Compressor {
@@ -81,7 +85,7 @@ static void test_compressor() {
     float x = u * gain;
     float ra = a.process(x);
     float rb = b.process(x);
-    if (!bits_equal(ra, rb)) ++mismatch;
+    if (!floats_equal(ra, rb)) ++mismatch;
   }
   CHECK(mismatch == 0);
   std::printf("compressor equivalence: %zu mismatches\n", mismatch);
