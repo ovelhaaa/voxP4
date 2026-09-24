@@ -1,0 +1,3 @@
+## 2024-10-18 - Replacing base-10 with base-2 functions in compressor
+**Learning:** ESP32-P4 and general x86 processors can calculate `std::exp2` and `std::log2` much faster than their base-10 counterparts (`std::pow` and `std::log10`). Applying these optimization with pre-calculated constant multipliers (`20 * log10(x) -> 6.0206 * log2(x)`) dramatically increases processing speed for signal dynamics without changing functionality.
+**Action:** Always prefer `std::exp2` and `std::log2` over `std::pow(10.0f, ...)` and `std::log10` in tight audio DSP loops, especially where these compute envelopes. Remember to update bitwise exact-equivalence tests to use float tolerances (`1e-4f`) since base-2 logic introduces slight float difference.
