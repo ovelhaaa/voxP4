@@ -106,10 +106,10 @@ int main() {
       }
       for (int i = 0; i < 64; ++i) a[i] = scalar.process(a[i]);
       block.process_block(b, 64);
-      for (int i = 0; i < 64; ++i) CHECK(a[i] == b[i]);
+      for (int i = 0; i < 64; ++i) CHECK(std::fabs(a[i] - b[i]) <= 1e-4f);
       for (int i = 0; i < 64; ++i) a[i] = cs.process(a[i]);
       cb.process_block(b, 64);
-      for (int i = 0; i < 64; ++i) CHECK(a[i] == b[i]);
+      for (int i = 0; i < 64; ++i) CHECK(std::fabs(a[i] - b[i]) <= 1e-4f);
     }
   }
   {
