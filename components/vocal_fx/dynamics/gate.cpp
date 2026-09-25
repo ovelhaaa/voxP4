@@ -1,7 +1,9 @@
 #include "gate.h"
 #include <algorithm>
 #include <cmath>
-float Gate::db_to_linear(float d) { return std::pow(10.0f, d / 20); }
+// 0.1660964047443681f is log2(10) / 20. Replacing pow(10, x/20) with exp2(x * constant)
+// improves performance in DSP hot loops on ESP32-P4.
+float Gate::db_to_linear(float d) { return std::exp2(d * 0.1660964047443681f); }
 void Gate::init(float sr) {
   sr_ = sr;
   set(-55, 5, 40, 120, -60);
