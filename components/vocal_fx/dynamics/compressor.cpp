@@ -27,6 +27,12 @@ float Compressor::gain_db_for(float x) const {
   }
   return over > 0 ? (1 / ratio_ - 1) * over : 0;
 }
+// Precomputed constants to replace base-10 math with faster base-2 math.
+// std::log10(2.0f) ~= 0.3010299956639812f
+static constexpr float kLog2ToLog10 = 0.3010299956639812f;
+// std::log2(10.0f) / 20.0f ~= 0.1660964047443681f
+static constexpr float kDbToLog2 = 0.1660964047443681f;
+
 float Compressor::process(float x) {
   float p = std::fabs(x);
   float c = p > env_ ? attack_ : release_;
@@ -35,9 +41,12 @@ float Compressor::process(float x) {
   // needed. Identical output to the general path.
   if (env_ <= threshold_lo_linear_)
     return x * makeup_;
-  float db = 20 * std::log10(std::max(env_, 1e-12f));
-  return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
+
+  // ⚡ Bolt: Base-2 math is significantly faster on ESP32-P4 architecture
+  float db = 20.0f * kLog2ToLog10 * std::log2(std::max(env_, 1e-12f));
+  return x * std::exp2(gain_db_for(db) * kDbToLog2) * makeup_;
 }
+
 void Compressor::process_block(float *buffer, size_t n) {
   float env = env_;
   const float attack = attack_, release = release_;
@@ -50,8 +59,9 @@ void Compressor::process_block(float *buffer, size_t n) {
     if (env <= linear_limit) {
       buffer[i] = x * makeup;
     } else {
-      const float db = 20 * std::log10(std::max(env, 1e-12f));
-      buffer[i] = x * std::pow(10.0f, gain_db_for(db) / 20) * makeup;
+      // ⚡ Bolt: Base-2 math is significantly faster on ESP32-P4 architecture
+      const float db = 20.0f * kLog2ToLog10 * std::log2(std::max(env, 1e-12f));
+      buffer[i] = x * std::exp2(gain_db_for(db) * kDbToLog2) * makeup;
     }
   }
   env_ = env;
