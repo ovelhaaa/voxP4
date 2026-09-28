@@ -11,13 +11,14 @@ void Compressor::set(float t, float r, float a, float rel, float m, float k) {
   threshold_ = t;
   ratio_ = std::max(r, 1.0f);
   knee_ = std::max(k, 0.0f);
-  makeup_ = std::pow(10.0f, m / 20);
+  constexpr float kLog2_10 = 3.321928094887362f;
+  makeup_ = std::exp2(m / 20.0f * kLog2_10);
   attack_ = std::exp(-1 / (sr_ * std::max(a, .01f) * .001f));
   release_ = std::exp(-1 / (sr_ * std::max(rel, .01f) * .001f));
   // Linear guard 1 dB below the knee edge. Below it the exact gain computer is
   // 0 dB, so process() may return x*makeup_ directly (bit-identical).
   threshold_lo_linear_ =
-      std::pow(10.0f, (threshold_ - knee_ * 0.5f - 1.0f) * 0.05f);
+      std::exp2((threshold_ - knee_ * 0.5f - 1.0f) * 0.05f * kLog2_10);
 }
 float Compressor::gain_db_for(float x) const {
   float over = x - threshold_;
@@ -35,13 +36,17 @@ float Compressor::process(float x) {
   // needed. Identical output to the general path.
   if (env_ <= threshold_lo_linear_)
     return x * makeup_;
-  float db = 20 * std::log10(std::max(env_, 1e-12f));
-  return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
+  constexpr float kLog10_2 = 0.3010299956639812f;
+  constexpr float kLog2_10 = 3.321928094887362f;
+  float db = 20.0f * kLog10_2 * std::log2(std::max(env_, 1e-12f));
+  return x * std::exp2(gain_db_for(db) / 20.0f * kLog2_10) * makeup_;
 }
 void Compressor::process_block(float *buffer, size_t n) {
   float env = env_;
   const float attack = attack_, release = release_;
   const float makeup = makeup_, linear_limit = threshold_lo_linear_;
+  constexpr float kLog10_2 = 0.3010299956639812f;
+  constexpr float kLog2_10 = 3.321928094887362f;
   for (size_t i = 0; i < n; ++i) {
     const float x = buffer[i];
     const float p = std::fabs(x);
@@ -50,8 +55,8 @@ void Compressor::process_block(float *buffer, size_t n) {
     if (env <= linear_limit) {
       buffer[i] = x * makeup;
     } else {
-      const float db = 20 * std::log10(std::max(env, 1e-12f));
-      buffer[i] = x * std::pow(10.0f, gain_db_for(db) / 20) * makeup;
+      const float db = 20.0f * kLog10_2 * std::log2(std::max(env, 1e-12f));
+      buffer[i] = x * std::exp2(gain_db_for(db) / 20.0f * kLog2_10) * makeup;
     }
   }
   env_ = env;
