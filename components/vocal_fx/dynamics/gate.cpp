@@ -1,7 +1,13 @@
 #include "gate.h"
 #include <algorithm>
 #include <cmath>
-float Gate::db_to_linear(float d) { return std::pow(10.0f, d / 20); }
+float Gate::db_to_linear(float d) {
+  // Performance optimization: Using std::exp2 with a precomputed
+  // base-2 logarithm constant is significantly faster than std::pow(10, ...)
+  // and maintains exact bitwise equivalence within the audio hotpath.
+  constexpr float kDbToLog2 = 3.321928094887362f / 20.0f;
+  return std::exp2(d * kDbToLog2);
+}
 void Gate::init(float sr) {
   sr_ = sr;
   set(-55, 5, 40, 120, -60);
