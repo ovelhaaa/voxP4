@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.0
 
       - name: Set up pinned ESP-IDF
         run: ./scripts/setup-codex.sh
@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -97,7 +97,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.0
 
       - name: Set up Emscripten SDK
         uses: mymindstorm/setup-emsdk@v14
@@ -122,7 +122,7 @@ jobs:
         run: node --test scripts/lib/provenance.test.mjs
 
       - name: Check out editor parameter contract
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.0
         with:
           repository: ovelhaaa/voxP4-editor
           path: voxP4-editor
