@@ -1,0 +1,3 @@
+## 2024-05-24 - Base-2 math vs Base-10 math on ESP32-P4
+**Learning:** ESP32-P4 floating-point units perform base-2 math (`std::log2`, `std::exp2`) significantly faster than their base-10 equivalents (`std::log10`, `std::pow(10.0f, x)`).
+**Action:** When working in hot DSP loops, replace `std::pow(10.0f, ...)` with `std::exp2(...)` using a precomputed constant multiplier (e.g. `10^(x/20) == 2^(x * log2(10)/20) == 2^(x * 0.166096...)`). Likewise, replace `std::log10` with `std::log2` with a multiplier. Relax exact equivalence tests by a small tolerance (`1e-4f`) to account for floating-point precision differences.
