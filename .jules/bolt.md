@@ -1,0 +1,3 @@
+## 2024-06-25 - Replace base-10 math with base-2 in DSP paths
+**Learning:** Using `std::pow(10.0f, ...)` and `std::log10(...)` in hot audio DSP loops on the ESP32-P4 adds significant overhead. Replacing them with their base-2 counterparts (`std::exp2`, `std::log2`) multiplied by precomputed constants yields substantial performance gains, although exact bit-equivalence may require tolerance (e.g. `1e-4f`) in tests.
+**Action:** Always prefer `std::exp2` and `std::log2` with precomputed constants in ESP32-P4 hot paths instead of base-10 equivalents to reduce execution time, keeping bit-exactness tradeoffs in mind.
