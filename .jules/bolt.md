@@ -1,0 +1,3 @@
+## 2024-10-03 - Base-2 Math on ESP32-P4
+**Learning:** In hot audio DSP loops on the ESP32-P4, substituting base-10 functions (like `std::pow(10.0f, ...)` and `std::log10`) with base-2 equivalents (`std::exp2`, `std::log2`) using precomputed constant multipliers provides a significant performance gain. Strict equivalence testing needs a floating-point tolerance (e.g. `1e-4f`) to accommodate these optimizations.
+**Action:** When optimizing audio pipelines, prefer `std::exp2` and `std::log2` with scaling constants instead of `std::pow` with base 10 or `std::log10`. Adjust exact bitwise comparison tests to use a reasonable floating-point tolerance when mathematically equivalent substitutions exhibit minor floating-point divergence.

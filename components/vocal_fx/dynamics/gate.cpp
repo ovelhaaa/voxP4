@@ -1,7 +1,8 @@
 #include "gate.h"
 #include <algorithm>
 #include <cmath>
-float Gate::db_to_linear(float d) { return std::pow(10.0f, d / 20); }
+// Optimization: base-2 substitution using exp2 instead of pow(10) for faster execution.
+float Gate::db_to_linear(float d) { return std::exp2(d * (3.321928094887362f / 20.0f)); }
 void Gate::init(float sr) {
   sr_ = sr;
   set(-55, 5, 40, 120, -60);
