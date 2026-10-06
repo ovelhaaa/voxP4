@@ -1,0 +1,3 @@
+## 2024-05-24 - Base-2 Math Outperforms Base-10 on ESP32-P4
+**Learning:** In hot audio DSP loops on the ESP32-P4 architecture, computing `std::pow(10.0f, ...)` and `std::log10(...)` is significantly slower than base-2 math functions like `std::exp2(...)` and `std::log2(...)`. Utilizing these with precomputed constant multipliers yields exact identical results but much faster execution time.
+**Action:** Always prefer `std::log2` and `std::exp2` over `std::log10` and `std::pow(10.0f, ...)` for dB-to-linear and linear-to-dB conversions in the audio hot path. Be aware that exact-equivalence unit tests will require a small floating-point tolerance (e.g. `1e-4f`) to accommodate slight precision differences when swapping functions.
