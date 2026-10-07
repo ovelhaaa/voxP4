@@ -35,8 +35,8 @@ float Compressor::process(float x) {
   // needed. Identical output to the general path.
   if (env_ <= threshold_lo_linear_)
     return x * makeup_;
-  float db = 20 * std::log10(std::max(env_, 1e-12f));
-  return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
+  const float db = 6.020599913279624f * std::log2(std::max(env_, 1e-12f));
+  return x * std::exp2(gain_db_for(db) * 0.16609640474436813f) * makeup_;
 }
 void Compressor::process_block(float *buffer, size_t n) {
   float env = env_;
@@ -50,8 +50,8 @@ void Compressor::process_block(float *buffer, size_t n) {
     if (env <= linear_limit) {
       buffer[i] = x * makeup;
     } else {
-      const float db = 20 * std::log10(std::max(env, 1e-12f));
-      buffer[i] = x * std::pow(10.0f, gain_db_for(db) / 20) * makeup;
+      const float db = 6.020599913279624f * std::log2(std::max(env, 1e-12f));
+      buffer[i] = x * std::exp2(gain_db_for(db) * 0.16609640474436813f) * makeup;
     }
   }
   env_ = env;
