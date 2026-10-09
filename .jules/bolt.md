@@ -1,0 +1,3 @@
+## 2024-06-11 - Base-10 vs Base-2 Math Operations Bottleneck
+**Learning:** Base-10 math operations like `std::pow(10.0f, ...)` and `std::log10` are significantly slower than their base-2 equivalents (`std::exp2` and `std::log2`) on the ESP32-P4 architecture. This can be a major bottleneck in DSP hot paths, such as audio compression algorithms.
+**Action:** When working in hot audio DSP loops, always replace base-10 functions with base-2 functions combined with precomputed constant multipliers (e.g., `std::exp2(x * 0.1660964047443681f)` instead of `std::pow(10.0f, x / 20)` and `6.020599913279624f * std::log2(x)` instead of `20 * std::log10(x)`).

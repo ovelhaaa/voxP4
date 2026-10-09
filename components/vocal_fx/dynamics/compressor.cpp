@@ -11,13 +11,13 @@ void Compressor::set(float t, float r, float a, float rel, float m, float k) {
   threshold_ = t;
   ratio_ = std::max(r, 1.0f);
   knee_ = std::max(k, 0.0f);
-  makeup_ = std::pow(10.0f, m / 20);
+  makeup_ = std::exp2(m * 0.1660964047443681f);
   attack_ = std::exp(-1 / (sr_ * std::max(a, .01f) * .001f));
   release_ = std::exp(-1 / (sr_ * std::max(rel, .01f) * .001f));
   // Linear guard 1 dB below the knee edge. Below it the exact gain computer is
   // 0 dB, so process() may return x*makeup_ directly (bit-identical).
   threshold_lo_linear_ =
-      std::pow(10.0f, (threshold_ - knee_ * 0.5f - 1.0f) * 0.05f);
+      std::exp2((threshold_ - knee_ * 0.5f - 1.0f) * 0.1660964047443681f);
 }
 float Compressor::gain_db_for(float x) const {
   float over = x - threshold_;
@@ -35,8 +35,8 @@ float Compressor::process(float x) {
   // needed. Identical output to the general path.
   if (env_ <= threshold_lo_linear_)
     return x * makeup_;
-  float db = 20 * std::log10(std::max(env_, 1e-12f));
-  return x * std::pow(10.0f, gain_db_for(db) / 20) * makeup_;
+  float db = 6.020599913279624f * std::log2(std::max(env_, 1e-12f));
+  return x * std::exp2(gain_db_for(db) * 0.1660964047443681f) * makeup_;
 }
 void Compressor::process_block(float *buffer, size_t n) {
   float env = env_;
@@ -50,8 +50,8 @@ void Compressor::process_block(float *buffer, size_t n) {
     if (env <= linear_limit) {
       buffer[i] = x * makeup;
     } else {
-      const float db = 20 * std::log10(std::max(env, 1e-12f));
-      buffer[i] = x * std::pow(10.0f, gain_db_for(db) / 20) * makeup;
+      const float db = 6.020599913279624f * std::log2(std::max(env, 1e-12f));
+      buffer[i] = x * std::exp2(gain_db_for(db) * 0.1660964047443681f) * makeup;
     }
   }
   env_ = env;
