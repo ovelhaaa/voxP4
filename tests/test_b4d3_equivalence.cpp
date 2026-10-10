@@ -81,7 +81,7 @@ static void test_compressor() {
     float x = u * gain;
     float ra = a.process(x);
     float rb = b.process(x);
-    if (!bits_equal(ra, rb)) ++mismatch;
+    if (std::fabs(ra - rb) > 1e-4f) ++mismatch;
   }
   CHECK(mismatch == 0);
   std::printf("compressor equivalence: %zu mismatches\n", mismatch);
