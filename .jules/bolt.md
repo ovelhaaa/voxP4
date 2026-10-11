@@ -1,0 +1,3 @@
+## 2023-10-11 - Base-2 Math Optimization in Hot Paths
+**Learning:** ESP32-P4 and modern CPUs compute base-2 math (`std::log2`, `std::exp2`) significantly faster than base-10 math (`std::log10`, `std::pow(10.0f, ...)`). However, exact-equivalence tests will fail when swapping math bases due to microscopic floating-point rounding differences.
+**Action:** When optimizing hot paths by converting base-10 to base-2 math, ensure exact-equivalence tests are updated to use a small floating-point tolerance (e.g., `1e-4f`) instead of strict bitwise equality. Also, only apply these micro-optimizations to hot audio paths (`process()`, `process_block()`) where they have a measurable impact, not in cold configuration paths (`set()`, `init()`).

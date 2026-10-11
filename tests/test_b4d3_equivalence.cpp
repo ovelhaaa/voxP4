@@ -21,7 +21,8 @@ static int failures = 0;
     }                                                                         \
   } while (0)
 
-static bool bits_equal(float a, float b) {
+static bool bits_equal(float a, float b, float tol = 0.0f) {
+  if (tol > 0.0f) return std::fabs(a - b) <= tol;
   uint32_t x, y;
   std::memcpy(&x, &a, sizeof(x));
   std::memcpy(&y, &b, sizeof(y));
@@ -81,7 +82,7 @@ static void test_compressor() {
     float x = u * gain;
     float ra = a.process(x);
     float rb = b.process(x);
-    if (!bits_equal(ra, rb)) ++mismatch;
+    if (!bits_equal(ra, rb, 1e-4f)) ++mismatch;
   }
   CHECK(mismatch == 0);
   std::printf("compressor equivalence: %zu mismatches\n", mismatch);

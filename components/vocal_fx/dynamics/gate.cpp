@@ -1,7 +1,9 @@
 #include "gate.h"
 #include <algorithm>
 #include <cmath>
-float Gate::db_to_linear(float d) { return std::pow(10.0f, d / 20); }
+// Use base-2 math for better performance on ESP32-P4
+// 10^(d/20) = 2^(log2(10) * d / 20) = 2^(d * 0.16609640474436813)
+float Gate::db_to_linear(float d) { return std::exp2(d * 0.16609640474436813f); }
 void Gate::init(float sr) {
   sr_ = sr;
   set(-55, 5, 40, 120, -60);
